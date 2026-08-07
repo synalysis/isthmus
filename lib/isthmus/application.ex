@@ -1,0 +1,47 @@
+defmodule Isthmus.Application do
+  @moduledoc false
+
+  use Application
+
+  @impl true
+  def start(_type, _args) do
+    children = [
+      IsthmusWeb.Telemetry,
+      Isthmus.Repo,
+      {Ecto.Migrator,
+       repos: Application.fetch_env!(:isthmus, :ecto_repos), skip: skip_migrations?()},
+      {DNSCluster, query: Application.get_env(:isthmus, :dns_cluster_query) || :ignore},
+      {Phoenix.PubSub, name: Isthmus.PubSub},
+      Isthmus.Auth.Store,
+      Isthmus.Backup,
+      Isthmus.Networks.Supervisor,
+      IsthmusWeb.Endpoint
+    ]
+
+    opts = [strategy: :one_for_one, name: Isthmus.Supervisor]
+    result = Supervisor.start_link(children, opts)
+
+    # Bootstrap admin allowlist from ISTHMUS_ADMIN_NPUBS after Repo is up.
+    Task.start(fn ->
+      Process.sleep(100)
+
+      try do
+        Isthmus.Accounts.bootstrap_from_env!()
+      rescue
+        _ -> :ok
+      end
+    end)
+
+    result
+  end
+
+  @impl true
+  def config_change(changed, _new, removed) do
+    IsthmusWeb.Endpoint.config_change(changed, removed)
+    :ok
+  end
+
+  defp skip_migrations? do
+    System.get_env("RELEASE_NAME") == nil
+  end
+end

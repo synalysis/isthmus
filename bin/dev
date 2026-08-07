@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Start Isthmus locally for testing.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+if [[ -f .tool-versions ]] && command -v asdf >/dev/null 2>&1; then
+  # Ensure shims match .tool-versions in this directory.
+  export ASDF_DIR="${ASDF_DIR:-$HOME/.asdf}"
+  # shellcheck disable=SC1091
+  [[ -f "$ASDF_DIR/asdf.sh" ]] && source "$ASDF_DIR/asdf.sh"
+fi
+
+if [[ -f .env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source .env
+  set +a
+fi
+
+export MIX_ENV="${MIX_ENV:-dev}"
+export PORT="${PORT:-4000}"
+export ISTHMUS_ADMIN_NPUBS="${ISTHMUS_ADMIN_NPUBS:-}"
+
+if ! command -v mix >/dev/null 2>&1; then
+  echo "error: mix not found. Install Elixir/Erlang (see .tool-versions)." >&2
+  exit 1
+fi
+
+if [[ ! -d deps ]] || [[ ! -d _build ]]; then
+  echo "==> First run: fetching deps and setting up database"
+  mix deps.get
+  mix ecto.setup
+else
+  mix ecto.migrate
+fi
+
+echo "==> Isthmus listening on http://localhost:${PORT}"
+if [[ -n "$ISTHMUS_ADMIN_NPUBS" ]]; then
+  echo "==> Admin allowlist: ${ISTHMUS_ADMIN_NPUBS}"
+else
+  echo "==> Tip: export ISTHMUS_ADMIN_NPUBS=npub1... for /admin access"
+fi
+
+exec mix phx.server

@@ -1,0 +1,34 @@
+services:
+  isthmus:
+    build: .
+    ports:
+      - "${PORT:-4000}:4000"
+    environment:
+      PORT: "4000"
+      PHX_HOST: ${PHX_HOST:-localhost}
+      DATABASE_PATH: /data/isthmus.db
+      SECRET_KEY_BASE: ${SECRET_KEY_BASE:?Set SECRET_KEY_BASE}
+      ISTHMUS_VAULT_SECRET: ${ISTHMUS_VAULT_SECRET:?Set ISTHMUS_VAULT_SECRET}
+      ISTHMUS_ADMIN_NPUBS: ${ISTHMUS_ADMIN_NPUBS:-}
+      # Local HTTP without TLS terminator
+      CHECK_ORIGIN: ${CHECK_ORIGIN:-false}
+      FORCE_SSL: ${FORCE_SSL:-false}
+      PHX_SERVER: "true"
+    volumes:
+      - isthmus_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "sh",
+          "-c",
+          "exec 3<>/dev/tcp/127.0.0.1/4000 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && cat <&3 | grep -q ok"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  isthmus_data:

@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+cd -P -- "$(dirname -- "$0")"
+
+# Ensure SQLite parent directory exists (Docker volume / Render disk).
+if [ -n "${DATABASE_PATH:-}" ]; then
+  dir=$(dirname "$DATABASE_PATH")
+  mkdir -p "$dir" 2>/dev/null || true
+fi
+
+PHX_SERVER=true exec ./isthmus start

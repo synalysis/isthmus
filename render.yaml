@@ -1,0 +1,38 @@
+# Render Blueprint — https://render.com/docs/blueprint-spec
+# Deploy: connect this repo in Render and use "Blueprint", or create a
+# Docker Web Service manually with the settings below.
+#
+# Note: MeshCore USB/BLE radios need a host with hardware access; Render is
+# suitable for the ops UI + Nostr + RNS-over-IP side. Use Docker on a bare-metal
+# or edge host when attaching companion radios.
+
+services:
+  - type: web
+    name: isthmus
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    disk:
+      name: isthmus-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: PORT
+        value: "4000"
+      - key: DATABASE_PATH
+        value: /data/isthmus.db
+      - key: FORCE_SSL
+        value: "true"
+      # Optional override; otherwise RENDER_EXTERNAL_HOSTNAME is used at runtime.
+      - key: PHX_HOST
+        sync: false
+      - key: SECRET_KEY_BASE
+        generateValue: true
+      - key: ISTHMUS_VAULT_SECRET
+        generateValue: true
+      - key: ISTHMUS_ADMIN_NPUBS
+        sync: false
+      - key: POOL_SIZE
+        value: "5"

@@ -1,0 +1,79 @@
+defmodule IsthmusWeb.Router do
+  use IsthmusWeb, :router
+
+  import IsthmusWeb.UserAuth
+
+  pipeline :browser do
+    plug :accepts, ["html"]
+    plug :fetch_session
+    plug :fetch_live_flash
+    plug :put_root_layout, html: {IsthmusWeb.Layouts, :root}
+    plug :protect_from_forgery
+    plug :put_secure_browser_headers
+    plug :fetch_current_user
+  end
+
+  pipeline :health do
+    plug :accepts, ["json", "html", "*/*"]
+  end
+
+  pipeline :metrics do
+    plug :accepts, ["text", "json", "*/*"]
+  end
+
+  scope "/", IsthmusWeb do
+    pipe_through :health
+
+    get "/healthz", HealthController, :liveness
+    get "/readyz", HealthController, :readiness
+  end
+
+  scope "/", IsthmusWeb do
+    pipe_through :metrics
+
+    get "/metrics", MetricsController, :index
+  end
+
+  scope "/", IsthmusWeb do
+    pipe_through :browser
+
+    live "/", HomeLive
+    live "/login", LoginLive
+    get "/session", SessionController, :create
+    post "/session", SessionController, :create
+    delete "/logout", SessionController, :delete
+
+    live_session :authenticated,
+      on_mount: [{IsthmusWeb.UserAuth, :ensure_authenticated}] do
+      live "/register", RegisterLive
+      live "/me", MeLive
+    end
+
+    live_session :admin,
+      on_mount: [{IsthmusWeb.UserAuth, :ensure_admin}] do
+      live "/admin", Admin.HomeLive
+      live "/admin/reticulum", Admin.ReticulumLive
+      live "/admin/meshcore", Admin.MeshCoreLive
+      live "/admin/nostr", Admin.NostrLive
+      # Legacy bookmark; same LiveView as /admin/nostr
+      live "/admin/relays", Admin.NostrLive
+      live "/admin/registrations", Admin.RegistrationsLive
+      live "/admin/tunnels", Admin.TunnelsLive
+      live "/admin/gateway", Admin.GatewayLive
+      live "/admin/timeline", Admin.TimelineLive
+      live "/admin/audit", Admin.AuditLive
+      live "/admin/policy", Admin.PolicyLive
+    end
+  end
+
+  if Application.compile_env(:isthmus, :dev_routes) do
+    import Phoenix.LiveDashboard.Router
+
+    scope "/dev" do
+      pipe_through :browser
+
+      live_dashboard "/dashboard", metrics: IsthmusWeb.Telemetry
+      forward "/mailbox", Plug.Swoosh.MailboxPreview
+    end
+  end
+end
