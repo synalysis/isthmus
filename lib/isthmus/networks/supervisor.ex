@@ -14,6 +14,7 @@ defmodule Isthmus.Networks.Supervisor do
       Isthmus.Tunnel.Engine,
       Isthmus.Networks.Reticulum.InterfaceSocket,
       Isthmus.Networks.MeshCore.Companion,
+      Isthmus.Networks.Meshtastic.Transport,
       Isthmus.Networks.Reticulum.Sidecar,
       Isthmus.Networks.Nostr.RelayPool,
       Isthmus.Gateway.Translator

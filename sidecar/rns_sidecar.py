@@ -17,6 +17,7 @@ import threading
 import time
 import traceback
 import uuid
+import base64
 from typing import Any, Optional
 
 
@@ -251,6 +252,22 @@ class Sidecar:
             return {"ok": False, "error": "unknown_destination"}
         self.router.announce(raw)
         return {"ok": True, "destination_hash": dest_hex}
+
+    def inject_packet(self, raw: bytes) -> dict:
+        """Inject opaque bytes into the local RNS Transport as inbound traffic.
+
+        Used when tunnel payloads arrive and no MeshChat IsthmusInterface client
+        is attached to the Unix socket.
+        """
+        if not self.live:
+            return {"ok": False, "error": "not_live"}
+        if not isinstance(raw, (bytes, bytearray)) or len(raw) == 0:
+            return {"ok": False, "error": "empty_packet"}
+        try:
+            self.RNS.Transport.inbound(bytes(raw), None)
+            return {"ok": True, "bytes": len(raw)}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
 
     def path_status(self, destination_hash: str) -> dict:
         if not self.live:
@@ -800,13 +817,17 @@ def main() -> int:
                 result = sidecar.lxmf_send(msg.get("message") or {})
                 reply(req_id, type="lxmf_sent", **result)
             elif mtype == "packet":
-                # Raw packet bridging reserved for interface-socket path; ack only.
-                reply(
-                    req_id,
-                    type="ack",
-                    data=msg.get("data"),
-                    note="use_interface_socket",
-                )
+                data_b64 = msg.get("data") or ""
+                try:
+                    raw = base64.b64decode(data_b64)
+                except Exception as exc:  # noqa: BLE001
+                    reply(req_id, type="error", error=f"invalid_base64: {exc}")
+                    continue
+                result = sidecar.inject_packet(raw)
+                if result.get("ok"):
+                    reply(req_id, type="ack", **result)
+                else:
+                    reply(req_id, type="error", error=result.get("error") or "inject_failed")
             elif mtype == "shutdown":
                 break
             else:

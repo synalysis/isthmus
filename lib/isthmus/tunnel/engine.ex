@@ -2,6 +2,10 @@ defmodule Isthmus.Tunnel.Engine do
   @moduledoc """
   Drains the durable outbox, fragments payloads for the carrier MTU, and
   dispatches via network adapters. Reassembly buffer kept in-process.
+
+  Inbound ISTH frames: ACK / DATA / CONTROL. DATA payloads are injected into
+  the peer's `payload_network` via `send_raw/2`. CONTROL announces are applied
+  locally with `from_tunnel: true` so they do not bounce.
   """
   use GenServer
 
@@ -11,7 +15,7 @@ defmodule Isthmus.Tunnel.Engine do
   alias Isthmus.Announce.Governor
   alias Isthmus.Networks
   alias Isthmus.Tunnel
-  alias Isthmus.Tunnel.{Frame, Outbox, Peer}
+  alias Isthmus.Tunnel.{Bridge, Frame, Outbox, Peer}
   alias Isthmus.Repo
 
   @tick_ms 5_000
@@ -29,6 +33,21 @@ defmodule Isthmus.Tunnel.Engine do
     GenServer.cast(__MODULE__, {:inbound, binary})
   end
 
+  @doc """
+  Classify a raw carrier blob: ISTH frames go to the Engine; otherwise treat as
+  island traffic for `payload_network` (auto-bridge).
+  """
+  def ingest_carrier_blob(payload_network, binary, opts \\ %{})
+      when is_binary(payload_network) and is_binary(binary) do
+    case Frame.decode(binary) do
+      {:ok, _frame, _rest} ->
+        handle_inbound_frame(binary)
+
+      {:error, _} ->
+        Bridge.forward_packet(payload_network, binary, opts)
+    end
+  end
+
   @impl true
   def init(_opts) do
     Sightings.purge_expired()
@@ -36,7 +55,7 @@ defmodule Isthmus.Tunnel.Engine do
     state = %{
       reassembly: %{},
       pending_acks: %{},
-      stats: %{sent: 0, acked: 0, dropped: 0, reassembled: 0}
+      stats: %{sent: 0, acked: 0, dropped: 0, reassembled: 0, control: 0}
     }
 
     schedule_tick()
@@ -110,7 +129,9 @@ defmodule Isthmus.Tunnel.Engine do
         {:error, :tunnel_disabled}
 
       peer ->
-        case Governor.allow?(:tunnel_data, peer.carrier_network, tunnel_id) do
+        class = if control_msg?(msg), do: :tunnel_control, else: :tunnel_data
+
+        case Governor.allow?(class, peer.carrier_network, tunnel_id) do
           {:drop, reason} ->
             {:ok, _} = Outbox.mark_retry(msg, {:governor, reason})
             {:error, {:governor, reason}}
@@ -123,13 +144,14 @@ defmodule Isthmus.Tunnel.Engine do
 
   defp dispatch(_msg), do: {:error, :unknown_channel}
 
-  defp send_over_carrier(peer, payload) do
+  defp send_over_carrier(%Peer{} = peer, %{payload: payload} = msg) when is_binary(payload) do
     carrier = network_atom(peer.carrier_network)
     adapter = Networks.adapter!(carrier)
     mtu = if function_exported?(adapter, :mtu, 1), do: adapter.mtu(%{}), else: 200
 
+    seq = peer.next_seq
+    frames = encode_outbound(peer, seq, payload, mtu, msg)
     {:ok, peer} = Tunnel.bump_seq(peer)
-    frames = Tunnel.encode_fragments(peer, payload, mtu)
     sent_at = System.monotonic_time(:millisecond)
 
     result =
@@ -138,26 +160,52 @@ defmodule Isthmus.Tunnel.Engine do
 
         send_result =
           if function_exported?(adapter, :send_raw, 2) do
-            adapter.send_raw(encoded, %{peer_ref: peer.peer_ref, tunnel_id: peer.tunnel_id})
+            adapter.send_raw(encoded, %{
+              peer_ref: peer.peer_ref,
+              tunnel_id: peer.tunnel_id,
+              kind: if(control_msg?(msg), do: :control, else: :data)
+            })
           else
             {:error, :adapter_no_raw}
           end
 
         case send_result do
           :ok -> {:cont, :ok}
+          {:ok, _} -> {:cont, :ok}
           other -> {:halt, other}
         end
       end)
 
     if result == :ok do
-      GenServer.cast(
-        self(),
-        {:track_send, peer.tunnel_id, peer.next_seq - 1, sent_at, peer}
+      GenServer.cast(self(), {:track_send, peer.tunnel_id, seq, sent_at, peer})
+
+      Phoenix.PubSub.broadcast(
+        Isthmus.PubSub,
+        "tunnel:events",
+        {:tunnel_sent, %{tunnel_id: peer.tunnel_id, seq: seq, bytes: byte_size(payload)}}
       )
     end
 
     result
   end
+
+  defp send_over_carrier(_peer, _msg), do: {:error, :invalid_outbox_payload}
+
+  defp encode_outbound(peer, seq, payload, mtu, msg) do
+    tid = Frame.tunnel_id_from_string(peer.tunnel_id)
+
+    if control_msg?(msg) do
+      [Frame.control_frame(tid, seq, payload)]
+    else
+      Frame.fragment(tid, seq, payload, mtu)
+    end
+  end
+
+  defp control_msg?(%{meta: meta}) when is_map(meta) do
+    meta["kind"] in ["control", :control] or meta[:kind] in ["control", :control]
+  end
+
+  defp control_msg?(_), do: false
 
   defp record_ack_latency(tunnel_id, seq, pending) do
     case Map.get(pending, {tunnel_id, seq}) do
@@ -193,11 +241,53 @@ defmodule Isthmus.Tunnel.Engine do
         GenServer.cast(self(), {:ack, tunnel_hex, frame.seq})
         state
 
+      Bitwise.band(flags, Frame.flag_control()) != 0 ->
+        handle_control(frame)
+        update_in(state, [:stats, :control], &(&1 + 1))
+
       Bitwise.band(flags, Frame.flag_data()) != 0 ->
         reassemble(frame, state)
 
       true ->
         state
+    end
+  end
+
+  defp handle_control(%Frame{} = frame) do
+    tunnel_hex = Base.encode16(frame.tunnel_id, case: :lower)
+
+    case Jason.decode(frame.payload) do
+      {:ok, %{"op" => "announce", "network" => network, "ref" => ref} = body}
+      when is_binary(network) and is_binary(ref) ->
+        meta = Map.get(body, "meta", %{})
+
+        result =
+          Networks.announce(
+            network,
+            ref,
+            Map.merge(Map.new(meta), %{from_tunnel: true, force: true})
+          )
+
+        Logger.debug("tunnel control announce #{network}/#{ref}: #{inspect(result)}")
+
+        ack = Frame.encode(Frame.ack_frame(frame.tunnel_id, frame.seq))
+        maybe_send_ack(frame.tunnel_id, ack)
+
+        Phoenix.PubSub.broadcast(
+          Isthmus.PubSub,
+          "tunnel:events",
+          {:tunnel_control, %{tunnel_id: tunnel_hex, op: "announce", network: network, ref: ref}}
+        )
+
+        :ok
+
+      {:ok, other} ->
+        Logger.debug("tunnel control ignored: #{inspect(other)}")
+        :ok
+
+      {:error, _} ->
+        Logger.debug("tunnel control decode failed for #{tunnel_hex}")
+        :ok
     end
   end
 
@@ -237,15 +327,34 @@ defmodule Isthmus.Tunnel.Engine do
         payload_net = network_atom(peer.payload_network)
         adapter = Networks.adapter!(payload_net)
 
-        if function_exported?(adapter, :send_raw, 2) do
-          adapter.send_raw(payload, %{direction: :from_tunnel, tunnel_id: tunnel_hex})
-        else
-          Logger.info(
-            "tunnel delivered #{byte_size(payload)} bytes for #{tunnel_hex} (no inject)"
-          )
+        result =
+          if function_exported?(adapter, :send_raw, 2) do
+            adapter.send_raw(payload, %{
+              direction: :from_tunnel,
+              from_tunnel: true,
+              tunnel_id: tunnel_hex
+            })
+          else
+            Logger.warning(
+              "tunnel delivered #{byte_size(payload)} bytes for #{tunnel_hex} but #{payload_net} has no send_raw/2"
+            )
 
-          :ok
-        end
+            {:error, :adapter_no_raw}
+          end
+
+        Phoenix.PubSub.broadcast(
+          Isthmus.PubSub,
+          "tunnel:events",
+          {:tunnel_delivered,
+           %{
+             tunnel_id: tunnel_hex,
+             payload_network: peer.payload_network,
+             bytes: byte_size(payload),
+             result: result
+           }}
+        )
+
+        result
 
       nil ->
         Logger.debug("inbound frame for unknown tunnel #{tunnel_hex}")
@@ -268,10 +377,24 @@ defmodule Isthmus.Tunnel.Engine do
 
   defp network_atom(name) when is_binary(name) do
     case name do
-      "reticulum" -> :reticulum
-      "meshcore" -> :meshcore
-      "nostr" -> :nostr
-      other -> String.to_atom(other)
+      "reticulum" ->
+        :reticulum
+
+      "meshcore" ->
+        :meshcore
+
+      "nostr" ->
+        :nostr
+
+      "meshtastic" ->
+        :meshtastic
+
+      other ->
+        try do
+          String.to_existing_atom(other)
+        rescue
+          ArgumentError -> String.to_atom(other)
+        end
     end
   end
 

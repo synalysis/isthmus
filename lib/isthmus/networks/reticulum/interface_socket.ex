@@ -11,6 +11,7 @@ defmodule Isthmus.Networks.Reticulum.InterfaceSocket do
   require Logger
 
   alias Isthmus.Tunnel.Engine
+  alias Isthmus.Tunnel.Frame
 
   @flag 0x7E
   @esc 0x7D
@@ -94,7 +95,14 @@ defmodule Isthmus.Networks.Reticulum.InterfaceSocket do
         {frames, client} = hdlc_feed(client, data)
 
         Enum.each(frames, fn frame ->
-          Engine.handle_inbound_frame(frame)
+          # ISTH frames are tunnel carrier traffic; everything else is island RNS.
+          case Frame.decode(frame) do
+            {:ok, _, _} ->
+              Engine.handle_inbound_frame(frame)
+
+            {:error, _} ->
+              Engine.ingest_carrier_blob("reticulum", frame, %{source: "interface_socket"})
+          end
         end)
 
         :inet.setopts(socket, active: :once)

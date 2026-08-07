@@ -28,4 +28,15 @@ defmodule Isthmus.Tunnel.FrameTest do
     assert length(frames) > 1
     assert Enum.all?(frames, fn f -> byte_size(Frame.encode(f)) <= 200 end)
   end
+
+  test "control_frame round-trip" do
+    payload = ~s({"op":"announce","ref":"abc"})
+    frame = Frame.control_frame(<<9::128>>, 3, payload)
+    assert Bitwise.band(frame.flags, Frame.flag_control()) != 0
+
+    encoded = Frame.encode(frame)
+    assert {:ok, decoded, <<>>} = Frame.decode(encoded)
+    assert decoded.payload == payload
+    assert decoded.seq == 3
+  end
 end

@@ -16,7 +16,6 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   alias Isthmus.Networks.MeshCore.BLETransport
   alias Isthmus.Networks.MeshCore.Protocol
   alias Isthmus.Networks.MeshCore.USBTransport
-  alias Isthmus.Tunnel.Engine
 
   @channels_table :isthmus_meshcore_channels
   @status_table :isthmus_meshcore_status
@@ -364,7 +363,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   defp apply_frame(frame, state) do
     case Protocol.parse_frame(frame) do
       {:raw_data, payload} ->
-        Engine.handle_inbound_frame(payload)
+        # ISTH → Engine; otherwise MeshCore island bytes for meshcore-payload tunnels.
+        Isthmus.Tunnel.Engine.ingest_carrier_blob("meshcore", payload, %{source: "companion_raw"})
         state
 
       {:advert, pubkey_hex} ->

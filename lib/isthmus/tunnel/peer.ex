@@ -33,8 +33,8 @@ defmodule Isthmus.Tunnel.Peer do
       :meta
     ])
     |> validate_required([:name, :payload_network, :carrier_network, :peer_ref, :tunnel_id])
-    |> validate_inclusion(:payload_network, ~w(reticulum meshcore nostr))
-    |> validate_inclusion(:carrier_network, ~w(reticulum meshcore nostr))
+    |> validate_inclusion(:payload_network, ~w(reticulum meshcore nostr meshtastic))
+    |> validate_inclusion(:carrier_network, ~w(reticulum meshcore nostr meshtastic))
     |> unique_constraint(:tunnel_id)
   end
 end

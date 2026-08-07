@@ -205,11 +205,14 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
             <select class="select select-bordered" name="peer[payload_network]">
               <option value="reticulum">Payload: reticulum</option>
               <option value="meshcore">Payload: meshcore</option>
+              <option value="nostr">Payload: nostr</option>
+              <option value="meshtastic">Payload: meshtastic</option>
             </select>
             <select class="select select-bordered" name="peer[carrier_network]">
               <option value="meshcore">Carrier: meshcore</option>
               <option value="reticulum">Carrier: reticulum</option>
               <option value="nostr">Carrier: nostr</option>
+              <option value="meshtastic">Carrier: meshtastic</option>
             </select>
             <button class="btn btn-primary md:col-span-2" type="submit">Create</button>
           </div>

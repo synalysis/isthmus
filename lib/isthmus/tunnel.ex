@@ -1,5 +1,11 @@
 defmodule Isthmus.Tunnel do
-  @moduledoc "Tunnel peer management and send API."
+  @moduledoc """
+  Tunnel peer management and send API.
+
+  Opaque island bridging: same-protocol packets are framed (ISTH) and carried over
+  another network. See `Isthmus.Tunnel.Bridge` for auto-forward / announce fan-out
+  and `Isthmus.Tunnel.Engine` for drain, reassembly, and inject.
+  """
 
   import Ecto.Query
   alias Isthmus.Announce.Sightings

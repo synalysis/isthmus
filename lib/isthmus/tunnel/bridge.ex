@@ -1,0 +1,143 @@
+defmodule Isthmus.Tunnel.Bridge do
+  @moduledoc """
+  Island traffic producer for opaque tunnels.
+
+  * `forward_packet/3` — wrap local same-protocol packets into the tunnel outbox
+    for every enabled peer whose `payload_network` matches.
+  * `forward_announce/3` — fan announce/advert intent as tunnel **control** frames
+    so remote Isthmus nodes re-announce on their island (without looping).
+  """
+
+  require Logger
+
+  alias Isthmus.Announce.Dedup
+  alias Isthmus.Announce.Governor
+  alias Isthmus.Tunnel
+  alias Isthmus.Tunnel.{Frame, Outbox, Peer}
+  alias Isthmus.Repo
+
+  import Ecto.Query
+
+  @packet_dedup_ttl 30
+  @announce_dedup_ttl 60
+
+  @doc """
+  Enqueue an opaque island packet onto matching tunnel peers.
+
+  Skips when `opts[:from_tunnel]` is set (loop prevention) or the packet was
+  recently forwarded (hash dedup).
+  """
+  def forward_packet(payload_network, packet, opts \\ %{})
+
+  def forward_packet(payload_network, packet, opts)
+      when is_binary(payload_network) and is_binary(packet) and byte_size(packet) > 0 do
+    opts = Map.new(opts)
+
+    cond do
+      truthy?(opts[:from_tunnel] || opts["from_tunnel"]) ->
+        :ok
+
+      recently_seen_packet?(packet) ->
+        :ok
+
+      true ->
+        peers = peers_for_payload(payload_network)
+
+        Enum.each(peers, fn peer ->
+          case Tunnel.send_payload(peer, packet, %{
+                 "kind" => "data",
+                 "source" => opts[:source] || opts["source"] || "island"
+               }) do
+            {:ok, _} -> :ok
+            {:error, reason} -> Logger.debug("tunnel forward_packet failed: #{inspect(reason)}")
+          end
+        end)
+
+        :ok
+    end
+  end
+
+  def forward_packet(_, _, _), do: :ok
+
+  @doc """
+  Fan an announce/advert control message to tunnels for `payload_network`.
+
+  Remote Engine applies `Networks.announce/3` with `from_tunnel: true`.
+  """
+  def forward_announce(payload_network, identity_ref, meta \\ %{})
+
+  def forward_announce(payload_network, identity_ref, meta)
+      when is_binary(payload_network) and is_binary(identity_ref) and identity_ref != "" do
+    meta = Map.new(meta)
+
+    if truthy?(meta[:from_tunnel] || meta["from_tunnel"]) do
+      :ok
+    else
+      dedup_key = "tunnel_ann|#{payload_network}|#{String.downcase(identity_ref)}"
+
+      if Dedup.seen?(dedup_key, @announce_dedup_ttl) do
+        :ok
+      else
+        payload =
+          Jason.encode!(%{
+            "v" => 1,
+            "op" => "announce",
+            "network" => to_string(payload_network),
+            "ref" => String.downcase(identity_ref),
+            "meta" => stringify_meta(meta)
+          })
+
+        peers_for_payload(payload_network)
+        |> Enum.each(fn peer ->
+          case Governor.allow?(:tunnel_control, peer.carrier_network, peer.tunnel_id) do
+            :ok -> enqueue_control(peer, payload)
+            {:drop, _} -> :ok
+          end
+        end)
+
+        :ok
+      end
+    end
+  end
+
+  def forward_announce(_, _, _), do: :ok
+
+  @doc "Enabled peers that carry this payload network."
+  def peers_for_payload(payload_network) when is_binary(payload_network) do
+    net = to_string(payload_network)
+
+    Peer
+    |> where([p], p.enabled == true and p.payload_network == ^net)
+    |> order_by([p], asc: p.name)
+    |> Repo.all()
+  end
+
+  defp enqueue_control(%Peer{} = peer, payload) when is_binary(payload) do
+    Outbox.enqueue(
+      "tunnel:#{peer.tunnel_id}",
+      peer.peer_ref,
+      payload,
+      %{
+        "payload_network" => peer.payload_network,
+        "carrier_network" => peer.carrier_network,
+        "tunnel_id" => peer.tunnel_id,
+        "seq" => peer.next_seq,
+        "kind" => "control"
+      }
+    )
+  end
+
+  defp recently_seen_packet?(packet) do
+    hash = Base.encode16(Frame.hash16(packet), case: :lower)
+    Dedup.seen?("tunnel_pkt|#{hash}", @packet_dedup_ttl)
+  end
+
+  defp truthy?(v), do: v in [true, "true", "1", 1]
+
+  defp stringify_meta(meta) when is_map(meta) do
+    Map.new(meta, fn
+      {k, v} when is_atom(k) -> {Atom.to_string(k), v}
+      {k, v} -> {k, v}
+    end)
+  end
+end

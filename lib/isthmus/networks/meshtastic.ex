@@ -1,13 +1,15 @@
 defmodule Isthmus.Networks.Meshtastic do
   @moduledoc """
-  Meshtastic adapter stub.
+  Meshtastic adapter.
 
-  Not a live radio client yet — implements `Isthmus.NetworkAdapter` so registration,
-  QR presentation, and health surfaces can grow without core rewrites.
-
-  See `docs/guides/meshtastic_adapter.md` for the integration guide.
+  Identity/QR surfaces are live; radio DM bridging awaits a serial/MQTT client
+  (see `docs/guides/meshtastic_adapter.md`). Opaque tunnel frames are supported
+  via the in-memory `Meshtastic.Transport` so Meshtastic can be a carrier or
+  payload network in tunnel peers today.
   """
   @behaviour Isthmus.NetworkAdapter
+
+  alias Isthmus.Networks.Meshtastic.Transport
 
   @impl true
   def network_id, do: :meshtastic
@@ -67,11 +69,20 @@ defmodule Isthmus.Networks.Meshtastic do
 
   @impl true
   def health do
-    %{
-      network: :meshtastic,
-      status: :stub,
-      detail: "Adapter stub — see docs/guides/meshtastic_adapter.md"
-    }
+    transport =
+      try do
+        Transport.health()
+      catch
+        :exit, _ -> %{status: :not_started}
+      end
+
+    Map.merge(
+      %{
+        network: :meshtastic,
+        detail: "Meshtastic adapter — tunnel send_raw via Transport stub"
+      },
+      transport
+    )
   end
 
   @impl true
@@ -84,5 +95,7 @@ defmodule Isthmus.Networks.Meshtastic do
   def send_message(_ref, _body, _opts), do: {:error, :not_implemented}
 
   @impl true
-  def send_raw(_payload, _opts), do: {:error, :not_implemented}
+  def send_raw(payload, opts) when is_binary(payload) do
+    Transport.send_raw(payload, opts)
+  end
 end

@@ -53,6 +53,7 @@ Prefer official Meshtastic deep links or `!xxxxxxxx` node ids. Keep `identity_pr
 
 - [x] Adapter module + registry entry (`:meshtastic`)
 - [x] Placeholder identity / QR presentation
+- [x] Opaque tunnel `send_raw/2` via in-memory `Meshtastic.Transport`
 - [ ] Live radio/MQTT transport
 - [ ] Gateway translator inbound/outbound
 - [ ] Admin health card + chaos tests against airtime budgets

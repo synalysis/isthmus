@@ -228,8 +228,10 @@ defmodule Isthmus.Networks.Reticulum do
   def estimated_bitrate(_opts), do: 1_000
 
   @impl true
-  def send_raw(payload, _opts) when is_binary(payload) do
-    # Prefer the MeshChat interface socket when connected; else sidecar packet stub.
+  def send_raw(payload, opts) when is_binary(payload) do
+    _opts = Map.new(opts)
+
+    # Prefer MeshChat IsthmusInterface clients; else inject into sidecar RNS stack.
     case Isthmus.Networks.Reticulum.InterfaceSocket.send_frame(payload) do
       :ok -> :ok
       {:error, :not_connected} -> Sidecar.send_packet(payload)
@@ -255,7 +257,9 @@ defmodule Isthmus.Networks.Reticulum do
 
   @impl true
   def announce_or_advert(ref, opts \\ %{}) do
+    opts = Map.new(opts)
     force? = opts[:force] in [true, "true", "1", 1] or opts["force"] in [true, "true", "1", 1]
+    from_tunnel? = opts[:from_tunnel] in [true, "true", "1", 1]
 
     allowed =
       if force? do
@@ -280,8 +284,12 @@ defmodule Isthmus.Networks.Reticulum do
               direction: "out",
               identity_ref: ref,
               hops: 0,
-              meta: %{source: "announce"}
+              meta: %{source: "announce", from_tunnel: from_tunnel?}
             })
+
+          unless from_tunnel? do
+            Isthmus.Tunnel.Bridge.forward_announce("reticulum", ref, %{source: "announce"})
+          end
         end
 
         case result do

@@ -113,6 +113,19 @@ defmodule Isthmus.Tunnel.Frame do
     }
   end
 
+  @doc "Single control-plane frame (announce fan-out, etc.)."
+  def control_frame(tunnel_id, seq, payload) when is_binary(payload) do
+    %__MODULE__{
+      tunnel_id: pad16(tunnel_id),
+      flags: @flag_control,
+      frag_idx: 0,
+      frag_cnt: 1,
+      seq: seq,
+      payload_hash16: hash16(payload),
+      payload: payload
+    }
+  end
+
   defp chunk(<<>>, _size), do: [<<>>]
   defp chunk(bin, size) when byte_size(bin) <= size, do: [bin]
 

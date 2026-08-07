@@ -60,7 +60,17 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
   end
 
   def send_packet(binary) when is_binary(binary) do
-    GenServer.call(__MODULE__, {:send_packet, binary})
+    GenServer.call(
+      __MODULE__,
+      {:rpc, "packet", %{"data" => Base.encode64(binary)}},
+      @call_timeout
+    )
+    |> case do
+      {:ok, _} -> :ok
+      {:error, reason, _} -> {:error, reason}
+      {:error, reason} -> {:error, reason}
+      other -> other
+    end
   end
 
   def send_lxmf(attrs) when is_map(attrs) do
@@ -132,15 +142,6 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
        meta: state.meta
      }, state}
   end
-
-  def handle_call({:send_packet, binary}, _from, %{port: port, status: status} = state)
-      when is_port(port) and status in [:online, :live] do
-    msg = Jason.encode!(%{"type" => "packet", "data" => Base.encode64(binary)})
-    true = Port.command(port, msg)
-    {:reply, :ok, state}
-  end
-
-  def handle_call({:send_packet, _}, _from, state), do: {:reply, {:error, :not_connected}, state}
 
   def handle_call({:rpc, _type, _payload}, _from, %{status: :stub} = state) do
     {:reply, {:error, :stub_mode}, state}

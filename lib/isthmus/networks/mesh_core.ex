@@ -106,8 +106,10 @@ defmodule Isthmus.Networks.MeshCore do
 
   @impl true
   def announce_or_advert(ref, opts \\ %{}) do
+    opts = Map.new(opts)
     force? = truthy?(opts[:force] || opts["force"])
     flood? = truthy?(opts[:flood] || opts["flood"])
+    from_tunnel? = truthy?(opts[:from_tunnel] || opts["from_tunnel"])
 
     allowed =
       if force? do
@@ -132,8 +134,15 @@ defmodule Isthmus.Networks.MeshCore do
               direction: "out",
               identity_ref: ref,
               hops: if(flood?, do: nil, else: 0),
-              meta: %{source: "self_advert", flood: flood?}
+              meta: %{source: "self_advert", flood: flood?, from_tunnel: from_tunnel?}
             })
+
+          unless from_tunnel? do
+            Isthmus.Tunnel.Bridge.forward_announce("meshcore", ref, %{
+              source: "self_advert",
+              flood: flood?
+            })
+          end
         end
 
         result
