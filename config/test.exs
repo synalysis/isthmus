@@ -14,6 +14,15 @@ config :isthmus, Isthmus.Repo,
 config :isthmus, vault_secret: "test-vault-secret-not-for-production!!"
 config :isthmus, rns_sync_on_boot: false
 
+# Do not open real USB serial ports during the test suite.
+config :isthmus, Isthmus.Networks.MeshCore.Discover,
+  probe: fn _path, _meta -> :unknown end,
+  enumerate: fn -> %{} end,
+  env: fn _key -> nil end
+
+# App SyntheticNode must not poll the sandbox DB between tests.
+config :isthmus, Isthmus.Networks.MeshCore.SyntheticNode, autoload: false
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :isthmus, IsthmusWeb.Endpoint,

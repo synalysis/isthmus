@@ -311,6 +311,44 @@ defmodule Isthmus.TopologyTest do
     assert Enum.all?(network_nodes, &is_nil(&1.meta.severity))
   end
 
+  describe "bridged islands" do
+    test "a bridged network is flagged and called out in its detail" do
+      {:ok, _peer} =
+        Tunnel.create_peer(%{
+          name: "Island",
+          peer_ref: "aa" <> String.duplicate("b1", 31),
+          payload_network: "meshcore",
+          carrier_network: "reticulum"
+        })
+
+      graph = Topology.build(:all, bridged_networks: ["meshcore"])
+
+      meshcore = Enum.find(graph.nodes, &(&1.kind == :network and &1.meta.network == "meshcore"))
+      assert meshcore.meta.bridged? == true
+
+      detail = Topology.detail(graph, meshcore.id)
+      assert detail.bridged? == true
+      assert detail.subtitle =~ "bridged island"
+    end
+
+    test "networks without a bridge are not flagged" do
+      {:ok, _peer} =
+        Tunnel.create_peer(%{
+          name: "Plain",
+          peer_ref: "cc" <> String.duplicate("b2", 31),
+          payload_network: "meshcore",
+          carrier_network: "reticulum"
+        })
+
+      graph = Topology.build(:all, bridged_networks: [])
+
+      assert Enum.all?(
+               Enum.filter(graph.nodes, &(&1.kind == :network)),
+               &(&1.meta.bridged? == false)
+             )
+    end
+  end
+
   defp owner_hex do
     {_seckey, pubkey} = Secp256k1.keypair(:xonly)
     Base.encode16(pubkey, case: :lower)

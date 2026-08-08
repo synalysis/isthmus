@@ -79,8 +79,11 @@ defmodule Isthmus.Topology do
     severity_by_network = if health?, do: severity_map(), else: %{}
     sighting_by_tunnel = if health?, do: sighting_map(peers), else: %{}
 
+    bridged =
+      Keyword.get(opts, :bridged_networks) || if(health?, do: bridged_networks(), else: [])
+
     group_nodes = group_nodes(groups)
-    network_nodes = network_nodes(networks, severity_by_network)
+    network_nodes = network_nodes(networks, severity_by_network, bridged)
     peer_nodes = peer_nodes(peers, sighting_by_tunnel)
     edges = group_edges(groups, path_by_leg) ++ tunnel_edges(peers, sighting_by_tunnel)
 
@@ -174,7 +177,7 @@ defmodule Isthmus.Topology do
     end)
   end
 
-  defp network_nodes(networks, severity_by_network) do
+  defp network_nodes(networks, severity_by_network, bridged) do
     networks
     |> Enum.with_index()
     |> Enum.map(fn {network, idx} ->
@@ -184,7 +187,11 @@ defmodule Isthmus.Topology do
         label: network_label(network),
         x: @network_x,
         y: row_y(idx),
-        meta: %{network: network, severity: Map.get(severity_by_network, network)}
+        meta: %{
+          network: network,
+          severity: Map.get(severity_by_network, network),
+          bridged?: network in bridged
+        }
       }
     end)
   end
@@ -365,6 +372,7 @@ defmodule Isthmus.Topology do
       ["#{legs} leg(s)"]
       |> maybe_append(channels > 0, "#{channels} channel slot(s)")
       |> maybe_append(tunnels > 0, "#{tunnels} tunnel edge(s)")
+      |> maybe_append(meta[:bridged?] == true, "bridged island")
       |> Enum.join(" · ")
 
     %{
@@ -374,6 +382,7 @@ defmodule Isthmus.Topology do
       subtitle: subtitle,
       network: meta.network,
       severity: meta.severity,
+      bridged?: meta[:bridged?] == true,
       legs: connected
     }
   end
@@ -397,6 +406,20 @@ defmodule Isthmus.Topology do
   end
 
   # --- helpers ----------------------------------------------------------------
+
+  # A bridged network carries whole foreign packets rather than just our own
+  # traffic, so it's worth calling out on the map.
+  defp bridged_networks do
+    if Isthmus.Networks.MeshCore.BridgeLink.health()[:status] == :online do
+      ["meshcore"]
+    else
+      []
+    end
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
+  end
 
   defp severity_map do
     Health.report_all()

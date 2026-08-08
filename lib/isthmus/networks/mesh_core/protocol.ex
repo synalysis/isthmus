@@ -12,6 +12,8 @@ defmodule Isthmus.Networks.MeshCore.Protocol do
   @cmd_get_contacts 4
   @cmd_send_self_advert 7
   @cmd_sync_next_message 10
+  @cmd_set_radio_params 11
+  @cmd_set_radio_tx_power 12
   @cmd_reset_path 13
   @cmd_device_query 22
   @cmd_send_raw_data 25
@@ -115,6 +117,22 @@ defmodule Isthmus.Networks.MeshCore.Protocol do
     <<@cmd_set_channel, idx, name_bin::binary, secret_bin::binary>>
   end
 
+  @doc """
+  CMD_SET_RADIO_PARAMS — freq and bw as unsigned LE int (MHz×1000 / kHz×1000),
+  then sf (5–12) and cr (5–8).
+  """
+  def set_radio_params_frame(freq_mhz, bw_khz, sf, cr)
+      when is_number(freq_mhz) and is_number(bw_khz) and sf in 5..12 and cr in 5..8 do
+    freq_u = round(freq_mhz * 1000)
+    bw_u = round(bw_khz * 1000)
+    <<@cmd_set_radio_params, freq_u::little-32, bw_u::little-32, sf, cr>>
+  end
+
+  @doc "CMD_SET_RADIO_TX_POWER — tx power in dBm."
+  def set_tx_power_frame(tx_dbm) when is_integer(tx_dbm) and tx_dbm in 0..30 do
+    <<@cmd_set_radio_tx_power, tx_dbm>>
+  end
+
   @doc "CMD_SEND_CHANNEL_TXT_MSG — txt_type(0) + channel_idx + timestamp + text."
   def send_channel_txt_frame(idx, text)
       when is_integer(idx) and idx in 0..7 and is_binary(text) do
@@ -183,7 +201,28 @@ defmodule Isthmus.Networks.MeshCore.Protocol do
   end
 
   def parse_frame(<<@resp_device_info, rest::binary>>), do: {:device_info, rest}
-  def parse_frame(<<@resp_self_info, rest::binary>>), do: {:self_info, rest}
+
+  # SELF_INFO is the firmware's reply to CMD_APP_START and carries this node's
+  # own public key: [adv_type][tx_power][max_tx_power][pub_key x32][lat x4]...
+  def parse_frame(
+        <<@resp_self_info, adv_type, tx_power, max_tx_power, pubkey::binary-32, rest::binary>>
+      ) do
+    radio = parse_self_info_radio(rest)
+
+    {:self_info,
+     Map.merge(
+       %{
+         adv_type: adv_type,
+         tx_power: tx_power,
+         max_tx_power: max_tx_power,
+         public_key: Base.encode16(pubkey, case: :lower),
+         name: self_info_name(rest)
+       },
+       radio
+     )}
+  end
+
+  def parse_frame(<<@resp_self_info, rest::binary>>), do: {:self_info, %{raw: rest}}
   def parse_frame(<<@resp_sent, ack::little-32>>), do: {:sent, ack}
   def parse_frame(<<@resp_no_more_messages>>), do: {:no_more_messages, true}
   def parse_frame(<<@push_raw_data, rest::binary>>), do: {:raw_data, rest}
@@ -229,6 +268,25 @@ defmodule Isthmus.Networks.MeshCore.Protocol do
 
   def parse_frame(<<code, rest::binary>>), do: {:unknown, code, rest}
   def parse_frame(_), do: {:error, :empty}
+
+  # After the public key SELF_INFO carries lat/lon, four policy bytes and the
+  # radio params (22 bytes) before the node name. Older firmware truncates.
+  defp self_info_name(<<_::binary-22, name::binary>>), do: null_term_string(name)
+  defp self_info_name(_), do: nil
+
+  defp parse_self_info_radio(
+         <<_lat::little-signed-32, _lon::little-signed-32, _multi, _loc, _telem, _manual,
+           freq::little-32, bw::little-32, sf, cr, _::binary>>
+       ) do
+    %{
+      freq_mhz: freq / 1000.0,
+      bw_khz: bw / 1000.0,
+      sf: sf,
+      cr: cr
+    }
+  end
+
+  defp parse_self_info_radio(_), do: %{}
 
   defp null_term_string(bin) when is_binary(bin) do
     case :binary.split(bin, <<0>>) do

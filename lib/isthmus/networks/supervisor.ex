@@ -13,7 +13,12 @@ defmodule Isthmus.Networks.Supervisor do
       Isthmus.Announce.Governor,
       Isthmus.Tunnel.Engine,
       Isthmus.Networks.Reticulum.InterfaceSocket,
+      # Discover before any MeshCore link opens a port.
+      Isthmus.Networks.MeshCore.Discover,
       Isthmus.Networks.MeshCore.Companion,
+      Isthmus.Networks.MeshCore.BridgeCLI,
+      Isthmus.Networks.MeshCore.BridgeLink,
+      Isthmus.Networks.MeshCore.SyntheticNode,
       Isthmus.Networks.Meshtastic.Transport,
       Isthmus.Networks.Reticulum.Sidecar,
       Isthmus.Networks.Nostr.RelayPool,

@@ -90,6 +90,35 @@ defmodule Isthmus.Tunnel.EngineTest do
     assert tunnel_id == peer.tunnel_id
   end
 
+  test "a meshcore payload is delivered through the bridge, not the companion" do
+    {:ok, peer} =
+      Tunnel.create_peer(%{
+        name: "Island peer",
+        peer_ref: "ee" <> String.duplicate("ff", 31),
+        payload_network: "meshcore",
+        carrier_network: "meshtastic"
+      })
+
+    payload = "raw-mesh-packet-#{System.unique_integer([:positive])}"
+
+    peer.tunnel_id
+    |> Frame.tunnel_id_from_string()
+    |> Frame.fragment(7, payload, 512)
+    |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1)))
+
+    _ = :sys.get_state(Engine)
+
+    assert_receive {:tunnel_delivered,
+                    %{payload_network: "meshcore", result: result, tunnel_id: tunnel_id}},
+                   1_000
+
+    assert tunnel_id == peer.tunnel_id
+
+    # :bridge_disabled can only come from BridgeLink, so the engine preferred
+    # inject_raw/2 over the companion's send_raw/2.
+    assert result == {:error, :bridge_disabled}
+  end
+
   test "outbox uses msg.payload (not the struct) when draining", %{peer: peer} do
     assert {:ok, msg} = Tunnel.send_payload(peer, "payload-bytes")
     assert is_binary(msg.payload)

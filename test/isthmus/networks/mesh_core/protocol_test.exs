@@ -61,4 +61,48 @@ defmodule Isthmus.Networks.MeshCore.ProtocolTest do
     assert msg.body == "v3 msg"
     assert msg.snr == 10
   end
+
+  test "parse_frame self_info extracts our own public key, name and radio" do
+    pubkey = :binary.copy(<<0xA7>>, 32)
+
+    # [code][adv_type][tx_power][max_tx_power][pub_key x32][lat][lon]
+    # [multi_acks][adv_loc_policy][telemetry][manual_add][freq][bw][sf][cr][name]
+    frame =
+      <<0x05, 1, 20, 30, pubkey::binary, 1_000_000::little-signed-32,
+        -2_000_000::little-signed-32, 0, 1, 0, 0, 867_500::little-32, 250_000::little-32, 11, 5,
+        "Isthmus Node", 0>>
+
+    assert {:self_info, info} = Protocol.parse_frame(frame)
+    assert info.public_key == String.duplicate("a7", 32)
+    assert info.adv_type == 1
+    assert info.tx_power == 20
+    assert info.max_tx_power == 30
+    assert info.name == "Isthmus Node"
+    assert_in_delta info.freq_mhz, 867.5, 0.001
+    assert_in_delta info.bw_khz, 250.0, 0.001
+    assert info.sf == 11
+    assert info.cr == 5
+  end
+
+  test "set_radio_params_frame and set_tx_power_frame encode protocol cmds" do
+    frame = Protocol.set_radio_params_frame(910.525, 62.5, 7, 5)
+    assert <<0x0B, freq::little-32, bw::little-32, 7, 5>> = frame
+    assert freq == 910_525
+    assert bw == 62_500
+
+    assert Protocol.set_tx_power_frame(10) == <<0x0C, 10>>
+  end
+
+  test "parse_frame self_info without the trailing name still yields the key" do
+    pubkey = :binary.copy(<<0x5B>>, 32)
+    frame = <<0x05, 1, 20, 30, pubkey::binary>>
+
+    assert {:self_info, info} = Protocol.parse_frame(frame)
+    assert info.public_key == String.duplicate("5b", 32)
+    assert is_nil(info.name)
+  end
+
+  test "parse_frame self_info too short to hold a key falls back to raw" do
+    assert {:self_info, %{raw: <<1, 2>>}} = Protocol.parse_frame(<<0x05, 1, 2>>)
+  end
 end

@@ -1,6 +1,7 @@
 defmodule Isthmus.Tunnel.BridgeTest do
   use Isthmus.DataCase, async: false
 
+  alias Isthmus.Networks.MeshCore.Packet
   alias Isthmus.Tunnel
   alias Isthmus.Tunnel.{Bridge, Outbox}
 
@@ -28,6 +29,73 @@ defmodule Isthmus.Tunnel.BridgeTest do
     before = length(Outbox.due(50))
     assert :ok = Bridge.forward_packet("reticulum", "loop", %{from_tunnel: true})
     assert length(Outbox.due(50)) == before
+  end
+
+  test "MeshCore dedup is path-insensitive so cyclic-tunnel re-floods collapse" do
+    {:ok, mc} =
+      Tunnel.create_peer(%{
+        name: "MeshCore peer",
+        peer_ref: "cc" <> String.duplicate("dd", 31),
+        payload_network: "meshcore",
+        carrier_network: "meshtastic"
+      })
+
+    payload = :crypto.strong_rand_bytes(24)
+
+    flood0 =
+      Packet.build(Packet.route_flood(), Packet.type_advert(), 0, <<>>, payload)
+      |> Packet.encode()
+
+    # Same payload re-flooded with an extra bridge hash appended (as arrives via
+    # a second tunnel in an A–B–C triangle, or as the local repeater's echo).
+    reflood =
+      Packet.build(
+        Packet.route_flood(),
+        Packet.type_advert(),
+        Packet.encode_path_len(1),
+        <<0xAB>>,
+        payload
+      )
+      |> Packet.encode()
+
+    assert :ok = Bridge.forward_packet("meshcore", flood0, %{source: "island"})
+    assert :ok = Bridge.forward_packet("meshcore", reflood, %{source: "island"})
+
+    due = Outbox.due(50) |> Enum.filter(&(&1.channel == "tunnel:#{mc.tunnel_id}"))
+    assert Enum.any?(due, &(&1.payload == flood0))
+    refute Enum.any?(due, &(&1.payload == reflood))
+  end
+
+  test "mark_forwarded suppresses the injected packet's echo across a bridge hop" do
+    {:ok, mc} =
+      Tunnel.create_peer(%{
+        name: "MeshCore echo peer",
+        peer_ref: "ee" <> String.duplicate("ff", 31),
+        payload_network: "meshcore",
+        carrier_network: "meshtastic"
+      })
+
+    payload = :crypto.strong_rand_bytes(20)
+
+    injected =
+      Packet.build(Packet.route_flood(), Packet.type_advert(), 0, <<>>, payload)
+      |> Packet.encode()
+
+    echo =
+      Packet.build(
+        Packet.route_flood(),
+        Packet.type_advert(),
+        Packet.encode_path_len(1),
+        <<0x42>>,
+        payload
+      )
+      |> Packet.encode()
+
+    assert :ok = Bridge.mark_forwarded(injected)
+    assert :ok = Bridge.forward_packet("meshcore", echo, %{source: "bridge"})
+
+    due = Outbox.due(50) |> Enum.filter(&(&1.channel == "tunnel:#{mc.tunnel_id}"))
+    refute Enum.any?(due, &(&1.payload == echo))
   end
 
   test "forward_announce enqueues control outbox rows", %{peer: peer} do

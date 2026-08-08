@@ -404,7 +404,8 @@ defmodule Isthmus.Registrations do
            create_bridge_group(owner_hex, Map.merge(Map.new(attrs), %{display_name: name})),
          {:ok, group} <- link_meshcore_channel(group, idx, channel.secret_hex),
          {:ok, group} <- ensure_bridge_rns_proxy(group),
-         {:ok, group} <- ensure_nostr_proxy(group) do
+         {:ok, group} <- ensure_nostr_proxy(group),
+         {:ok, group} <- ensure_meshcore_proxy(group) do
       {:ok, group}
     end
   end
@@ -463,6 +464,76 @@ defmodule Isthmus.Registrations do
   end
 
   def nostr_proxy_leg(_), do: nil
+
+  @doc """
+  Ensure the group has an Isthmus-owned MeshCore proxy (synthetic contact identity).
+
+  Works for registration and bridge groups. Live on-air when the island bridge
+  is online (`SyntheticNode`); otherwise the contact URI is still available.
+  """
+  def ensure_meshcore_proxy(%RegistrationGroup{} = group) do
+    group = get_group!(group.id)
+
+    if Enum.any?(group.legs, &(&1.network == "meshcore" and &1.role == "proxy")) do
+      {:ok, group}
+    else
+      display = group.display_name || "Isthmus"
+
+      case mint_meshcore_proxy(group, display) do
+        :ok ->
+          reload_meshcore_synthetics()
+          {:ok, get_group!(group.id)}
+
+        {:error, _} = err ->
+          err
+      end
+    end
+  end
+
+  @doc "MeshCore proxy leg for a group, if minted."
+  def meshcore_proxy_leg(%RegistrationGroup{legs: legs}) when is_list(legs) do
+    Enum.find(legs, &(&1.network == "meshcore" and &1.role == "proxy"))
+  end
+
+  def meshcore_proxy_leg(_), do: nil
+
+  @doc "All vaulted meshcore/proxy legs across active groups."
+  def list_meshcore_proxy_legs do
+    list_all()
+    |> Enum.filter(&(&1.status == "active"))
+    |> Enum.flat_map(fn group ->
+      Enum.filter(group.legs, &(&1.network == "meshcore" and &1.role == "proxy"))
+    end)
+  end
+
+  @doc "Decrypt MeshCore proxy seed + public key binaries from a vaulted leg."
+  def meshcore_proxy_seed(%IdentityLeg{} = leg) do
+    if not is_binary(leg.encrypted_private_material) do
+      {:error, :missing_private_material}
+    else
+      case Vault.decrypt(leg.encrypted_private_material) do
+        {:ok, material} ->
+          case Networks.MeshCore.private_seed(material) do
+            {:ok, seed} ->
+              pub_hex =
+                material["public_key"] || material[:public_key] || leg.identity_ref
+
+              case Base.decode16(to_string(pub_hex), case: :mixed) do
+                {:ok, pub} when byte_size(pub) == 32 -> {:ok, seed, pub}
+                _ -> {:error, :invalid_public_key}
+              end
+
+            err ->
+              err
+          end
+
+        {:error, _} ->
+          {:error, :decrypt_failed}
+      end
+    end
+  end
+
+  def meshcore_proxy_seed(_), do: {:error, :missing_private_material}
 
   @doc """
   Decrypt the group's Nostr proxy seckey (32-byte binary, BIP340-normalized).
@@ -643,6 +714,12 @@ defmodule Isthmus.Registrations do
 
       group =
         case ensure_nostr_proxy(group) do
+          {:ok, g} -> g
+          {:error, _} -> group
+        end
+
+      group =
+        case ensure_meshcore_proxy(group) do
           {:ok, g} -> g
           {:error, _} -> group
         end
@@ -839,7 +916,28 @@ defmodule Isthmus.Registrations do
         encrypted_private_material: enc
       })
 
+    reload_meshcore_synthetics()
     :ok
+  end
+
+  defp mint_meshcore_proxy(group, display_name) do
+    mint_meshcore_proxy!(group, display_name)
+  rescue
+    e -> {:error, Exception.message(e)}
+  catch
+    :exit, reason -> {:error, reason}
+  end
+
+  defp reload_meshcore_synthetics do
+    cfg = Application.get_env(:isthmus, Isthmus.Networks.MeshCore.SyntheticNode, [])
+
+    if Keyword.get(cfg, :autoload, true) do
+      Isthmus.Networks.MeshCore.SyntheticNode.reload()
+    else
+      :ok
+    end
+  catch
+    :exit, _ -> :ok
   end
 
   defp insert_group(attrs) do

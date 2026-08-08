@@ -17,7 +17,9 @@ defmodule Isthmus.Gateway.Translator do
   alias Isthmus.Announce.Governor
   alias Isthmus.Gateway
   alias Isthmus.Gateway.Message
+  alias Isthmus.Networks.MeshCore
   alias Isthmus.Networks.MeshCore.Companion
+  alias Isthmus.Networks.MeshCore.SyntheticNode
   alias Isthmus.Networks.Nostr.RelayPool
   alias Isthmus.Networks.Reticulum.Sidecar
   alias Isthmus.Nostr.Crypto
@@ -255,6 +257,10 @@ defmodule Isthmus.Gateway.Translator do
     to = msg.to_ref && String.downcase(msg.to_ref)
 
     cond do
+      # Prefer synthetic proxy destination (unambiguous per-group contact).
+      is_binary(to) && Registrations.find_by_leg(:meshcore, to) ->
+        {Registrations.find_by_leg(:meshcore, to), msg}
+
       is_binary(from) && Registrations.find_by_leg(:meshcore, from) ->
         {Registrations.find_by_leg(:meshcore, from), msg}
 
@@ -266,9 +272,6 @@ defmodule Isthmus.Gateway.Translator do
           group ->
             {group, strip_address_token(msg, token)}
         end
-
-      is_binary(to) && Registrations.find_by_leg(:meshcore, to) ->
-        {Registrations.find_by_leg(:meshcore, to), msg}
 
       true ->
         {single_active_group(), msg}
@@ -415,8 +418,35 @@ defmodule Isthmus.Gateway.Translator do
 
   defp send_meshcore(group, leg, msg) do
     case meshcore_destination(group, leg, msg) do
-      {:ok, dest} -> Companion.send_text(dest, prefix_body(msg))
-      {:error, _} = err -> err
+      {:ok, dest} ->
+        body = prefix_body(msg)
+        bridge_online? = match?(%{status: :online}, MeshCore.BridgeLink.health())
+
+        cond do
+          bridge_online? ->
+            case Registrations.ensure_meshcore_proxy(group) do
+              {:ok, group} ->
+                case Registrations.meshcore_proxy_leg(group) do
+                  nil ->
+                    Companion.send_text(dest, body)
+
+                  proxy ->
+                    case SyntheticNode.send_text(proxy, dest, body) do
+                      :ok -> :ok
+                      {:error, _} -> Companion.send_text(dest, body)
+                    end
+                end
+
+              {:error, _} ->
+                Companion.send_text(dest, body)
+            end
+
+          true ->
+            Companion.send_text(dest, body)
+        end
+
+      {:error, _} = err ->
+        err
     end
   end
 

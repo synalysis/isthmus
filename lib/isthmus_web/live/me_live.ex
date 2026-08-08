@@ -1,6 +1,8 @@
 defmodule IsthmusWeb.MeLive do
   use IsthmusWeb, :live_view
 
+  alias Isthmus.Networks.MeshCore.BridgeLink
+  alias Isthmus.Networks.MeshCore.SyntheticNode
   alias Isthmus.Networks.Reticulum
   alias Isthmus.QR
   alias Isthmus.Registrations
@@ -22,12 +24,14 @@ defmodule IsthmusWeb.MeLive do
      |> assign(:path_by_leg, %{})
      |> assign(:selected, nil)
      |> assign(:detail, nil)
+     |> assign(:bridge_online?, false)
+     |> assign(:synthetic_by_key, %{})
      |> load_groups()}
   end
 
   @impl true
   def handle_info(:refresh_paths, socket) do
-    {:noreply, socket |> assign_path_status() |> assign_graph()}
+    {:noreply, socket |> assign_meshcore_status() |> assign_path_status() |> assign_graph()}
   end
 
   def handle_info({:sighting, _}, socket), do: {:noreply, assign_graph(socket)}
@@ -176,13 +180,49 @@ defmodule IsthmusWeb.MeLive do
     end
   end
 
+  def handle_event("ensure_meshcore_proxy", %{"id" => id}, socket) do
+    group = Registrations.get_group!(id)
+
+    if group.owner_pubkey_hex != socket.assigns.current_user.pubkey_hex do
+      {:noreply, put_flash(socket, :error, "Not allowed.")}
+    else
+      case Registrations.ensure_meshcore_proxy(group) do
+        {:ok, _} ->
+          {:noreply,
+           socket
+           |> put_flash(
+             :info,
+             "MeshCore contact ready — scan the QR; live when the island bridge is online."
+           )
+           |> load_groups()}
+
+        {:error, reason} ->
+          {:noreply,
+           put_flash(socket, :error, "Could not mint MeshCore proxy: #{format_reason(reason)}")}
+      end
+    end
+  end
+
   defp load_groups(socket) do
     groups = Registrations.get_for_owner(socket.assigns.current_user.pubkey_hex)
 
     socket
     |> assign(:groups, groups)
+    |> assign_meshcore_status()
     |> assign_path_status()
     |> assign_graph()
+  end
+
+  defp assign_meshcore_status(socket) do
+    bridge_online? = match?(%{status: :online}, BridgeLink.health())
+
+    by_key =
+      SyntheticNode.identities()
+      |> Map.new(fn id -> {id.public_key, id} end)
+
+    socket
+    |> assign(:bridge_online?, bridge_online?)
+    |> assign(:synthetic_by_key, by_key)
   end
 
   defp assign_graph(socket) do
@@ -307,6 +347,18 @@ defmodule IsthmusWeb.MeLive do
                   Mint Nostr proxy
                 </button>
                 <button
+                  :if={
+                    group.status == "active" and
+                      not Enum.any?(group.legs, &(&1.network == "meshcore" and &1.role == "proxy"))
+                  }
+                  class="btn btn-secondary btn-sm"
+                  id={"ensure-meshcore-#{group.id}"}
+                  phx-click="ensure_meshcore_proxy"
+                  phx-value-id={group.id}
+                >
+                  Mint MeshCore contact
+                </button>
+                <button
                   :if={group.status == "active" and announceable?(group)}
                   class="btn btn-outline btn-sm"
                   phx-click="announce_all"
@@ -335,6 +387,15 @@ defmodule IsthmusWeb.MeLive do
                         <% {label, class} = path_badge(@path_by_leg, leg) %>
                         <span
                           id={"rns-path-#{leg.id}"}
+                          class={["badge badge-sm", class]}
+                        >
+                          {label}
+                        </span>
+                      <% end %>
+                      <%= if leg.network == "meshcore" and leg.role == "proxy" do %>
+                        <% {label, class} = meshcore_badge(@bridge_online?, @synthetic_by_key, leg) %>
+                        <span
+                          id={"meshcore-live-#{leg.id}"}
                           class={["badge badge-sm", class]}
                         >
                           {label}
@@ -422,10 +483,23 @@ defmodule IsthmusWeb.MeLive do
   defp announce_hint(:reticulum), do: announce_hint("reticulum")
 
   defp announce_hint("meshcore"),
-    do: "Sends a companion self-advert on the connected MeshCore radio (zero-hop)."
+    do:
+      "Flood-adverts this group's MeshCore contact on the island bridge when online; otherwise companion self-advert."
 
   defp announce_hint(:meshcore), do: announce_hint("meshcore")
   defp announce_hint(_), do: "Send a discovery announce on this network."
+
+  defp meshcore_badge(true, synthetic_by_key, leg) do
+    case Map.get(synthetic_by_key, String.downcase(leg.identity_ref)) do
+      %{path_peers: n} when is_integer(n) ->
+        {"live on bridge · #{n} paths", "badge-success"}
+
+      _ ->
+        {"bridge online", "badge-success"}
+    end
+  end
+
+  defp meshcore_badge(false, _, _), do: {"bridge offline", "badge-warning"}
 
   defp summarize_announce_results(results) do
     parts =

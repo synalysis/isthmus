@@ -12,6 +12,7 @@ defmodule Isthmus.Tunnel.Bridge do
 
   alias Isthmus.Announce.Dedup
   alias Isthmus.Announce.Governor
+  alias Isthmus.Networks.MeshCore.Packet
   alias Isthmus.Tunnel
   alias Isthmus.Tunnel.{Frame, Outbox, Peer}
   alias Isthmus.Repo
@@ -37,7 +38,7 @@ defmodule Isthmus.Tunnel.Bridge do
       truthy?(opts[:from_tunnel] || opts["from_tunnel"]) ->
         :ok
 
-      recently_seen_packet?(packet) ->
+      recently_seen_packet?(payload_network, packet) ->
         :ok
 
       true ->
@@ -102,6 +103,19 @@ defmodule Isthmus.Tunnel.Bridge do
 
   def forward_announce(_, _, _), do: :ok
 
+  @doc """
+  Record `packet` as already bridged.
+
+  Call this before injecting a tunnel-delivered packet back onto an island, so
+  that if the island echoes it to us we don't send it back down the tunnel.
+  """
+  def mark_forwarded(packet) when is_binary(packet) and byte_size(packet) > 0 do
+    _ = recently_seen_packet?("meshcore", packet)
+    :ok
+  end
+
+  def mark_forwarded(_), do: :ok
+
   @doc "Enabled peers that carry this payload network."
   def peers_for_payload(payload_network) when is_binary(payload_network) do
     net = to_string(payload_network)
@@ -127,9 +141,29 @@ defmodule Isthmus.Tunnel.Bridge do
     )
   end
 
-  defp recently_seen_packet?(packet) do
-    hash = Base.encode16(Frame.hash16(packet), case: :lower)
-    Dedup.seen?("tunnel_pkt|#{hash}", @packet_dedup_ttl)
+  # Dedup key must be path-INSENSITIVE for MeshCore so a flood that reaches us
+  # via multiple tunnels in a cyclic topology (A–B–C triangle) collapses to one
+  # forward, and so an injected packet's own echo (with an extra bridge path
+  # hash appended by the local repeater) is recognized. This mirrors MeshCore's
+  # `wasSeen` which hashes `type ‖ payload` and ignores the accumulating path.
+  defp recently_seen_packet?(payload_network, packet) do
+    Dedup.seen?(dedup_key(payload_network, packet), @packet_dedup_ttl)
+  end
+
+  defp dedup_key("meshcore", packet) do
+    case Packet.decode(packet) do
+      {:ok, decoded} ->
+        "tunnel_pkt|meshcore|" <> Base.encode16(Packet.packet_hash(decoded), case: :lower)
+
+      _ ->
+        fallback_dedup_key(packet)
+    end
+  end
+
+  defp dedup_key(_payload_network, packet), do: fallback_dedup_key(packet)
+
+  defp fallback_dedup_key(packet) do
+    "tunnel_pkt|" <> Base.encode16(Frame.hash16(packet), case: :lower)
   end
 
   defp truthy?(v), do: v in [true, "true", "1", 1]

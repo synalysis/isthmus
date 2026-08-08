@@ -4,7 +4,10 @@ defmodule Isthmus.Networks.MeshCore do
 
   alias Isthmus.Announce.Governor
   alias Isthmus.Announce.Sightings
+  alias Isthmus.Networks.MeshCore.BridgeLink
   alias Isthmus.Networks.MeshCore.Companion
+  alias Isthmus.Networks.MeshCore.Crypto
+  alias Isthmus.Networks.MeshCore.SyntheticNode
 
   @impl true
   def network_id, do: :meshcore
@@ -42,7 +45,7 @@ defmodule Isthmus.Networks.MeshCore do
   @impl true
   def generate_proxy_identity(opts) do
     name = Map.get(opts, :name, "Isthmus Proxy")
-    {public, secret} = :crypto.generate_key(:eddsa, :ed25519)
+    {public, secret} = Crypto.generate_keypair()
     hex = Base.encode16(public, case: :lower)
 
     uri =
@@ -59,6 +62,19 @@ defmodule Isthmus.Networks.MeshCore do
        presentations: identity_presentations(hex, %{uri: uri, public_key: hex, name: name})
      }}
   end
+
+  @doc "32-byte Ed25519 seed from vaulted proxy private material."
+  def private_seed(%{secret_hex: hex}) when is_binary(hex),
+    do: private_seed(%{"secret_hex" => hex})
+
+  def private_seed(%{"secret_hex" => hex}) when is_binary(hex) do
+    case Base.decode16(hex, case: :mixed) do
+      {:ok, seed} when byte_size(seed) == 32 -> {:ok, seed}
+      _ -> {:error, :invalid_seed}
+    end
+  end
+
+  def private_seed(_), do: {:error, :invalid_seed}
 
   @impl true
   def identity_presentations(_ref, material) do
@@ -84,6 +100,20 @@ defmodule Isthmus.Networks.MeshCore do
         :exit, _ -> %{status: :not_started}
       end
 
+    bridge =
+      try do
+        BridgeLink.health()
+      catch
+        :exit, _ -> %{status: :not_started}
+      end
+
+    synthetic =
+      try do
+        SyntheticNode.health()
+      catch
+        :exit, _ -> %{status: :not_started}
+      end
+
     Map.merge(
       %{
         network: :meshcore,
@@ -91,6 +121,8 @@ defmodule Isthmus.Networks.MeshCore do
       },
       companion
     )
+    |> Map.put(:bridge, bridge)
+    |> Map.put(:synthetic, synthetic)
   end
 
   @impl true
@@ -104,51 +136,70 @@ defmodule Isthmus.Networks.MeshCore do
     Companion.send_raw(payload, opts)
   end
 
+  @doc """
+  Transmit a tunnelled MeshCore packet verbatim on the local island.
+
+  Requires a bridge-enabled repeater on `ISTHMUS_MESHCORE_BRIDGE_PORT`. The
+  companion cannot do this — its `CMD_SEND_RAW_DATA` builds a `RAW_CUSTOM` app
+  packet from our own identity rather than replaying the original.
+  """
+  @impl true
+  def inject_raw(payload, _opts) when is_binary(payload) do
+    BridgeLink.inject(payload)
+  end
+
   @impl true
   def announce_or_advert(ref, opts \\ %{}) do
     opts = Map.new(opts)
     force? = truthy?(opts[:force] || opts["force"])
     flood? = truthy?(opts[:flood] || opts["flood"])
     from_tunnel? = truthy?(opts[:from_tunnel] || opts["from_tunnel"])
+    bridge_online? = match?(%{status: :online}, BridgeLink.health())
 
-    allowed =
-      if force? do
-        :ok
-      else
-        Governor.allow?(:advert, :meshcore, "companion")
-      end
+    cond do
+      bridge_online? and is_binary(ref) and SyntheticNode.has_identity?(ref) ->
+        SyntheticNode.announce(ref, Map.put(opts, :force, force? || from_tunnel?))
 
-    case allowed do
-      :ok ->
-        result =
-          case Companion.send_self_advert(flood: flood?) do
-            :ok -> :ok
-            {:ok, _} -> :ok
-            {:error, reason} -> {:error, reason}
+      true ->
+        allowed =
+          if force? do
+            :ok
+          else
+            Governor.allow?(:advert, :meshcore, "companion")
           end
 
-        if match?(:ok, result) and is_binary(ref) and ref != "" do
-          _ =
-            Sightings.record(%{
-              network: "meshcore",
-              direction: "out",
-              identity_ref: ref,
-              hops: if(flood?, do: nil, else: 0),
-              meta: %{source: "self_advert", flood: flood?, from_tunnel: from_tunnel?}
-            })
+        case allowed do
+          :ok ->
+            result =
+              case Companion.send_self_advert(flood: flood?) do
+                :ok -> :ok
+                {:ok, _} -> :ok
+                {:error, reason} -> {:error, reason}
+              end
 
-          unless from_tunnel? do
-            Isthmus.Tunnel.Bridge.forward_announce("meshcore", ref, %{
-              source: "self_advert",
-              flood: flood?
-            })
-          end
+            if match?(:ok, result) and is_binary(ref) and ref != "" do
+              _ =
+                Sightings.record(%{
+                  network: "meshcore",
+                  direction: "out",
+                  identity_ref: ref,
+                  hops: if(flood?, do: nil, else: 0),
+                  meta: %{source: "self_advert", flood: flood?, from_tunnel: from_tunnel?}
+                })
+
+              unless from_tunnel? do
+                Isthmus.Tunnel.Bridge.forward_announce("meshcore", ref, %{
+                  source: "self_advert",
+                  flood: flood?
+                })
+              end
+            end
+
+            result
+
+          {:drop, reason} ->
+            {:error, {:governor, reason}}
         end
-
-        result
-
-      {:drop, reason} ->
-        {:error, {:governor, reason}}
     end
   end
 

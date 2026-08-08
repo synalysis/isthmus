@@ -3,21 +3,43 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
 
   alias Isthmus.Announce.Governor
   alias Isthmus.Announce.Sightings
+  alias Isthmus.Networks.LocalIdentity
   alias Isthmus.Tunnel
   alias Isthmus.Tunnel.Outbox
   alias Isthmus.Tunnel.Peer
+
+  @default_carrier "meshcore"
 
   @impl true
   def mount(_params, _session, socket) do
     if connected?(socket), do: :timer.send_interval(3_000, self(), :refresh)
 
-    {:ok, assign_data(socket)}
+    {:ok,
+     socket
+     |> assign(:carrier, @default_carrier)
+     |> assign_local_identity()
+     |> assign_data()}
   end
 
   @impl true
   def handle_info(:refresh, socket), do: {:noreply, assign_data(socket)}
 
   @impl true
+  # phx-change fires on every keystroke in the form, but resolving the local
+  # identity can hit the RNS sidecar, so only do it when the carrier moves.
+  def handle_event("carrier_changed", %{"peer" => %{"carrier_network" => carrier}}, socket) do
+    if carrier == socket.assigns.carrier do
+      {:noreply, socket}
+    else
+      {:noreply,
+       socket
+       |> assign(:carrier, carrier)
+       |> assign_local_identity()}
+    end
+  end
+
+  def handle_event("carrier_changed", _params, socket), do: {:noreply, socket}
+
   def handle_event("save", %{"peer" => params}, socket) do
     case Tunnel.create_peer(params) do
       {:ok, _} ->
@@ -85,6 +107,15 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
     |> assign(:drops, Governor.drops_by_reason(20))
     |> assign(:form, socket.assigns[:form] || to_form(Tunnel.change_peer(%Peer{})))
   end
+
+  defp assign_local_identity(socket) do
+    assign(socket, :local_identity, LocalIdentity.for_network(socket.assigns.carrier))
+  end
+
+  defp identity_badge(:ok), do: {"ready", "badge-success"}
+  defp identity_badge(:partial), do: {"see note", "badge-warning"}
+  defp identity_badge(:pending), do: {"waiting", "badge-ghost"}
+  defp identity_badge(_), do: {"unavailable", "badge-ghost"}
 
   @impl true
   def render(assigns) do
@@ -190,6 +221,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
         <.form
           for={@form}
           id="peer-form"
+          phx-change="carrier_changed"
           phx-submit="save"
           class="card bg-base-200 border border-base-300"
         >
@@ -199,7 +231,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
             <input
               class="input input-bordered"
               name="peer[peer_ref]"
-              placeholder="Peer ref / destination"
+              placeholder="Remote's ref on the carrier network"
               required
             />
             <select class="select select-bordered" name="peer[payload_network]">
@@ -208,14 +240,72 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
               <option value="nostr">Payload: nostr</option>
               <option value="meshtastic">Payload: meshtastic</option>
             </select>
-            <select class="select select-bordered" name="peer[carrier_network]">
-              <option value="meshcore">Carrier: meshcore</option>
-              <option value="reticulum">Carrier: reticulum</option>
-              <option value="nostr">Carrier: nostr</option>
-              <option value="meshtastic">Carrier: meshtastic</option>
+            <select class="select select-bordered" name="peer[carrier_network]" value={@carrier}>
+              <option value="meshcore" selected={@carrier == "meshcore"}>Carrier: meshcore</option>
+              <option value="reticulum" selected={@carrier == "reticulum"}>
+                Carrier: reticulum
+              </option>
+              <option value="nostr" selected={@carrier == "nostr"}>Carrier: nostr</option>
+              <option value="meshtastic" selected={@carrier == "meshtastic"}>
+                Carrier: meshtastic
+              </option>
             </select>
+
+            <div
+              id="local-identity"
+              class="md:col-span-2 rounded-box border border-base-300 bg-base-100 p-3 space-y-2"
+            >
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <h3 class="text-sm font-semibold">
+                  Your ref on {@local_identity.network}
+                </h3>
+                <% {badge_label, badge_class} = identity_badge(@local_identity.status) %>
+                <span class={["badge badge-sm", badge_class]}>{badge_label}</span>
+              </div>
+
+              <p class="text-xs opacity-70">
+                Send this to the remote operator — they enter it as the peer ref on their side.
+              </p>
+
+              <div :for={{ref, idx} <- Enum.with_index(@local_identity.refs)} class="flex gap-2">
+                <code class="flex-1 select-all break-all rounded-lg bg-base-200 px-2 py-1.5 font-mono text-xs">
+                  {ref}
+                </code>
+                <button
+                  type="button"
+                  id={"copy-local-ref-#{idx}"}
+                  phx-hook=".CopyRef"
+                  data-ref={ref}
+                  class="btn btn-sm btn-outline shrink-0"
+                >
+                  Copy
+                </button>
+              </div>
+
+              <p :if={@local_identity.note} class="text-xs opacity-70">{@local_identity.note}</p>
+              <p :if={@local_identity.hint} class="text-xs opacity-60">{@local_identity.hint}</p>
+            </div>
+
             <button class="btn btn-primary md:col-span-2" type="submit">Create</button>
           </div>
+          <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyRef">
+            export default {
+              mounted() {
+                this.el.addEventListener("click", async () => {
+                  const ref = this.el.dataset.ref
+                  if (!ref) { return }
+                  try {
+                    await navigator.clipboard.writeText(ref)
+                  } catch (_err) {
+                    return
+                  }
+                  const original = this.el.textContent
+                  this.el.textContent = "Copied"
+                  setTimeout(() => { this.el.textContent = original }, 1200)
+                })
+              }
+            }
+          </script>
         </.form>
 
         <ul class="space-y-2">

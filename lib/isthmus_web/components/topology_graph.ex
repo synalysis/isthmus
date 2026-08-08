@@ -261,6 +261,13 @@ defmodule IsthmusWeb.TopologyGraph do
         </div>
       <% end %>
 
+      <%= if @detail.kind == :network and @detail[:bridged?] do %>
+        <p class="text-xs opacity-70">
+          Bridged island — a repeater feeds this network's raw packets across the tunnel,
+          so remote nodes appear as ordinary mesh neighbours.
+        </p>
+      <% end %>
+
       <%= if @detail.kind == :tunnel do %>
         <dl class="grid grid-cols-3 gap-x-2 gap-y-1 text-xs">
           <dt class="opacity-60">Enabled</dt>

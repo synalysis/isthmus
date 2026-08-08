@@ -327,19 +327,28 @@ defmodule Isthmus.Tunnel.Engine do
         payload_net = network_atom(peer.payload_network)
         adapter = Networks.adapter!(payload_net)
 
-        result =
-          if function_exported?(adapter, :send_raw, 2) do
-            adapter.send_raw(payload, %{
-              direction: :from_tunnel,
-              from_tunnel: true,
-              tunnel_id: tunnel_hex
-            })
-          else
-            Logger.warning(
-              "tunnel delivered #{byte_size(payload)} bytes for #{tunnel_hex} but #{payload_net} has no send_raw/2"
-            )
+        opts = %{
+          direction: :from_tunnel,
+          from_tunnel: true,
+          tunnel_id: tunnel_hex
+        }
 
-            {:error, :adapter_no_raw}
+        # inject_raw/2 replays a foreign packet verbatim; send_raw/2 would
+        # re-originate it from our own identity, which is wrong for a payload.
+        result =
+          cond do
+            function_exported?(adapter, :inject_raw, 2) ->
+              apply(adapter, :inject_raw, [payload, opts])
+
+            function_exported?(adapter, :send_raw, 2) ->
+              adapter.send_raw(payload, opts)
+
+            true ->
+              Logger.warning(
+                "tunnel delivered #{byte_size(payload)} bytes for #{tunnel_hex} but #{payload_net} has no inject_raw/2 or send_raw/2"
+              )
+
+              {:error, :adapter_no_raw}
           end
 
         Phoenix.PubSub.broadcast(

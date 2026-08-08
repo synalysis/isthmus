@@ -33,6 +33,7 @@ defmodule Isthmus.NetworkAdapter do
     subscribe_inbound: 1,
     mtu: 1,
     send_raw: 2,
+    inject_raw: 2,
     subscribe_raw: 1,
     estimated_bitrate: 1,
     announce_or_advert: 2
@@ -43,6 +44,16 @@ defmodule Isthmus.NetworkAdapter do
   @callback subscribe_inbound(pid()) :: :ok | {:error, term()}
   @callback mtu(map()) :: pos_integer()
   @callback send_raw(binary(), map()) :: :ok | {:error, term()}
+
+  @doc """
+  Emit a tunnel-delivered packet onto this network's local segment.
+
+  Distinct from `c:send_raw/2`, which originates traffic from our own identity.
+  A network that can act as a tunnel *payload* implements this to replay a
+  foreign packet verbatim, so the far island sees it unchanged. Adapters
+  without a transparent injection path simply omit it and `send_raw/2` is used.
+  """
+  @callback inject_raw(binary(), map()) :: :ok | {:error, term()}
   @callback subscribe_raw(pid()) :: :ok | {:error, term()}
   @callback estimated_bitrate(map()) :: non_neg_integer()
   @callback announce_or_advert(identity_ref(), map()) :: :ok | {:error, term()}

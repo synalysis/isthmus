@@ -3,7 +3,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   MeshCore companion client.
 
   Transport selection via `ISTHMUS_MESHCORE_TRANSPORT` (`usb` default, `ble` stub):
-  - USB: `ISTHMUS_MESHCORE_PORT=/dev/ttyACM0`
+  - USB: auto-detected by `Discover`, or pin with `ISTHMUS_MESHCORE_PORT`
   - BLE: `ISTHMUS_MESHCORE_BLE_ADDRESS=<mac>` (not implemented yet — see `BLETransport`)
 
   Maintains a contact table (pubkey → out_path) for path-aware raw sends.
@@ -14,7 +14,9 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   alias Isthmus.Announce.Sightings
   alias Isthmus.Networks.MeshCore.BLETransport
+  alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.MeshCore.Protocol
+  alias Isthmus.Networks.MeshCore.RadioParams
   alias Isthmus.Networks.MeshCore.USBTransport
 
   @channels_table :isthmus_meshcore_channels
@@ -92,8 +94,32 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     GenServer.call(__MODULE__, {:send_self_advert, opts})
   end
 
+  @doc "Apply radio frequency / bandwidth / SF / CR on the companion."
+  def set_radio_params(params) when is_map(params) do
+    with {:ok, normalized} <- RadioParams.cast(params) do
+      safe_call({:set_radio_params, normalized}, {:error, :timeout}, 5_000)
+    end
+  end
+
+  @doc "Apply TX power (dBm) on the companion."
+  def set_tx_power(tx) when is_integer(tx) and tx in 0..22 do
+    safe_call({:set_tx_power, tx}, {:error, :timeout}, 5_000)
+  end
+
+  def set_tx_power(tx) when is_integer(tx), do: {:error, "TX power must be 0–22 dBm"}
+
+  def set_tx_power(tx) when is_binary(tx) do
+    case Integer.parse(String.trim(tx)) do
+      {n, _} -> set_tx_power(n)
+      :error -> {:error, "invalid tx power"}
+    end
+  end
+
+  @doc "Re-resolve the serial port (after Discover.refresh) and reconnect."
+  def reconnect, do: GenServer.cast(__MODULE__, :reconnect)
+
   @impl true
-  def init(_opts) do
+  def init(opts) do
     ensure_ets(@channels_table)
     ensure_ets(@status_table)
     :ets.insert(@channels_table, {:all, []})
@@ -104,11 +130,15 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         _ -> :usb
       end
 
+    port =
+      Keyword.get(opts, :port) ||
+        if(transport_kind == :usb, do: Discover.resolve_port(:companion), else: nil)
+
     state = %{
       transport_kind: transport_kind,
       transport_mod: if(transport_kind == :ble, do: BLETransport, else: USBTransport),
       transport: nil,
-      port: System.get_env("ISTHMUS_MESHCORE_PORT"),
+      port: port,
       ble_address: System.get_env("ISTHMUS_MESHCORE_BLE_ADDRESS"),
       buffer: <<>>,
       status: :disconnected,
@@ -117,6 +147,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       contacts: %{},
       contacts_lastmod: 0,
       channels: %{},
+      self_info: nil,
       max_channels: @max_channel_slots,
       channel_sync_from: nil,
       channel_sync_monitor: nil,
@@ -194,6 +225,56 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   def handle_call(
+        {:set_radio_params, params},
+        _from,
+        %{status: :online, transport: t, transport_mod: mod} = state
+      )
+      when not is_nil(t) do
+    frame =
+      Protocol.set_radio_params_frame(
+        params.freq_mhz,
+        params.bw_khz,
+        params.sf,
+        params.cr
+      )
+
+    case mod.write(t, Protocol.encode_usb_frame(frame)) do
+      :ok ->
+        _ = mod.write(t, Protocol.encode_usb_frame(Protocol.app_start_frame()))
+        {:reply, :ok, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
+    end
+  end
+
+  def handle_call({:set_radio_params, _}, _from, state) do
+    {:reply, {:error, :not_connected}, state}
+  end
+
+  def handle_call(
+        {:set_tx_power, tx},
+        _from,
+        %{status: :online, transport: t, transport_mod: mod} = state
+      )
+      when not is_nil(t) do
+    frame = Protocol.set_tx_power_frame(tx)
+
+    case mod.write(t, Protocol.encode_usb_frame(frame)) do
+      :ok ->
+        _ = mod.write(t, Protocol.encode_usb_frame(Protocol.app_start_frame()))
+        {:reply, :ok, state}
+
+      {:error, reason} ->
+        {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
+    end
+  end
+
+  def handle_call({:set_tx_power, _}, _from, state) do
+    {:reply, {:error, :not_connected}, state}
+  end
+
+  def handle_call(
         {:send_channel_text, idx, text},
         _from,
         %{status: :online, transport: t, transport_mod: mod} = state
@@ -267,6 +348,28 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   @impl true
+  def handle_cast(:reconnect, state) do
+    if state.transport, do: state.transport_mod.close(state.transport)
+
+    port =
+      if state.transport_kind == :usb do
+        Discover.resolve_port(:companion)
+      else
+        state.port
+      end
+
+    state = %{
+      state
+      | transport: nil,
+        buffer: <<>>,
+        status: :disconnected,
+        port: port,
+        self_info: nil
+    }
+
+    {:noreply, maybe_connect(state)}
+  end
+
   def handle_cast(:sync_contacts, %{status: :online, transport: t, transport_mod: mod} = state)
       when not is_nil(t) do
     frame =
@@ -440,6 +543,11 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       {:device_info, rest} ->
         %{state | max_channels: parse_max_channels(rest, state.max_channels)}
 
+      {:self_info, %{public_key: pubkey} = info} when is_binary(pubkey) ->
+        # Arrives once per connect, in reply to CMD_APP_START; republish so the
+        # cached health map carries our own node key.
+        publish_status(%{state | self_info: info})
+
       {:no_more_messages, _} ->
         state
 
@@ -523,7 +631,15 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   defp maybe_connect(%{transport_kind: :usb, port: nil} = state) do
-    publish_status(%{state | status: :disabled, last_error: "ISTHMUS_MESHCORE_PORT not set"})
+    publish_status(%{
+      state
+      | status: :disabled,
+        last_error: "no companion detected (set ISTHMUS_MESHCORE_PORT to override)"
+    })
+  end
+
+  defp maybe_connect(%{transport_kind: :usb, port: ""} = state) do
+    maybe_connect(%{state | port: nil})
   end
 
   defp maybe_connect(%{transport_kind: :ble, ble_address: addr} = state)
@@ -786,6 +902,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   defp health_map(state) do
+    info = state.self_info || %{}
+
     %{
       status: state.status,
       transport: state.transport_kind,
@@ -794,7 +912,15 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       last_error: state.last_error,
       contacts: map_size(state.contacts),
       channels: map_size(state.channels),
-      max_channels: state.max_channels
+      max_channels: state.max_channels,
+      self_ref: info[:public_key],
+      self_name: info[:name],
+      freq_mhz: info[:freq_mhz],
+      bw_khz: info[:bw_khz],
+      sf: info[:sf],
+      cr: info[:cr],
+      tx_power: info[:tx_power],
+      max_tx_power: info[:max_tx_power]
     }
   end
 
