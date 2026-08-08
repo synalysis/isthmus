@@ -57,6 +57,38 @@ defmodule Isthmus.Gateway.TranslatorTest do
     refute Enum.any?(hits, &(&1.body not in [nil, ""]))
   end
 
+  test "persistently dedupes a replayed nostr message across a translator restart" do
+    {_sk, pk} = Secp256k1.keypair(:xonly)
+    hex = Base.encode16(pk, case: :lower)
+    assert {:ok, group} = Registrations.register_self(hex, %{display_name: "Lobby"})
+    nostr = Registrations.leg(group, :nostr)
+
+    msg = %Message{
+      from_network: :nostr,
+      from_ref: nostr.identity_ref,
+      to_ref: nostr.identity_ref,
+      body: "gm lobby",
+      external_id: "evt-persist-1"
+    }
+
+    Translator.ingest(msg)
+    Process.sleep(50)
+
+    # Simulate a restart: the in-memory seen set is wiped, but the persistent
+    # record must still suppress the relay-replayed event.
+    :sys.replace_state(Translator, fn state -> %{state | seen_ids: %{}} end)
+
+    Translator.ingest(msg)
+    Process.sleep(50)
+
+    hits =
+      Gateway.list_recent(50)
+      |> Enum.filter(&(&1.external_id == "evt-persist-1"))
+
+    # Two destination legs (meshcore + reticulum) delivered once, not twice.
+    assert length(hits) == 2
+  end
+
   test "drops when direction is denied by policy" do
     {_sk, pk} = Secp256k1.keypair(:xonly)
     hex = Base.encode16(pk, case: :lower)

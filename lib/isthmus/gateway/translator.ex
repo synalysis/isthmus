@@ -14,6 +14,7 @@ defmodule Isthmus.Gateway.Translator do
 
   require Logger
 
+  alias Isthmus.Announce.Dedup
   alias Isthmus.Announce.Governor
   alias Isthmus.Gateway
   alias Isthmus.Gateway.Message
@@ -48,7 +49,7 @@ defmodule Isthmus.Gateway.Translator do
 
   @impl true
   def handle_cast({:ingest, %Message{} = msg}, state) do
-    case dedupe(state, msg.external_id) do
+    case dedupe(state, msg) do
       {:duplicate, state} ->
         {:noreply, state}
 
@@ -699,22 +700,40 @@ defmodule Isthmus.Gateway.Translator do
     end
   end
 
-  # Keep a bounded set of recent external ids to suppress relay/mesh duplicates.
-  defp dedupe(state, nil), do: {:ok, state}
-  defp dedupe(state, ""), do: {:ok, state}
+  # Networks whose upstreams replay stored messages (relays resend Nostr events,
+  # LXMF propagation nodes redeliver) need dedup that survives restarts, not just
+  # the bounded in-memory set. MeshCore ingests use nil/randomized ids, so the
+  # in-memory fast path is enough for them.
+  @persistent_dedup_networks [:nostr, "nostr", :reticulum, "reticulum"]
+  # Comfortably longer than NIP-17's ~2-day created_at jitter and typical relay
+  # retention, so a replayed gift-wrap can't be re-forwarded.
+  @forward_dedup_ttl 7 * 24 * 60 * 60
 
-  defp dedupe(%{seen_ids: seen} = state, id) when is_binary(id) do
-    if Map.has_key?(seen, id) do
-      {:duplicate, state}
-    else
-      seen =
-        seen
-        |> Map.put(id, System.system_time(:second))
-        |> trim_seen(200)
+  # Keep a bounded set of recent external ids to suppress relay/mesh duplicates,
+  # backed by a persistent record for replay-prone networks.
+  defp dedupe(state, %Message{external_id: id}) when id in [nil, ""], do: {:ok, state}
 
-      {:ok, %{state | seen_ids: seen}}
+  defp dedupe(%{seen_ids: seen} = state, %Message{external_id: id} = msg) when is_binary(id) do
+    cond do
+      Map.has_key?(seen, id) ->
+        {:duplicate, state}
+
+      msg.from_network in @persistent_dedup_networks and
+          Dedup.seen?(forward_dedup_key(msg, id), @forward_dedup_ttl) ->
+        {:duplicate, %{state | seen_ids: remember_seen(seen, id)}}
+
+      true ->
+        {:ok, %{state | seen_ids: remember_seen(seen, id)}}
     end
   end
+
+  defp remember_seen(seen, id) do
+    seen
+    |> Map.put(id, System.system_time(:second))
+    |> trim_seen(200)
+  end
+
+  defp forward_dedup_key(%Message{from_network: net}, id), do: "gateway_ingest|#{net}|#{id}"
 
   defp trim_seen(seen, max) when map_size(seen) <= max, do: seen
 

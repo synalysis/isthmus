@@ -73,6 +73,40 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
     end
   end
 
+  @doc """
+  Send an opaque tunnel frame addressed to a peer's `isthmus.tunnel` destination.
+
+  Returns `{:error, "no_path", _}` (and asks Reticulum for a path) until the
+  peer's tunnel identity and a route are known, so callers fall back to the
+  broadcast inject path.
+  """
+  def tunnel_send(destination_hash, binary)
+      when is_binary(destination_hash) and is_binary(binary) do
+    GenServer.call(
+      __MODULE__,
+      {:rpc, "tunnel_send",
+       %{"destination_hash" => destination_hash, "data" => Base.encode64(binary)}},
+      @call_timeout
+    )
+    |> case do
+      {:ok, %{"ok" => true} = msg} -> {:ok, msg}
+      {:ok, msg} -> {:error, msg["error"] || "tunnel_send_failed", msg}
+      {:error, reason, msg} -> {:error, reason, msg}
+      {:error, reason} -> {:error, reason}
+      other -> other
+    end
+  end
+
+  @doc "Our own `isthmus.tunnel` destination hash peers address frames to (addressed mode only)."
+  def tunnel_status do
+    GenServer.call(__MODULE__, {:rpc, "tunnel_status", %{}}, @call_timeout)
+  end
+
+  @doc "Re-announce our tunnel destination so peers can recall the identity and learn a path."
+  def tunnel_announce do
+    GenServer.call(__MODULE__, {:rpc, "tunnel_announce", %{}}, @call_timeout)
+  end
+
   def send_lxmf(attrs) when is_map(attrs) do
     GenServer.call(
       __MODULE__,
@@ -205,6 +239,15 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
     state
   end
 
+  defp handle_port_msg(%{"type" => "tunnel_frame", "data" => data}, state) when is_binary(data) do
+    case Base.decode64(data) do
+      {:ok, binary} -> Isthmus.Tunnel.Engine.handle_inbound_frame(binary)
+      :error -> Logger.debug("RNS sidecar tunnel_frame: bad base64")
+    end
+
+    state
+  end
+
   defp handle_port_msg(%{"type" => "hello"} = msg, state) do
     live = msg["rns"] == true and msg["lxmf"] == true and is_nil(msg["error"])
     status = if live, do: :live, else: :online
@@ -229,7 +272,8 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
             "rns_version",
             "lxmf_version",
             "rns",
-            "lxmf"
+            "lxmf",
+            "tunnel_destination_hash"
           ])
     }
   end
@@ -265,6 +309,9 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
   defp normalize_rpc_reply(%{"type" => "status"} = msg), do: {:ok, msg}
   defp normalize_rpc_reply(%{"type" => "path_status"} = msg), do: {:ok, msg}
   defp normalize_rpc_reply(%{"type" => "request_path_result"} = msg), do: {:ok, msg}
+  defp normalize_rpc_reply(%{"type" => "tunnel_status"} = msg), do: {:ok, msg}
+  defp normalize_rpc_reply(%{"type" => "tunnel_send_result"} = msg), do: {:ok, msg}
+  defp normalize_rpc_reply(%{"type" => "tunnel_announce_result"} = msg), do: {:ok, msg}
   defp normalize_rpc_reply(msg), do: {:ok, msg}
 
   defp close_port(%{port: port} = state) when is_port(port) do

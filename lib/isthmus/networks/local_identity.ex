@@ -72,23 +72,20 @@ defmodule Isthmus.Networks.LocalIdentity do
   end
 
   def for_network("reticulum") do
-    case reticulum_destinations() do
-      [] ->
-        unavailable("reticulum", "No RNS destinations registered yet.",
-          hint: "Announce a group on Reticulum first."
-        )
-
-      refs ->
+    case reticulum_tunnel_ref() do
+      ref when is_binary(ref) ->
         %{
           network: "reticulum",
-          status: :partial,
-          refs: refs,
+          status: :ok,
+          refs: [ref],
           note:
-            "Reticulum has no node-level address, and tunnel frames are broadcast " <>
-              "rather than addressed. These are the destinations we announce, so the " <>
-              "remote can use one to link announce sightings to the tunnel.",
+            "This node's isthmus.tunnel destination. Paste it as the peer ref on the " <>
+              "remote side to pair a point-to-point (addressed) tunnel.",
           hint: nil
         }
+
+      _ ->
+        reticulum_broadcast_identity()
     end
   end
 
@@ -119,6 +116,27 @@ defmodule Isthmus.Networks.LocalIdentity do
     end
   end
 
+  defp reticulum_broadcast_identity do
+    case reticulum_destinations() do
+      [] ->
+        unavailable("reticulum", "No tunnel destination yet.",
+          hint: "Wait for the RNS sidecar to come up, or announce a group first."
+        )
+
+      refs ->
+        %{
+          network: "reticulum",
+          status: :partial,
+          refs: refs,
+          note:
+            "Broadcast mode (ISTHMUS_TUNNEL_ADDRESSED=0): tunnel frames aren't " <>
+              "addressed. These are the announced LXMF destinations, useful only so " <>
+              "the remote can link announce sightings to the tunnel.",
+          hint: nil
+        }
+    end
+  end
+
   defp reticulum_destinations do
     case safe(fn -> Reticulum.instance_status() end) do
       {:ok, %{registered: registered}} when is_list(registered) ->
@@ -126,6 +144,13 @@ defmodule Isthmus.Networks.LocalIdentity do
 
       _ ->
         []
+    end
+  end
+
+  defp reticulum_tunnel_ref do
+    case safe(fn -> Reticulum.tunnel_destination_hash() end) do
+      hash when is_binary(hash) and hash != "" -> hash
+      _ -> nil
     end
   end
 

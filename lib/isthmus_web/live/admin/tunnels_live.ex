@@ -234,11 +234,23 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
               placeholder="Remote's ref on the carrier network"
               required
             />
+            <div class="md:col-span-2">
+              <input
+                class="input input-bordered w-full"
+                name="peer[pairing_code]"
+                placeholder="Shared tunnel code — both sides enter the same phrase"
+              />
+              <p class="mt-1 text-xs opacity-60">
+                Both endpoints must derive the same tunnel id: enter an identical code on each side
+                (case-insensitive). Inbound frames are demuxed by tunnel id, not by carrier address,
+                so a return path only works when both sides match. Leave blank for a one-off random
+                tunnel (outbound only until the other side pairs the id).
+              </p>
+            </div>
             <select class="select select-bordered" name="peer[payload_network]">
               <option value="reticulum">Payload: reticulum</option>
               <option value="meshcore">Payload: meshcore</option>
               <option value="nostr">Payload: nostr</option>
-              <option value="meshtastic">Payload: meshtastic</option>
             </select>
             <select class="select select-bordered" name="peer[carrier_network]" value={@carrier}>
               <option value="meshcore" selected={@carrier == "meshcore"}>Carrier: meshcore</option>
@@ -246,9 +258,6 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                 Carrier: reticulum
               </option>
               <option value="nostr" selected={@carrier == "nostr"}>Carrier: nostr</option>
-              <option value="meshtastic" selected={@carrier == "meshtastic"}>
-                Carrier: meshtastic
-              </option>
             </select>
 
             <div

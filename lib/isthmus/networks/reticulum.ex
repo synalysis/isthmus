@@ -5,6 +5,7 @@ defmodule Isthmus.Networks.Reticulum do
   alias Isthmus.Announce.Governor
   alias Isthmus.Announce.Sightings
   alias Isthmus.Networks.Reticulum.ConfigFile
+  alias Isthmus.Networks.Reticulum.InterfaceSocket
   alias Isthmus.Networks.Reticulum.Sidecar
 
   @impl true
@@ -106,6 +107,29 @@ defmodule Isthmus.Networks.Reticulum do
       end
 
     Map.merge(%{network: :reticulum, detail: "Python RNS/LXMF sidecar"}, sidecar)
+  end
+
+  @doc """
+  Our own `isthmus.tunnel` destination hash (addressed tunnel mode), or `nil`.
+
+  Peers paste this as the `peer_ref` on their tunnel to reach us point-to-point
+  instead of over the broadcast path.
+  """
+  def tunnel_destination_hash do
+    with true <- addressed_enabled?(),
+         %{meta: meta} <- safe_health(),
+         hash when is_binary(hash) and hash != "" <-
+           meta["tunnel_destination_hash"] || meta[:tunnel_destination_hash] do
+      hash
+    else
+      _ -> nil
+    end
+  end
+
+  defp safe_health do
+    Sidecar.health()
+  catch
+    :exit, _ -> %{}
   end
 
   @doc """
@@ -229,14 +253,62 @@ defmodule Isthmus.Networks.Reticulum do
 
   @impl true
   def send_raw(payload, opts) when is_binary(payload) do
-    _opts = Map.new(opts)
+    opts = Map.new(opts)
 
-    # Prefer MeshChat IsthmusInterface clients; else inject into sidecar RNS stack.
-    case Isthmus.Networks.Reticulum.InterfaceSocket.send_frame(payload) do
+    # Addressed (opt-in): deliver point-to-point to the peer's tunnel destination
+    # so only that peer receives the frame. Falls back to broadcast when disabled,
+    # when we have no peer ref, or until the peer's identity + a path are known.
+    case addressed_send(payload, opts) do
+      :ok -> :ok
+      :skip -> broadcast_raw(payload)
+    end
+  end
+
+  defp addressed_send(payload, opts) do
+    with true <- addressed_enabled?(),
+         ref when is_binary(ref) <- tunnel_peer_ref(opts),
+         {:ok, _} <- Sidecar.tunnel_send(ref, payload) do
+      :ok
+    else
+      _ -> :skip
+    end
+  end
+
+  # Prefer MeshChat IsthmusInterface clients; else inject into the sidecar RNS stack.
+  defp broadcast_raw(payload) do
+    case InterfaceSocket.send_frame(payload) do
       :ok -> :ok
       {:error, :not_connected} -> Sidecar.send_packet(payload)
       other -> other
     end
+  end
+
+  defp tunnel_peer_ref(opts) do
+    ref = opts[:peer_ref] || opts["peer_ref"]
+
+    case ref do
+      r when is_binary(r) ->
+        trimmed = String.trim(r)
+        if trimmed == "", do: nil, else: String.downcase(trimmed)
+
+      _ ->
+        nil
+    end
+  end
+
+  @doc """
+  Whether point-to-point (addressed) tunnel delivery is active.
+
+  Default is enabled; set `ISTHMUS_TUNNEL_ADDRESSED` to a falsey value
+  (`0`/`false`/`no`/`off`) to force the legacy broadcast path.
+  """
+  def addressed_enabled? do
+    normalized =
+      (System.get_env("ISTHMUS_TUNNEL_ADDRESSED") || "1")
+      |> String.trim()
+      |> String.downcase()
+
+    normalized not in ["0", "false", "no", "off"]
   end
 
   @impl true

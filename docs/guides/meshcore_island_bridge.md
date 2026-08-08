@@ -151,6 +151,15 @@ At a metre with +22 dBm, each radio delivers roughly -10 dBm into its neighbour,
 
 Do not remove antennas to attenuate — transmitting into an open circuit can damage the PA.
 
+## Carrier delivery over Reticulum: broadcast vs addressed
+
+When the carrier is Reticulum, tunnel frames can travel two ways:
+
+- **Addressed (default).** The sidecar exposes a dedicated `isthmus.tunnel` SINGLE destination. Each side announces its own tunnel destination; the sender encrypts the frame to the peer's announced tunnel identity so only that peer receives it. Set the peer's tunnel destination hash (shown first under **Your ref on reticulum** on `/admin/tunnels`) as the `peer_ref`. Until the peer's identity and a path are known the sidecar returns `no_path` and the send **falls back to broadcast**, requesting a path (throttled) so a later frame can go direct. Frames larger than an RNS single-packet MDU also fall back to broadcast.
+- **Broadcast (`ISTHMUS_TUNNEL_ADDRESSED=0`).** `Reticulum.send_raw/2` injects the opaque ISTH frame onto the RNS interface (via a connected MeshChat `IsthmusInterface`, or `Transport.inbound` on the sidecar). It is *not* addressed to a destination — every node on that RNS segment receives every frame and drops the ones whose `tunnel_id` it doesn't recognise. Simple and needs no path, but it amplifies traffic with more islands or other RNS nodes on the segment.
+
+Addressed mode runs on **both** ends by default: exchange the new tunnel refs and keep `tunnel_id` paired as usual — addressing decides *who receives* the frame, `tunnel_id` still decides *which tunnel* it belongs to.
+
 ## Things to keep in view
 
 This is an all-or-nothing mesh merge. Every forwarded packet crosses, so each island absorbs the other's airtime and regional duty-cycle limits apply to the union. The firmware has no filtering hook, so any policy has to live in Isthmus, dropping packets before the tunnel or before the serial write.

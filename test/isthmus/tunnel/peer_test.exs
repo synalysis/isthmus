@@ -77,4 +77,42 @@ defmodule Isthmus.Tunnel.PeerTest do
 
     assert "can't be blank" in errors_on(changeset).peer_ref
   end
+
+  test "a shared pairing code derives a matching tunnel_id on both sides" do
+    expected = Tunnel.tunnel_id_from_code("Lobby Link")
+
+    {:ok, side_a} =
+      Tunnel.create_peer(%{
+        name: "A",
+        peer_ref: @ref,
+        payload_network: "meshcore",
+        carrier_network: "reticulum",
+        pairing_code: "Lobby Link"
+      })
+
+    # The far side enters the same code with different casing/whitespace.
+    derived_b = Tunnel.tunnel_id_from_code("  lobby link  ")
+
+    assert side_a.tunnel_id == expected
+    assert derived_b == expected
+    assert String.match?(side_a.tunnel_id, ~r/\A[0-9a-f]{32}\z/)
+  end
+
+  test "different pairing codes derive different tunnel_ids" do
+    refute Tunnel.tunnel_id_from_code("island-b") == Tunnel.tunnel_id_from_code("island-c")
+  end
+
+  test "an explicit tunnel_id overrides the pairing code" do
+    {:ok, peer} =
+      Tunnel.create_peer(%{
+        name: "Explicit",
+        peer_ref: @ref,
+        payload_network: "meshcore",
+        carrier_network: "reticulum",
+        tunnel_id: "6d105c6ddcf9f9225ecd9f428520ca72",
+        pairing_code: "ignored"
+      })
+
+    assert peer.tunnel_id == "6d105c6ddcf9f9225ecd9f428520ca72"
+  end
 end

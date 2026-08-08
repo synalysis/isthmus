@@ -25,4 +25,38 @@ defmodule Isthmus.Networks.ReticulumTest do
     health = Sidecar.health()
     assert health.status in [:starting, :online, :live, :stub, :crashed]
   end
+
+  describe "addressed tunnel delivery gate" do
+    setup do
+      original = System.get_env("ISTHMUS_TUNNEL_ADDRESSED")
+
+      on_exit(fn ->
+        if original,
+          do: System.put_env("ISTHMUS_TUNNEL_ADDRESSED", original),
+          else: System.delete_env("ISTHMUS_TUNNEL_ADDRESSED")
+      end)
+
+      :ok
+    end
+
+    test "addressed_enabled? defaults on and only a falsey env disables it" do
+      System.delete_env("ISTHMUS_TUNNEL_ADDRESSED")
+      assert Reticulum.addressed_enabled?()
+
+      for on <- ~w(1 true YES on anything) do
+        System.put_env("ISTHMUS_TUNNEL_ADDRESSED", on)
+        assert Reticulum.addressed_enabled?(), "expected #{on} to enable"
+      end
+
+      for off <- ~w(0 false no off) do
+        System.put_env("ISTHMUS_TUNNEL_ADDRESSED", off)
+        refute Reticulum.addressed_enabled?(), "expected #{off} to disable"
+      end
+    end
+
+    test "tunnel_destination_hash is nil while addressed mode is disabled" do
+      System.put_env("ISTHMUS_TUNNEL_ADDRESSED", "0")
+      assert Reticulum.tunnel_destination_hash() == nil
+    end
+  end
 end

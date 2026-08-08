@@ -52,6 +52,17 @@ def hex_of(data: Optional[bytes]) -> Optional[str]:
     return data.hex()
 
 
+def tunnel_addressed_enabled() -> bool:
+    """Point-to-point tunnel delivery is the default; set the env to a falsey
+    value (0/false/no/off) to force the legacy broadcast path."""
+    return (os.environ.get("ISTHMUS_TUNNEL_ADDRESSED") or "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
 class Sidecar:
     def __init__(self) -> None:
         self.RNS = None
@@ -65,6 +76,9 @@ class Sidecar:
         self.live = False
         self.identities: dict[str, Any] = {}  # dest_hash_hex -> identity
         self.destinations: dict[str, Any] = {}  # dest_hash_hex -> Destination
+        self.tunnel_identity: Any = None
+        self.tunnel_destination: Any = None  # IN SINGLE "isthmus.tunnel" endpoint
+        self._path_requests: dict[bytes, float] = {}  # dest_hash -> last request ts
         self._lock = threading.RLock()
 
     def try_boot(self) -> dict:
@@ -110,6 +124,14 @@ class Sidecar:
             )
             self.router.register_delivery_callback(self._on_delivery)
             self.live = True
+
+            tunnel_hex = None
+            if tunnel_addressed_enabled():
+                try:
+                    tunnel_hex = self._setup_tunnel_destination()
+                except Exception as exc:  # noqa: BLE001
+                    write_msg({"type": "error", "error": f"tunnel_setup:{exc}"})
+
             return {
                 "rns": True,
                 "lxmf": True,
@@ -117,6 +139,7 @@ class Sidecar:
                 "storagepath": self.storagepath,
                 "rns_version": getattr(RNS, "__version__", None),
                 "lxmf_version": getattr(LXMF, "__version__", None),
+                "tunnel_destination_hash": tunnel_hex,
             }
         except Exception as exc:  # noqa: BLE001
             return {
@@ -268,6 +291,140 @@ class Sidecar:
             return {"ok": True, "bytes": len(raw)}
         except Exception as exc:  # noqa: BLE001
             return {"ok": False, "error": str(exc)}
+
+    # --- Point-to-point tunnel transport (opt-in) --------------------------
+    #
+    # A dedicated "isthmus.tunnel" SINGLE destination carries opaque tunnel
+    # frames addressed to one peer, instead of the broadcast inject path. The
+    # sender encrypts to the peer's announced tunnel identity, so only that peer
+    # receives the frame.
+
+    def _setup_tunnel_destination(self) -> Optional[str]:
+        idpath = os.path.join(self.configdir, "tunnel_identity")
+        if os.path.isfile(idpath):
+            identity = self.RNS.Identity.from_file(idpath)
+        else:
+            identity = self.RNS.Identity()
+            identity.to_file(idpath)
+
+        destination = self.RNS.Destination(
+            identity,
+            self.RNS.Destination.IN,
+            self.RNS.Destination.SINGLE,
+            "isthmus",
+            "tunnel",
+        )
+        destination.set_packet_callback(self._on_tunnel_packet)
+
+        self.tunnel_identity = identity
+        self.tunnel_destination = destination
+
+        try:
+            destination.announce()
+        except Exception:  # noqa: BLE001
+            pass
+
+        return hex_of(destination.hash)
+
+    def _on_tunnel_packet(self, data, _packet) -> None:
+        try:
+            write_msg(
+                {
+                    "type": "tunnel_frame",
+                    "data": base64.b64encode(bytes(data)).decode("ascii"),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            write_msg({"type": "error", "error": f"tunnel_packet:{exc}"})
+
+    def _throttled_request_path(self, to_hash: bytes, min_interval: float = 15.0) -> None:
+        now = time.time()
+        last = self._path_requests.get(to_hash, 0.0)
+        if now - last < min_interval:
+            return
+        self._path_requests[to_hash] = now
+        try:
+            self.RNS.Transport.request_path(to_hash)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def tunnel_status(self) -> dict:
+        if not tunnel_addressed_enabled():
+            return {"ok": False, "error": "addressed_disabled"}
+        if self.tunnel_destination is None:
+            return {"ok": False, "error": "no_tunnel_destination"}
+        return {
+            "ok": True,
+            "destination_hash": hex_of(self.tunnel_destination.hash),
+            "identity_hash": self.tunnel_identity.hexhash,
+        }
+
+    def tunnel_announce(self) -> dict:
+        if self.tunnel_destination is None:
+            return {"ok": False, "error": "no_tunnel_destination"}
+        try:
+            self.tunnel_destination.announce()
+            return {"ok": True, "destination_hash": hex_of(self.tunnel_destination.hash)}
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+
+    def tunnel_send(self, destination_hash: str, raw: bytes) -> dict:
+        if not self.live:
+            return {"ok": False, "error": "not_live"}
+        if not tunnel_addressed_enabled():
+            return {"ok": False, "error": "addressed_disabled"}
+        if not isinstance(raw, (bytes, bytearray)) or len(raw) == 0:
+            return {"ok": False, "error": "empty_payload"}
+
+        dest_hex = (destination_hash or "").lower().strip()
+        try:
+            to_hash = bytes.fromhex(dest_hex)
+        except ValueError:
+            return {"ok": False, "error": "invalid_destination"}
+        if len(to_hash) != self.RNS.Reticulum.TRUNCATED_HASHLENGTH // 8:
+            return {"ok": False, "error": "invalid_destination"}
+
+        identity = self.RNS.Identity.recall(to_hash)
+        has_path = False
+        try:
+            has_path = bool(self.RNS.Transport.has_path(to_hash))
+        except Exception:  # noqa: BLE001
+            has_path = False
+
+        # Fall back to broadcast until the peer's tunnel identity + a path are
+        # known; ask for the path (throttled) so a later frame can go direct.
+        if identity is None or not has_path:
+            self._throttled_request_path(to_hash)
+            return {
+                "ok": False,
+                "error": "no_path",
+                "identity_known": identity is not None,
+                "path_known": has_path,
+            }
+
+        max_mdu = getattr(self.RNS.Packet, "ENCRYPTED_MDU", 383) or 383
+        if len(raw) > max_mdu:
+            return {"ok": False, "error": "payload_too_large", "max": max_mdu, "size": len(raw)}
+
+        destination = self.RNS.Destination(
+            identity,
+            self.RNS.Destination.OUT,
+            self.RNS.Destination.SINGLE,
+            "isthmus",
+            "tunnel",
+        )
+        try:
+            packet = self.RNS.Packet(destination, bytes(raw))
+            receipt = packet.send()
+        except Exception as exc:  # noqa: BLE001
+            return {"ok": False, "error": str(exc), "path_known": has_path}
+
+        return {
+            "ok": bool(receipt),
+            "to": dest_hex,
+            "path_known": has_path,
+            "bytes": len(raw),
+        }
 
     def path_status(self, destination_hash: str) -> dict:
         if not self.live:
@@ -828,6 +985,19 @@ def main() -> int:
                     reply(req_id, type="ack", **result)
                 else:
                     reply(req_id, type="error", error=result.get("error") or "inject_failed")
+            elif mtype == "tunnel_send":
+                data_b64 = msg.get("data") or ""
+                try:
+                    raw = base64.b64decode(data_b64)
+                except Exception as exc:  # noqa: BLE001
+                    reply(req_id, type="error", error=f"invalid_base64: {exc}")
+                    continue
+                result = sidecar.tunnel_send(msg.get("destination_hash") or "", raw)
+                reply(req_id, type="tunnel_send_result", **result)
+            elif mtype == "tunnel_status":
+                reply(req_id, type="tunnel_status", **sidecar.tunnel_status())
+            elif mtype == "tunnel_announce":
+                reply(req_id, type="tunnel_announce_result", **sidecar.tunnel_announce())
             elif mtype == "shutdown":
                 break
             else:

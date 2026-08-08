@@ -22,16 +22,43 @@ defmodule Isthmus.Tunnel do
   def get_peer!(id), do: Repo.get!(Peer, id)
 
   def create_peer(attrs) do
-    tunnel_id =
-      Map.get(attrs, :tunnel_id) || Map.get(attrs, "tunnel_id") ||
-        Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+    attrs = stringify_keys(attrs)
 
-    attrs = Map.put(attrs, "tunnel_id", tunnel_id) |> stringify_keys()
+    tunnel_id =
+      cond do
+        present?(attrs["tunnel_id"]) -> attrs["tunnel_id"]
+        present?(attrs["pairing_code"]) -> tunnel_id_from_code(attrs["pairing_code"])
+        true -> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+      end
+
+    attrs =
+      attrs
+      |> Map.put("tunnel_id", tunnel_id)
+      |> Map.delete("pairing_code")
 
     %Peer{}
     |> Peer.changeset(attrs)
     |> Repo.insert()
   end
+
+  @doc """
+  Deterministic `tunnel_id` (32-char lowercase hex) from a human-friendly shared
+  code. Both endpoints of a tunnel enter the same code — comparison is trimmed
+  and case-insensitive — so they land on the same `tunnel_id`, which is the only
+  thing inbound frames are demuxed by (the carrier address is not used).
+
+  Stored as hex because the inbound path compares `Base.encode16(frame.tunnel_id)`
+  against `peer.tunnel_id`.
+  """
+  def tunnel_id_from_code(code) when is_binary(code) do
+    normalized = code |> String.trim() |> String.downcase()
+
+    :crypto.hash(:sha256, "isthmus-tunnel|" <> normalized)
+    |> binary_part(0, 16)
+    |> Base.encode16(case: :lower)
+  end
+
+  defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
   def update_peer(%Peer{} = peer, attrs) do
     peer |> Peer.changeset(attrs) |> Repo.update()
