@@ -4,26 +4,48 @@ defmodule IsthmusWeb.MeLive do
   alias Isthmus.Networks.Reticulum
   alias Isthmus.QR
   alias Isthmus.Registrations
+  alias Isthmus.Topology
 
   @path_refresh_ms 5_000
 
   @impl true
   def mount(_params, _session, socket) do
-    if connected?(socket), do: :timer.send_interval(@path_refresh_ms, self(), :refresh_paths)
+    if connected?(socket) do
+      :timer.send_interval(@path_refresh_ms, self(), :refresh_paths)
+      Phoenix.PubSub.subscribe(Isthmus.PubSub, "announce:sightings")
+      Phoenix.PubSub.subscribe(Isthmus.PubSub, "tunnel:events")
+    end
 
     {:ok,
      socket
      |> assign(:page_title, "My identities")
      |> assign(:path_by_leg, %{})
+     |> assign(:selected, nil)
+     |> assign(:detail, nil)
      |> load_groups()}
   end
 
   @impl true
   def handle_info(:refresh_paths, socket) do
-    {:noreply, assign_path_status(socket)}
+    {:noreply, socket |> assign_path_status() |> assign_graph()}
   end
 
+  def handle_info({:sighting, _}, socket), do: {:noreply, assign_graph(socket)}
+  def handle_info({:tunnel_sent, _}, socket), do: {:noreply, assign_graph(socket)}
+  def handle_info({:tunnel_control, _}, socket), do: {:noreply, assign_graph(socket)}
+  def handle_info({:tunnel_delivered, _}, socket), do: {:noreply, assign_graph(socket)}
+  def handle_info(_msg, socket), do: {:noreply, socket}
+
   @impl true
+  def handle_event("topo_select", %{"id" => id}, socket) do
+    detail = Topology.detail(socket.assigns.graph, id)
+
+    {:noreply,
+     socket
+     |> assign(:selected, id)
+     |> assign(:detail, detail)}
+  end
+
   def handle_event("revoke", %{"id" => id}, socket) do
     group = Registrations.get_group!(id)
 
@@ -160,7 +182,22 @@ defmodule IsthmusWeb.MeLive do
     socket
     |> assign(:groups, groups)
     |> assign_path_status()
+    |> assign_graph()
   end
+
+  defp assign_graph(socket) do
+    graph =
+      Topology.build({:owner, socket.assigns.current_user.pubkey_hex},
+        path_by_leg: socket.assigns.path_by_leg
+      )
+
+    socket
+    |> assign(:graph, graph)
+    |> assign(:detail, refresh_detail(graph, socket.assigns[:selected]))
+  end
+
+  defp refresh_detail(_graph, nil), do: nil
+  defp refresh_detail(graph, id), do: Topology.detail(graph, id)
 
   defp assign_path_status(socket) do
     groups = socket.assigns[:groups] || []
@@ -210,6 +247,11 @@ defmodule IsthmusWeb.MeLive do
             <p class="mt-2 font-mono text-sm break-all text-base-content/70">{@current_user.npub}</p>
           </div>
           <.link navigate={~p"/register"} class="btn btn-outline btn-sm">Register</.link>
+        </div>
+
+        <div :if={@groups != []} class="space-y-2">
+          <h2 class="text-xl font-medium">My network map</h2>
+          <.topology_graph graph={@graph} selected={@selected} detail={@detail} />
         </div>
 
         <%= if @groups == [] do %>

@@ -87,6 +87,7 @@ defmodule IsthmusWeb do
       # Core UI components
       import IsthmusWeb.CoreComponents
       import IsthmusWeb.AdminNav
+      import IsthmusWeb.TopologyGraph
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS
