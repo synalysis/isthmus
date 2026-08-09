@@ -9,6 +9,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
   alias Isthmus.Tunnel.Peer
 
   @default_carrier "meshcore"
+  @default_payload "reticulum"
 
   @impl true
   def mount(_params, _session, socket) do
@@ -17,6 +18,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
     {:ok,
      socket
      |> assign(:carrier, @default_carrier)
+     |> assign(:payload, @default_payload)
      |> assign_local_identity()
      |> assign_data()}
   end
@@ -25,20 +27,27 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
   def handle_info(:refresh, socket), do: {:noreply, assign_data(socket)}
 
   @impl true
-  # phx-change fires on every keystroke in the form, but resolving the local
-  # identity can hit the RNS sidecar, so only do it when the carrier moves.
-  def handle_event("carrier_changed", %{"peer" => %{"carrier_network" => carrier}}, socket) do
-    if carrier == socket.assigns.carrier do
-      {:noreply, socket}
-    else
-      {:noreply,
-       socket
-       |> assign(:carrier, carrier)
-       |> assign_local_identity()}
-    end
+  # phx-change fires on every keystroke. The payload/carrier selects must be
+  # controlled from assigns, otherwise each re-render resets them to their first
+  # <option> (dropping the operator's choice before submit). Resolving the local
+  # identity can hit the RNS sidecar, so only do that when the carrier moves.
+  def handle_event("form_changed", %{"peer" => peer}, socket) do
+    socket = assign(socket, :payload, peer["payload_network"] || socket.assigns.payload)
+    carrier = peer["carrier_network"] || socket.assigns.carrier
+
+    socket =
+      if carrier == socket.assigns.carrier do
+        socket
+      else
+        socket
+        |> assign(:carrier, carrier)
+        |> assign_local_identity()
+      end
+
+    {:noreply, socket}
   end
 
-  def handle_event("carrier_changed", _params, socket), do: {:noreply, socket}
+  def handle_event("form_changed", _params, socket), do: {:noreply, socket}
 
   def handle_event("save", %{"peer" => params}, socket) do
     case Tunnel.create_peer(params) do
@@ -221,7 +230,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
         <.form
           for={@form}
           id="peer-form"
-          phx-change="carrier_changed"
+          phx-change="form_changed"
           phx-submit="save"
           class="card bg-base-200 border border-base-300"
         >
@@ -248,9 +257,9 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
               </p>
             </div>
             <select class="select select-bordered" name="peer[payload_network]">
-              <option value="reticulum">Payload: reticulum</option>
-              <option value="meshcore">Payload: meshcore</option>
-              <option value="nostr">Payload: nostr</option>
+              <option value="reticulum" selected={@payload == "reticulum"}>Payload: reticulum</option>
+              <option value="meshcore" selected={@payload == "meshcore"}>Payload: meshcore</option>
+              <option value="nostr" selected={@payload == "nostr"}>Payload: nostr</option>
             </select>
             <select class="select select-bordered" name="peer[carrier_network]" value={@carrier}>
               <option value="meshcore" selected={@carrier == "meshcore"}>Carrier: meshcore</option>
