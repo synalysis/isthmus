@@ -11,6 +11,15 @@ defmodule Isthmus.Tunnel.OutboxTest do
     assert [^msg | _] = Outbox.due() |> Enum.filter(&(&1.id == msg.id))
   end
 
+  test "mark_retry accepts a non-string error (e.g. a tuple) without crashing" do
+    {:ok, msg} = Outbox.enqueue("tunnel:gov", "peer", <<"payload">>, %{})
+
+    assert {:ok, retried} = Outbox.mark_retry(msg, {:governor, :dedup})
+    assert retried.status == "pending"
+    assert retried.attempts == msg.attempts + 1
+    assert retried.last_error =~ "governor"
+  end
+
   test "retry and drop failed messages" do
     assert {:ok, msg} = Outbox.enqueue("tunnel:dlq", "peer", <<"payload">>, %{})
 

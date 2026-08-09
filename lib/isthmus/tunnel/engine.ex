@@ -196,12 +196,9 @@ defmodule Isthmus.Tunnel.Engine do
         class = if control_msg?(msg), do: :tunnel_control, else: :tunnel_data
 
         case Governor.allow?(class, peer.carrier_network, tunnel_id) do
-          {:drop, reason} ->
-            {:ok, _} = Outbox.mark_retry(msg, {:governor, reason})
-            {:error, {:governor, reason}}
-
-          :ok ->
-            send_over_carrier(peer, msg)
+          # drain_outbox marks the retry; don't double-count attempts here.
+          {:drop, reason} -> {:error, {:governor, reason}}
+          :ok -> send_over_carrier(peer, msg)
         end
     end
   end
@@ -223,7 +220,7 @@ defmodule Isthmus.Tunnel.Engine do
         encoded = Frame.encode(frame)
 
         send_result =
-          if function_exported?(adapter, :send_raw, 2) do
+          if exports?(adapter, :send_raw, 2) do
             adapter.send_raw(encoded, %{
               peer_ref: peer.peer_ref,
               tunnel_id: peer.tunnel_id,
@@ -402,10 +399,10 @@ defmodule Isthmus.Tunnel.Engine do
         # re-originate it from our own identity, which is wrong for a payload.
         result =
           cond do
-            function_exported?(adapter, :inject_raw, 2) ->
+            exports?(adapter, :inject_raw, 2) ->
               apply(adapter, :inject_raw, [payload, opts])
 
-            function_exported?(adapter, :send_raw, 2) ->
+            exports?(adapter, :send_raw, 2) ->
               adapter.send_raw(payload, opts)
 
             true ->
@@ -442,7 +439,7 @@ defmodule Isthmus.Tunnel.Engine do
     with %Peer{} = peer <- Repo.get_by(Peer, tunnel_id: tunnel_hex),
          carrier <- network_atom(peer.carrier_network),
          adapter <- Networks.adapter!(carrier),
-         true <- function_exported?(adapter, :send_raw, 2) do
+         true <- exports?(adapter, :send_raw, 2) do
       adapter.send_raw(ack_binary, %{peer_ref: peer.peer_ref, kind: :ack})
     else
       _ -> :ok
@@ -499,7 +496,7 @@ defmodule Isthmus.Tunnel.Engine do
       carrier = network_atom(peer.carrier_network)
       adapter = Networks.adapter!(carrier)
 
-      if function_exported?(adapter, :send_raw, 2) do
+      if exports?(adapter, :send_raw, 2) do
         seq = peer.next_seq
         tid = Frame.tunnel_id_from_string(peer.tunnel_id)
         payload = Jason.encode!(%{"v" => 1, "op" => "ping", "ts" => now_ms})
@@ -528,6 +525,12 @@ defmodule Isthmus.Tunnel.Engine do
         Logger.debug("tunnel ping failed for #{peer.tunnel_id}: #{inspect(e)}")
         state
     end
+  end
+
+  # function_exported?/3 returns false for a module that hasn't been loaded yet,
+  # which flakes by test/boot ordering. Force a load first.
+  defp exports?(module, fun, arity) do
+    Code.ensure_loaded?(module) and function_exported?(module, fun, arity)
   end
 
   defp ok_send?(:ok), do: true

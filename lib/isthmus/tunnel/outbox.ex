@@ -121,7 +121,9 @@ defmodule Isthmus.Tunnel.Outbox do
     base + :rand.uniform(max(attempt, 1))
   end
 
-  defp truncate_error(err) do
-    err |> to_string() |> String.slice(0, 240)
-  end
+  defp truncate_error(err) when is_binary(err), do: String.slice(err, 0, 240)
+
+  # Errors are often tuples/atoms (e.g. `{:governor, :dedup}`), which don't
+  # implement String.Chars — inspect them so mark_retry never crashes the caller.
+  defp truncate_error(err), do: err |> inspect() |> String.slice(0, 240)
 end
