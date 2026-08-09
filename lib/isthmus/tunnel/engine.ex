@@ -15,6 +15,8 @@ defmodule Isthmus.Tunnel.Engine do
   alias Isthmus.Announce.Sightings
   alias Isthmus.Announce.Governor
   alias Isthmus.Networks
+  alias Isthmus.Networks.Reticulum
+  alias Isthmus.Networks.Reticulum.Sidecar
   alias Isthmus.Tunnel
   alias Isthmus.Tunnel.{Bridge, Frame, Outbox, Peer}
   alias Isthmus.Tunnel.Outbox.Message
@@ -22,6 +24,10 @@ defmodule Isthmus.Tunnel.Engine do
 
   @tick_ms 5_000
   @ping_ms 30_000
+  # Re-announce our isthmus.tunnel destination so peers can learn a return path
+  # for addressed (point-to-point) delivery. Without this, one side may have a
+  # path (works) while the other keeps hitting `no_path` (fails) — an asymmetry.
+  @announce_ms 5 * 60_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -72,6 +78,7 @@ defmodule Isthmus.Tunnel.Engine do
       reassembly: %{},
       pending_acks: %{},
       liveness: %{},
+      last_announce_at: nil,
       stats: %{sent: 0, acked: 0, dropped: 0, reassembled: 0, control: 0}
     }
 
@@ -107,6 +114,8 @@ defmodule Isthmus.Tunnel.Engine do
       else
         state
       end
+
+    state = maybe_announce_tunnels(state)
 
     schedule_ping()
     {:noreply, state}
@@ -389,6 +398,10 @@ defmodule Isthmus.Tunnel.Engine do
         payload_net = network_atom(peer.payload_network)
         adapter = Networks.adapter!(payload_net)
 
+        # Record the injected packet as already-bridged BEFORE it hits the island,
+        # so the repeater's echo isn't re-forwarded back down the tunnel (loop).
+        if peer.payload_network == "meshcore", do: Bridge.mark_forwarded(payload)
+
         opts = %{
           direction: :from_tunnel,
           from_tunnel: true,
@@ -413,6 +426,9 @@ defmodule Isthmus.Tunnel.Engine do
               {:error, :adapter_no_raw}
           end
 
+        log_delivery(peer, tunnel_hex, byte_size(payload), result)
+        record_inbound_sighting(peer, tunnel_hex, result)
+
         Phoenix.PubSub.broadcast(
           Isthmus.PubSub,
           "tunnel:events",
@@ -431,6 +447,52 @@ defmodule Isthmus.Tunnel.Engine do
         Logger.debug("inbound frame for unknown tunnel #{tunnel_hex}")
         :ok
     end
+  end
+
+  defp log_delivery(peer, tunnel_hex, bytes, result) do
+    case result do
+      :ok ->
+        Logger.info(
+          "tunnel→#{peer.payload_network} delivered #{bytes}B via #{tunnel_hex} (#{peer.name})"
+        )
+
+      {:ok, _} ->
+        Logger.info(
+          "tunnel→#{peer.payload_network} delivered #{bytes}B via #{tunnel_hex} (#{peer.name})"
+        )
+
+      {:error, reason} ->
+        Logger.warning(
+          "tunnel→#{peer.payload_network} inject FAILED (#{bytes}B) via #{tunnel_hex} (#{peer.name}): #{inspect(reason)}"
+        )
+    end
+  end
+
+  # Persist a lightweight "in" sighting so inbound tunnel payloads are visible in
+  # the Tunnels announce-flow table / topology, making direction issues diagnosable.
+  defp record_inbound_sighting(peer, tunnel_hex, result) do
+    delivered? =
+      case result do
+        :ok -> true
+        {:ok, _} -> true
+        _ -> false
+      end
+
+    if delivered? do
+      try do
+        Sightings.record(%{
+          network: peer.payload_network,
+          identity_ref: peer.peer_ref || tunnel_hex,
+          direction: "in",
+          tunnel_id: tunnel_hex,
+          meta: %{"source" => "tunnel_data", "peer" => peer.name}
+        })
+      rescue
+        _ -> :ok
+      end
+    end
+
+    :ok
   end
 
   defp maybe_send_ack(tunnel_id_bin, ack_binary) do
@@ -477,6 +539,45 @@ defmodule Isthmus.Tunnel.Engine do
 
   defp ping_enabled?, do: Application.get_env(:isthmus, :tunnel_ping_enabled, true)
   defp ping_interval, do: Application.get_env(:isthmus, :tunnel_ping_ms, @ping_ms)
+
+  # Periodically re-announce our tunnel destination so remote peers can learn a
+  # path back to us and use addressed delivery in BOTH directions.
+  defp maybe_announce_tunnels(state) do
+    now = System.monotonic_time(:millisecond)
+
+    if announce_due?(state[:last_announce_at], now) and reticulum_tunnel_active?() do
+      _ = safe_tunnel_announce()
+      Map.put(state, :last_announce_at, now)
+    else
+      state
+    end
+  end
+
+  defp announce_due?(nil, _now), do: true
+  defp announce_due?(last, now), do: now - last >= @announce_ms
+
+  defp reticulum_tunnel_active? do
+    Reticulum.addressed_enabled?() and
+      Repo.exists?(
+        from(p in Peer, where: p.enabled == true and p.carrier_network == ^"reticulum")
+      )
+  rescue
+    _ -> false
+  end
+
+  defp safe_tunnel_announce do
+    if exports?(Sidecar, :tunnel_announce, 0) do
+      Sidecar.tunnel_announce()
+    else
+      :ok
+    end
+  rescue
+    e ->
+      Logger.debug("tunnel_announce failed: #{inspect(e)}")
+      :error
+  catch
+    :exit, _ -> :error
+  end
 
   # A tunnel is considered stale (and thus unreachable) once it misses ~3 pings.
   defp ping_stale_ms, do: ping_interval() * 3
