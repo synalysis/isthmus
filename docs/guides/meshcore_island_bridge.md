@@ -40,6 +40,8 @@ The serial path is **not** encrypted. `BridgeCodec`'s XOR secret applies to the 
 
 ## Firmware
 
+> For a full, copy‑pasteable build‑and‑flash recipe (PlatformIO install, cherry‑picks, conflict resolution, UF2 flashing, and CLI config), see [`meshcore_bridge_firmware_build.md`](./meshcore_bridge_firmware_build.md). The summary below is the short version.
+
 Repeater firmware built with `WITH_RS232_BRIDGE`. Upstream ships **no** prebuilt bridge binaries for any board, so a build is unavoidable.
 
 Use MeshCore PR [#2959](https://github.com/meshcore-dev/MeshCore/pull/2959), which puts the bridge stream on a second USB CDC interface — CDC 0 stays the CLI, CDC 1 carries packets. One plain USB cable, no UART wiring, no USB-TTL adapter.
@@ -89,7 +91,9 @@ pio run -e WioTrackerL1_repeater_bridge_usbserial
 pio run -e WioTrackerL1_repeater_bridge_usbserial -t create_uf2
 ```
 
-Flash by double-tap reset and dragging `firmware.uf2` onto the mass-storage volume.
+The Isthmus fork ships a **custom repeater UI** (`examples/simple_repeater/UITask.*`) with four joystick‑navigable screens — **Home / Radio / Bridge / Node** — enabled by `-D UI_HAS_JOYSTICK=1` in the env above. It also adds bridge stats CLI commands (`get bridge.rxstats`, `get bridge.txstats`, `bridge.stats reset`). See the [build guide](./meshcore_bridge_firmware_build.md) for the full env, the UI, and how to build/commit it.
+
+Flash by double-tap reset and dragging `firmware.uf2` onto the mass-storage volume (or use the 1200 bps‑touch software trigger described in the build guide).
 
 **If the second CDC does not enumerate**, fall back to a hardware UART: drop `WITH_USB_SERIAL_BRIDGE` and use `-D WITH_RS232_BRIDGE=Serial1` with `-D WITH_RS232_BRIDGE_RX=PIN_WIRE1_SDA -D WITH_RS232_BRIDGE_TX=PIN_WIRE1_SCL`. `variant.h` wires `Serial1` to the GPS on pins that aren't exposed, but `RS232Bridge::begin()` calls `setPins()` at runtime, so it can be repointed onto the Grove port and reached with a 3.3V USB-TTL adapter.
 
