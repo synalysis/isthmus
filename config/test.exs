@@ -23,6 +23,9 @@ config :isthmus, Isthmus.Networks.MeshCore.Discover,
 # App SyntheticNode must not poll the sandbox DB between tests.
 config :isthmus, Isthmus.Networks.MeshCore.SyntheticNode, autoload: false
 
+# Tunnel keepalive pings must not poll the sandbox DB / carriers between tests.
+config :isthmus, tunnel_ping_enabled: false
+
 # We don't run a server during test. If one is required,
 # you can enable the server option below.
 config :isthmus, IsthmusWeb.Endpoint,

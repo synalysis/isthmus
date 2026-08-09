@@ -90,6 +90,48 @@ defmodule Isthmus.Tunnel.EngineTest do
     assert tunnel_id == peer.tunnel_id
   end
 
+  test "keepalive ping marks a tunnel reachable and records RTT", %{peer: peer} do
+    _ = Transport.drain_outbound(256)
+
+    prev = Application.get_env(:isthmus, :tunnel_ping_enabled, true)
+    Application.put_env(:isthmus, :tunnel_ping_enabled, true)
+    on_exit(fn -> Application.put_env(:isthmus, :tunnel_ping_enabled, prev) end)
+
+    # 1. Trigger a ping sweep: the Engine sends a control "ping" over the carrier.
+    send(Engine, :ping)
+    _ = :sys.get_state(Engine)
+
+    ping_frame =
+      Transport.drain_outbound(16)
+      |> find_frame(fn %Frame{flags: flags} = f ->
+        Bitwise.band(flags, Frame.flag_control()) != 0 and control_op(f) == "ping"
+      end)
+
+    assert is_binary(ping_frame)
+
+    # 2. Far side receives the ping and ACKs it.
+    Engine.handle_inbound_frame(ping_frame)
+    _ = :sys.get_state(Engine)
+
+    ack_frame =
+      Transport.drain_outbound(16)
+      |> find_frame(fn %Frame{flags: flags} ->
+        Bitwise.band(flags, Frame.flag_ack()) != 0
+      end)
+
+    assert is_binary(ack_frame)
+
+    # 3. Sender receives the ACK and marks the tunnel reachable with an RTT.
+    Engine.handle_inbound_frame(ack_frame)
+    _ = :sys.get_state(Engine)
+
+    assert_receive {:tunnel_ping, %{tunnel_id: tunnel_id, rtt_ms: rtt}}, 1_000
+    assert tunnel_id == peer.tunnel_id
+    assert is_integer(rtt) and rtt >= 0
+
+    assert %{status: :reachable, rtt_ms: ^rtt} = Map.get(Engine.health(), peer.tunnel_id)
+  end
+
   test "a meshcore payload is delivered through the bridge, not the companion" do
     {:ok, peer} =
       Tunnel.create_peer(%{
@@ -128,5 +170,21 @@ defmodule Isthmus.Tunnel.EngineTest do
 
     refreshed = Outbox.get!(msg.id)
     assert refreshed.status in ["inflight", "acked", "pending"]
+  end
+
+  defp find_frame(outbound, pred) do
+    Enum.find_value(outbound, fn %{payload: raw} ->
+      case Frame.decode(raw) do
+        {:ok, %Frame{} = frame, <<>>} -> if pred.(frame), do: raw
+        _ -> nil
+      end
+    end)
+  end
+
+  defp control_op(%Frame{payload: payload}) do
+    case Jason.decode(payload) do
+      {:ok, %{"op" => op}} -> op
+      _ -> nil
+    end
   end
 end

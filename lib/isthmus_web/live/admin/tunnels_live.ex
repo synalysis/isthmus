@@ -172,6 +172,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
     socket
     |> assign(:page_title, "Tunnels")
     |> assign(:peers, peers)
+    |> assign(:tunnel_health, Tunnel.Engine.health())
     |> assign(:peer_metrics, peer_metrics)
     |> assign(:preferred_ids, preferred_ids)
     |> assign(:routing_notes, routing_notes)
@@ -407,6 +408,14 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
           </script>
         </.form>
 
+        <div class="space-y-1">
+          <h2 class="text-lg font-medium">Tunnel peers</h2>
+          <p class="text-xs opacity-60">
+            Each enabled tunnel is pinged periodically over its carrier; the badge shows whether the
+            far side is reachable and the round-trip time.
+          </p>
+        </div>
+
         <ul class="space-y-2">
           <li
             :for={peer <- @peers}
@@ -456,10 +465,13 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                 </div>
               </.form>
             <% else %>
+              <% health = Map.get(@tunnel_health, peer.tunnel_id) %>
+              <% {health_label, health_class} = tunnel_badge(peer, health) %>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div class="space-y-1">
                   <p class="font-medium flex items-center gap-2">
                     {peer.name}
+                    <span class={["badge badge-sm", health_class]}>{health_label}</span>
                     <span :if={Map.get(@preferred_ids, peer.id)} class="badge badge-success badge-sm">
                       preferred
                     </span>
@@ -468,7 +480,10 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                   <p class="text-xs font-mono opacity-70">
                     {peer.payload_network} over {peer.carrier_network} · {peer.tunnel_id} · seq {peer.next_seq}
                   </p>
-                  <p class="text-xs opacity-60">
+                  <p :if={peer.enabled} class="text-xs opacity-70">
+                    {tunnel_health_line(health)}
+                  </p>
+                  <p class="text-xs opacity-50">
                     {peer_metric_label(Map.get(@peer_metrics, peer.id))}
                   </p>
                 </div>
@@ -549,6 +564,46 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
       </section>
     </Layouts.app>
     """
+  end
+
+  defp tunnel_badge(%{enabled: false}, _health), do: {"paused", "badge-ghost"}
+
+  defp tunnel_badge(_peer, %{status: :reachable, rtt_ms: rtt}) when is_integer(rtt),
+    do: {"reachable · #{rtt} ms", "badge-success"}
+
+  defp tunnel_badge(_peer, %{status: :reachable}), do: {"reachable", "badge-success"}
+  defp tunnel_badge(_peer, %{status: :unreachable}), do: {"unreachable", "badge-error"}
+  defp tunnel_badge(_peer, _health), do: {"checking…", "badge-ghost"}
+
+  defp tunnel_health_line(%{status: :reachable, rtt_ms: rtt, last_ack_at: ack})
+       when is_integer(rtt) do
+    "Round-trip #{rtt} ms · last reply #{ago(ack)} ago"
+  end
+
+  defp tunnel_health_line(%{status: :reachable, last_ack_at: ack}) do
+    "Reachable · last reply #{ago(ack)} ago"
+  end
+
+  defp tunnel_health_line(%{status: :unreachable, last_ack_at: nil, misses: misses}) do
+    "No reply yet · #{misses} ping(s) sent"
+  end
+
+  defp tunnel_health_line(%{status: :unreachable, last_ack_at: ack, misses: misses}) do
+    "No reply · last ok #{ago(ack)} ago · #{misses} missed"
+  end
+
+  defp tunnel_health_line(_), do: "Awaiting first ping…"
+
+  defp ago(nil), do: "—"
+
+  defp ago(ms) when is_integer(ms) do
+    secs = max(div(System.system_time(:millisecond) - ms, 1000), 0)
+
+    cond do
+      secs < 60 -> "#{secs}s"
+      secs < 3600 -> "#{div(secs, 60)}m"
+      true -> "#{div(secs, 3600)}h"
+    end
   end
 
   defp peer_metric_label(nil), do: "No path metrics yet"
