@@ -22,19 +22,10 @@ defmodule Isthmus.Tunnel do
   def get_peer!(id), do: Repo.get!(Peer, id)
 
   def create_peer(attrs) do
-    attrs = stringify_keys(attrs)
-
-    tunnel_id =
-      cond do
-        present?(attrs["tunnel_id"]) -> attrs["tunnel_id"]
-        present?(attrs["pairing_code"]) -> tunnel_id_from_code(attrs["pairing_code"])
-        true -> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
-      end
-
     attrs =
       attrs
-      |> Map.put("tunnel_id", tunnel_id)
-      |> Map.delete("pairing_code")
+      |> stringify_keys()
+      |> resolve_tunnel_id(fn -> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower) end)
 
     %Peer{}
     |> Peer.changeset(attrs)
@@ -60,9 +51,33 @@ defmodule Isthmus.Tunnel do
 
   defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
+  # Resolve the tunnel_id from an explicit value, a pairing code, or the fallback.
+  # `pairing_code` is a virtual form field and is never persisted.
+  defp resolve_tunnel_id(attrs, fallback) when is_function(fallback, 0) do
+    tunnel_id =
+      cond do
+        present?(attrs["tunnel_id"]) -> attrs["tunnel_id"]
+        present?(attrs["pairing_code"]) -> tunnel_id_from_code(attrs["pairing_code"])
+        true -> fallback.()
+      end
+
+    attrs
+    |> Map.put("tunnel_id", tunnel_id)
+    |> Map.delete("pairing_code")
+  end
+
   def update_peer(%Peer{} = peer, attrs) do
+    # On edit, keep the existing tunnel_id unless the operator supplies a new one
+    # (explicit id or a fresh pairing code).
+    attrs =
+      attrs
+      |> stringify_keys()
+      |> resolve_tunnel_id(fn -> peer.tunnel_id end)
+
     peer |> Peer.changeset(attrs) |> Repo.update()
   end
+
+  def delete_peer(%Peer{} = peer), do: Repo.delete(peer)
 
   def change_peer(%Peer{} = peer, attrs \\ %{}), do: Peer.changeset(peer, attrs)
 

@@ -19,6 +19,9 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
      socket
      |> assign(:carrier, @default_carrier)
      |> assign(:payload, @default_payload)
+     |> assign(:editing_peer, nil)
+     |> assign(:edit_form, nil)
+     |> assign(:edit_pairing, "")
      |> assign_local_identity()
      |> assign_data()}
   end
@@ -63,6 +66,69 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
     peer = Tunnel.get_peer!(id)
     {:ok, _} = Tunnel.update_peer(peer, %{enabled: !peer.enabled})
     {:noreply, assign_data(socket)}
+  end
+
+  def handle_event("edit", %{"id" => id}, socket) do
+    peer = Tunnel.get_peer!(id)
+
+    {:noreply,
+     socket
+     |> assign(:editing_peer, peer)
+     |> assign(:edit_form, to_form(Tunnel.change_peer(peer)))
+     |> assign(:edit_pairing, "")}
+  end
+
+  def handle_event("cancel_edit", _params, socket) do
+    {:noreply, clear_edit(socket)}
+  end
+
+  def handle_event("validate_edit", %{"peer" => params}, socket) do
+    case socket.assigns.editing_peer do
+      nil ->
+        {:noreply, socket}
+
+      peer ->
+        changeset = peer |> Tunnel.change_peer(params) |> Map.put(:action, :validate)
+
+        {:noreply,
+         socket
+         |> assign(:edit_form, to_form(changeset))
+         |> assign(:edit_pairing, params["pairing_code"] || "")}
+    end
+  end
+
+  def handle_event("save_edit", %{"peer" => params}, socket) do
+    case socket.assigns.editing_peer do
+      nil ->
+        {:noreply, socket}
+
+      peer ->
+        case Tunnel.update_peer(peer, params) do
+          {:ok, _} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Tunnel peer updated.")
+             |> clear_edit()
+             |> assign_data()}
+
+          {:error, changeset} ->
+            {:noreply, assign(socket, :edit_form, to_form(changeset))}
+        end
+    end
+  end
+
+  def handle_event("delete", %{"id" => id}, socket) do
+    peer = Tunnel.get_peer!(id)
+    {:ok, _} = Tunnel.delete_peer(peer)
+
+    socket =
+      if socket.assigns.editing_peer && socket.assigns.editing_peer.id == peer.id do
+        clear_edit(socket)
+      else
+        socket
+      end
+
+    {:noreply, socket |> put_flash(:info, "Tunnel peer deleted.") |> assign_data()}
   end
 
   def handle_event("retry_outbox", %{"id" => id}, socket) do
@@ -120,6 +186,21 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
   defp assign_local_identity(socket) do
     assign(socket, :local_identity, LocalIdentity.for_network(socket.assigns.carrier))
   end
+
+  defp clear_edit(socket) do
+    socket
+    |> assign(:editing_peer, nil)
+    |> assign(:edit_form, nil)
+    |> assign(:edit_pairing, "")
+  end
+
+  defp payload_networks, do: ~w(reticulum meshcore nostr)
+  defp carrier_networks, do: ~w(meshcore reticulum nostr)
+  defp network_options(networks), do: Enum.map(networks, &{&1, &1})
+
+  defp editing?(nil, _peer), do: false
+  defp editing?(%{id: id}, %{id: id}), do: true
+  defp editing?(_editing, _peer), do: false
 
   defp identity_badge(:ok), do: {"ready", "badge-success"}
   defp identity_badge(:partial), do: {"see note", "badge-warning"}
@@ -329,25 +410,92 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
         <ul class="space-y-2">
           <li
             :for={peer <- @peers}
-            class="flex flex-wrap items-center justify-between gap-2 rounded-box border border-base-300 bg-base-200 px-4 py-3"
+            id={"peer-#{peer.id}"}
+            class="rounded-box border border-base-300 bg-base-200 px-4 py-3"
           >
-            <div class="space-y-1">
-              <p class="font-medium flex items-center gap-2">
-                {peer.name}
-                <span :if={Map.get(@preferred_ids, peer.id)} class="badge badge-success badge-sm">
-                  preferred
-                </span>
-              </p>
-              <p class="text-xs font-mono opacity-70">
-                {peer.payload_network} over {peer.carrier_network} · {peer.tunnel_id} · seq {peer.next_seq}
-              </p>
-              <p class="text-xs opacity-60">
-                {peer_metric_label(Map.get(@peer_metrics, peer.id))}
-              </p>
-            </div>
-            <button class="btn btn-sm" phx-click="toggle" phx-value-id={peer.id}>
-              {if peer.enabled, do: "Disable", else: "Enable"}
-            </button>
+            <%= if editing?(@editing_peer, peer) do %>
+              <.form
+                for={@edit_form}
+                id={"edit-peer-#{peer.id}"}
+                phx-change="validate_edit"
+                phx-submit="save_edit"
+                class="grid gap-3 md:grid-cols-2"
+              >
+                <h3 class="md:col-span-2 text-sm font-semibold">Edit tunnel peer</h3>
+                <.input field={@edit_form[:name]} label="Name" />
+                <.input field={@edit_form[:peer_ref]} label="Remote ref on carrier network" />
+                <.input
+                  field={@edit_form[:payload_network]}
+                  type="select"
+                  label="Payload"
+                  options={network_options(payload_networks())}
+                />
+                <.input
+                  field={@edit_form[:carrier_network]}
+                  type="select"
+                  label="Carrier"
+                  options={network_options(carrier_networks())}
+                />
+                <div class="md:col-span-2">
+                  <input
+                    class="input input-bordered w-full"
+                    name="peer[pairing_code]"
+                    value={@edit_pairing}
+                    placeholder="New shared tunnel code (optional — re-derives the tunnel id)"
+                  />
+                  <p class="mt-1 text-xs opacity-60">
+                    Current tunnel id <span class="font-mono">{peer.tunnel_id}</span>.
+                    Leave the code blank to keep it; enter an identical code on both sides to re-pair.
+                  </p>
+                </div>
+                <div class="md:col-span-2 flex gap-2">
+                  <button class="btn btn-primary btn-sm" type="submit">Save</button>
+                  <button class="btn btn-ghost btn-sm" type="button" phx-click="cancel_edit">
+                    Cancel
+                  </button>
+                </div>
+              </.form>
+            <% else %>
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <div class="space-y-1">
+                  <p class="font-medium flex items-center gap-2">
+                    {peer.name}
+                    <span :if={Map.get(@preferred_ids, peer.id)} class="badge badge-success badge-sm">
+                      preferred
+                    </span>
+                    <span :if={not peer.enabled} class="badge badge-ghost badge-sm">disabled</span>
+                  </p>
+                  <p class="text-xs font-mono opacity-70">
+                    {peer.payload_network} over {peer.carrier_network} · {peer.tunnel_id} · seq {peer.next_seq}
+                  </p>
+                  <p class="text-xs opacity-60">
+                    {peer_metric_label(Map.get(@peer_metrics, peer.id))}
+                  </p>
+                </div>
+                <div class="flex flex-wrap gap-2">
+                  <button class="btn btn-sm" phx-click="toggle" phx-value-id={peer.id}>
+                    {if peer.enabled, do: "Disable", else: "Enable"}
+                  </button>
+                  <button
+                    class="btn btn-sm btn-outline"
+                    id={"edit-#{peer.id}"}
+                    phx-click="edit"
+                    phx-value-id={peer.id}
+                  >
+                    Edit
+                  </button>
+                  <button
+                    class="btn btn-sm btn-outline btn-error"
+                    id={"delete-#{peer.id}"}
+                    phx-click="delete"
+                    phx-value-id={peer.id}
+                    data-confirm={"Delete tunnel peer \"#{peer.name}\"? This cannot be undone."}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </div>
+            <% end %>
           </li>
         </ul>
 

@@ -115,4 +115,51 @@ defmodule Isthmus.Tunnel.PeerTest do
 
     assert peer.tunnel_id == "6d105c6ddcf9f9225ecd9f428520ca72"
   end
+
+  test "update_peer edits fields but keeps the tunnel_id when no code is given" do
+    {:ok, peer} =
+      Tunnel.create_peer(%{
+        name: "Before",
+        peer_ref: @ref,
+        payload_network: "reticulum",
+        carrier_network: "reticulum"
+      })
+
+    original_id = peer.tunnel_id
+
+    {:ok, updated} =
+      Tunnel.update_peer(peer, %{"name" => "After", "payload_network" => "meshcore"})
+
+    assert updated.name == "After"
+    assert updated.payload_network == "meshcore"
+    assert updated.tunnel_id == original_id
+  end
+
+  test "update_peer re-derives the tunnel_id from a new pairing code" do
+    {:ok, peer} =
+      Tunnel.create_peer(%{
+        name: "Repair",
+        peer_ref: @ref,
+        payload_network: "meshcore",
+        carrier_network: "reticulum"
+      })
+
+    {:ok, updated} = Tunnel.update_peer(peer, %{"pairing_code" => "Fresh Pair"})
+
+    assert updated.tunnel_id == Tunnel.tunnel_id_from_code("Fresh Pair")
+    refute updated.tunnel_id == peer.tunnel_id
+  end
+
+  test "delete_peer removes the peer" do
+    {:ok, peer} =
+      Tunnel.create_peer(%{
+        name: "Doomed",
+        peer_ref: @ref,
+        payload_network: "reticulum",
+        carrier_network: "reticulum"
+      })
+
+    assert {:ok, _} = Tunnel.delete_peer(peer)
+    assert Tunnel.list_peers() == []
+  end
 end
