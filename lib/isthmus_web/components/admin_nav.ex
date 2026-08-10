@@ -21,6 +21,7 @@ defmodule IsthmusWeb.AdminNav do
       <div class="flex flex-wrap items-center gap-2">
         <span class="text-xs uppercase tracking-wide opacity-50 mr-1">Ops</span>
         <.nav_link href={~p"/admin/registrations"} label="Groups" current={@current == :groups} />
+        <.nav_link href={~p"/admin/adverts"} label="Adverts" current={@current == :adverts} />
         <.nav_link href={~p"/admin/topology"} label="Topology" current={@current == :topology} />
         <.nav_link href={~p"/admin/gateway"} label="Gateway" current={@current == :gateway} />
         <.nav_link href={~p"/admin/timeline"} label="Timeline" current={@current == :timeline} />

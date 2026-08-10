@@ -230,11 +230,20 @@ defmodule Isthmus.Tunnel.Engine do
 
         send_result =
           if exports?(adapter, :send_raw, 2) do
-            adapter.send_raw(encoded, %{
-              peer_ref: peer.peer_ref,
-              tunnel_id: peer.tunnel_id,
-              kind: if(control_msg?(msg), do: :control, else: :data)
-            })
+            try do
+              adapter.send_raw(encoded, %{
+                peer_ref: peer.peer_ref,
+                tunnel_id: peer.tunnel_id,
+                kind: if(control_msg?(msg), do: :control, else: :data)
+              })
+            catch
+              :exit, reason ->
+                Logger.warning(
+                  "tunnel carrier send exited (#{peer.carrier_network}): #{inspect(reason)}"
+                )
+
+                {:error, {:carrier_exit, reason}}
+            end
           else
             {:error, :adapter_no_raw}
           end
@@ -498,13 +507,17 @@ defmodule Isthmus.Tunnel.Engine do
   defp maybe_send_ack(tunnel_id_bin, ack_binary) do
     tunnel_hex = Base.encode16(tunnel_id_bin, case: :lower)
 
-    with %Peer{} = peer <- Repo.get_by(Peer, tunnel_id: tunnel_hex),
-         carrier <- network_atom(peer.carrier_network),
-         adapter <- Networks.adapter!(carrier),
-         true <- exports?(adapter, :send_raw, 2) do
-      adapter.send_raw(ack_binary, %{peer_ref: peer.peer_ref, kind: :ack})
-    else
-      _ -> :ok
+    try do
+      with %Peer{} = peer <- Repo.get_by(Peer, tunnel_id: tunnel_hex),
+           carrier <- network_atom(peer.carrier_network),
+           adapter <- Networks.adapter!(carrier),
+           true <- exports?(adapter, :send_raw, 2) do
+        adapter.send_raw(ack_binary, %{peer_ref: peer.peer_ref, kind: :ack})
+      else
+        _ -> :ok
+      end
+    catch
+      :exit, _ -> :ok
     end
   end
 
@@ -624,6 +637,10 @@ defmodule Isthmus.Tunnel.Engine do
     rescue
       e ->
         Logger.debug("tunnel ping failed for #{peer.tunnel_id}: #{inspect(e)}")
+        state
+    catch
+      :exit, reason ->
+        Logger.debug("tunnel ping exited for #{peer.tunnel_id}: #{inspect(reason)}")
         state
     end
   end

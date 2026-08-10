@@ -2,14 +2,17 @@ defmodule Isthmus.Nostr.Crypto do
   @moduledoc """
   DM crypto helpers via `nostr_lib`.
 
-  Prefer per-group vaulted Nostr proxies (`nostr`/`proxy` legs) for encrypt/decrypt.
-  `ISTHMUS_NOSTR_NSEC` remains a legacy shared fallback when no proxy exists.
+  Prefer per-group vaulted Nostr proxies (`nostr`/`proxy` legs) for group DM
+  encrypt/decrypt and routing. `ISTHMUS_NOSTR_NSEC` is this node’s **service**
+  identity for the Nostr tunnel carrier. Inbound DMs to that key are retained in
+  `Networks.Nostr.ServiceInbox` only — they are not matched to groups and are not
+  used as a chat sender.
 
   Outbound DMs prefer **NIP-17** (gift-wrapped). Inbound accepts NIP-17 kind 1059
   and legacy **NIP-04** kind 4 for older clients.
 
-  Optional NIP-17 `subject` tags (`isthmus/<slug>`) identify the registration/bridge
-  chat room when the recipient is the shared service key — see [NIP-17](https://nips.nostr.com/17).
+  Optional NIP-17 `subject` tags (`isthmus/<slug>`) can hint a group room when
+  the recipient is a per-group proxy — see [NIP-17](https://nips.nostr.com/17).
 
   Seckeys are BIP340-normalized (even-Y) before use — required for ECDH agreement
   when peers lift x-only keys with the `0x02` prefix.

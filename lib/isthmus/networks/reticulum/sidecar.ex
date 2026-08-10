@@ -10,61 +10,49 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
   require Logger
 
   @call_timeout 30_000
+  # Tunnel carrier sends are on the Engine tick path — keep them short so a
+  # stuck Python `packet.send()` cannot take the Engine down for 30s.
+  @tunnel_send_timeout 5_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  def health, do: GenServer.call(__MODULE__, :health)
+  def health do
+    case safe_call(:health, 5_000) do
+      {:error, _} -> %{status: :not_started, live: false}
+      other -> other
+    end
+  end
 
   @doc "Live RNS instance/config/interface snapshot from the sidecar."
   def status do
-    GenServer.call(__MODULE__, {:rpc, "status", %{}}, @call_timeout)
+    safe_rpc("status", %{})
   end
 
   def create_identity(opts \\ %{}) do
-    GenServer.call(__MODULE__, {:rpc, "identity_create", Map.new(opts)}, @call_timeout)
+    safe_rpc("identity_create", Map.new(opts))
   end
 
   def register_identity(attrs) when is_map(attrs) do
-    GenServer.call(
-      __MODULE__,
-      {:rpc, "identity_register", stringify_keys(attrs)},
-      @call_timeout
-    )
+    safe_rpc("identity_register", stringify_keys(attrs))
   end
 
   def announce(destination_hash) when is_binary(destination_hash) do
-    GenServer.call(
-      __MODULE__,
-      {:rpc, "identity_announce", %{"destination_hash" => destination_hash}},
-      @call_timeout
-    )
+    safe_rpc("identity_announce", %{"destination_hash" => destination_hash})
   end
 
   @doc "Ask Transport for a path to a destination; reports whether Identity.recall already knows it."
   def request_path(destination_hash) when is_binary(destination_hash) do
-    GenServer.call(
-      __MODULE__,
-      {:rpc, "request_path", %{"destination_hash" => destination_hash}},
-      @call_timeout
-    )
+    safe_rpc("request_path", %{"destination_hash" => destination_hash})
   end
 
   def path_status(destination_hash) when is_binary(destination_hash) do
-    GenServer.call(
-      __MODULE__,
-      {:rpc, "path_status", %{"destination_hash" => destination_hash}},
-      @call_timeout
-    )
+    safe_rpc("path_status", %{"destination_hash" => destination_hash})
   end
 
   def send_packet(binary) when is_binary(binary) do
-    GenServer.call(
-      __MODULE__,
-      {:rpc, "packet", %{"data" => Base.encode64(binary)}},
-      @call_timeout
-    )
+    safe_rpc("packet", %{"data" => Base.encode64(binary)})
     |> case do
       {:ok, _} -> :ok
       {:error, reason, _} -> {:error, reason}
@@ -78,15 +66,14 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
 
   Returns `{:error, "no_path", _}` (and asks Reticulum for a path) until the
   peer's tunnel identity and a route are known, so callers fall back to the
-  broadcast inject path.
+  broadcast inject path. Never raises / exits the caller on timeout.
   """
   def tunnel_send(destination_hash, binary)
       when is_binary(destination_hash) and is_binary(binary) do
-    GenServer.call(
-      __MODULE__,
-      {:rpc, "tunnel_send",
-       %{"destination_hash" => destination_hash, "data" => Base.encode64(binary)}},
-      @call_timeout
+    safe_rpc(
+      "tunnel_send",
+      %{"destination_hash" => destination_hash, "data" => Base.encode64(binary)},
+      @tunnel_send_timeout
     )
     |> case do
       {:ok, %{"ok" => true} = msg} -> {:ok, msg}
@@ -99,20 +86,16 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
 
   @doc "Our own `isthmus.tunnel` destination hash peers address frames to (addressed mode only)."
   def tunnel_status do
-    GenServer.call(__MODULE__, {:rpc, "tunnel_status", %{}}, @call_timeout)
+    safe_rpc("tunnel_status", %{})
   end
 
   @doc "Re-announce our tunnel destination so peers can recall the identity and learn a path."
   def tunnel_announce do
-    GenServer.call(__MODULE__, {:rpc, "tunnel_announce", %{}}, @call_timeout)
+    safe_rpc("tunnel_announce", %{})
   end
 
   def send_lxmf(attrs) when is_map(attrs) do
-    GenServer.call(
-      __MODULE__,
-      {:rpc, "lxmf_send", %{"message" => stringify_keys(attrs)}},
-      @call_timeout
-    )
+    safe_rpc("lxmf_send", %{"message" => stringify_keys(attrs)})
   end
 
   def sync_registered_identities do
@@ -124,8 +107,33 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
   Pending RPCs are failed with `{:error, :sidecar_restarting}`.
   """
   def restart do
-    GenServer.call(__MODULE__, :restart, @call_timeout)
+    safe_call(:restart, @call_timeout)
   end
+
+  # GenServer.call exits the *caller* on timeout. Tunnel.Engine (and other
+  # hot paths) must never die because the Python sidecar stalled — convert
+  # exits into error tuples so send_raw can fall back to broadcast.
+  defp safe_rpc(type, payload, timeout \\ @call_timeout) do
+    safe_call({:rpc, type, payload}, timeout)
+  end
+
+  defp safe_call(request, timeout) do
+    GenServer.call(__MODULE__, request, timeout)
+  catch
+    :exit, {:timeout, _} ->
+      Logger.warning("RNS sidecar call timed out: #{inspect(request_label(request))}")
+      {:error, :timeout}
+
+    :exit, reason ->
+      Logger.warning(
+        "RNS sidecar call exited (#{inspect(request_label(request))}): #{inspect(reason)}"
+      )
+
+      {:error, {:exit, reason}}
+  end
+
+  defp request_label({:rpc, type, _}), do: type
+  defp request_label(other), do: other
 
   @impl true
   def init(_opts) do
@@ -236,6 +244,11 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
 
   defp handle_port_msg(%{"type" => "lxmf", "message" => message}, state) do
     Phoenix.PubSub.broadcast(Isthmus.PubSub, "reticulum:inbound", {:lxmf, message})
+    state
+  end
+
+  defp handle_port_msg(%{"type" => "announce"} = msg, state) do
+    _ = Isthmus.Announce.Inbound.handle_reticulum(msg)
     state
   end
 

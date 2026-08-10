@@ -2,6 +2,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
   use IsthmusWeb, :live_view
 
   alias Isthmus.Announce.Governor
+  alias Isthmus.Announce.KnownAddresses
   alias Isthmus.Announce.Sightings
   alias Isthmus.Networks.LocalIdentity
   alias Isthmus.Tunnel
@@ -523,6 +524,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                   <th>When</th>
                   <th>Net</th>
                   <th>Dir</th>
+                  <th>Name</th>
                   <th>Identity</th>
                   <th>Hops</th>
                   <th>Latency</th>
@@ -531,12 +533,13 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
               </thead>
               <tbody>
                 <tr :if={@sightings == []}>
-                  <td colspan="7" class="text-sm opacity-60">No sightings yet.</td>
+                  <td colspan="8" class="text-sm opacity-60">No sightings yet.</td>
                 </tr>
                 <tr :for={s <- @sightings}>
                   <td class="text-xs whitespace-nowrap">{s.seen_at}</td>
                   <td class="text-xs">{s.network}</td>
                   <td class="text-xs">{s.direction}</td>
+                  <td class="text-sm">{sighting_name(s) || "—"}</td>
                   <td class="text-xs font-mono max-w-xs truncate" title={s.identity_ref}>
                     {short_ref(s.identity_ref)}
                   </td>
@@ -638,6 +641,24 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
   end
 
   defp routing_reason(_), do: ""
+
+  defp sighting_name(%{meta: meta, network: network, identity_ref: ref}) do
+    from_meta =
+      case meta do
+        m when is_map(m) ->
+          case m["name"] || m["display_name"] do
+            n when is_binary(n) and n != "" -> n
+            _ -> nil
+          end
+
+        _ ->
+          nil
+      end
+
+    from_meta || KnownAddresses.name_for(network, ref)
+  end
+
+  defp sighting_name(_), do: nil
 
   defp short_ref(ref) when is_binary(ref) do
     if String.length(ref) > 16 do

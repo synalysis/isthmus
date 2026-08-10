@@ -88,6 +88,7 @@ defmodule IsthmusWeb do
       import IsthmusWeb.CoreComponents
       import IsthmusWeb.AdminNav
       import IsthmusWeb.TopologyGraph
+      alias IsthmusWeb.Admin.Copy, as: AdminCopy
 
       # Common modules used in templates
       alias Phoenix.LiveView.JS

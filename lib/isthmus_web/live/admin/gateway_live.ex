@@ -36,6 +36,7 @@ defmodule IsthmusWeb.Admin.GatewayLive do
 
   defp status_badge("delivered"), do: {"delivered", "badge-success"}
   defp status_badge("failed"), do: {"failed", "badge-error"}
+  defp status_badge("retained"), do: {"retained", "badge-info"}
   defp status_badge("dropped"), do: {"dropped", "badge-warning"}
   defp status_badge(other), do: {other || "unknown", "badge-ghost"}
 
@@ -71,10 +72,10 @@ defmodule IsthmusWeb.Admin.GatewayLive do
 
         <div class="alert alert-info text-sm">
           <%= if @service_npub do %>
-            Nostr service identity: <span class="font-mono">{@service_npub}</span>
-            — users DM this key to reach their MeshCore/RNS proxies.
+            Nostr node identity: <span class="font-mono">{@service_npub}</span>
+            — tunnel carrier on Nostr. Group DMs use each group’s proxy npub (see Groups / MeshCore).
           <% else %>
-            Set <code>ISTHMUS_NOSTR_NSEC</code> to enable Nostr DM bridging via a service identity.
+            Set <code>ISTHMUS_NOSTR_NSEC</code> for the Nostr tunnel carrier identity.
           <% end %>
         </div>
 

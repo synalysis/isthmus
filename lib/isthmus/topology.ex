@@ -22,14 +22,14 @@ defmodule Isthmus.Topology do
   @network_order ~w(reticulum meshcore nostr meshtastic)
 
   # Layout constants (SVG user units).
-  @base_width 940
-  @tunnel_width 1140
-  @margin_top 70
-  @row_height 92
-  @group_x 210
-  @network_x 730
-  @tunnel_x 990
-  @min_height 260
+  @base_width 1000
+  @tunnel_width 1220
+  @margin_top 78
+  @row_height 128
+  @group_x 230
+  @network_x 770
+  @tunnel_x 1040
+  @min_height 280
 
   @type node_t :: %{
           id: String.t(),

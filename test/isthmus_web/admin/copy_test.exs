@@ -1,0 +1,25 @@
+defmodule IsthmusWeb.Admin.CopyTest do
+  use ExUnit.Case, async: true
+
+  alias IsthmusWeb.Admin.Copy
+
+  test "status_plain never exposes disabled" do
+    assert Copy.status_plain(:disabled) == "Offline"
+    assert Copy.status_plain(:online) == "Connected"
+  end
+
+  test "device_purpose for unknown radios" do
+    assert {"Radio not identified", _} = Copy.device_purpose(%{kind: :unknown})
+    assert {"Companion radio", _} = Copy.device_purpose(%{kind: :companion})
+    assert {"Island tunnel radio", _} = Copy.device_purpose(%{kind: :bridge_repeater})
+  end
+
+  test "role_plain avoids Unassigned" do
+    assert Copy.role_plain(:unassigned) == "Not identified yet"
+    assert Copy.role_plain(:bridge_packet) == "Mesh traffic port"
+  end
+
+  test "group_kind_label maps bridge to group" do
+    assert Copy.group_kind_label("bridge") == "group"
+  end
+end

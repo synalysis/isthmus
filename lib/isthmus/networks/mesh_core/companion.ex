@@ -12,6 +12,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   require Logger
 
+  alias Isthmus.Announce.Inbound
   alias Isthmus.Announce.Sightings
   alias Isthmus.Networks.MeshCore.BLETransport
   alias Isthmus.Networks.MeshCore.Discover
@@ -471,7 +472,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         state
 
       {:advert, pubkey_hex} ->
-        record_advert(pubkey_hex)
+        record_advert(pubkey_hex, state.contacts)
         Process.send_after(self(), :sync_contacts_boot, 500)
         state
 
@@ -485,6 +486,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         state
 
       {:contact, contact} ->
+        _ = record_contact_sighting(contact)
         put_in(state, [:contacts, contact.public_key], contact)
 
       {:end_of_contacts, lastmod} ->
@@ -586,21 +588,22 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     end
   end
 
-  defp record_advert(pubkey_hex) do
-    _ =
-      Sightings.record(%{
-        network: "meshcore",
-        direction: "in",
-        identity_ref: pubkey_hex,
-        meta: %{source: "push_advert"}
-      })
+  defp record_advert(pubkey_hex, contacts) when is_map(contacts) do
+    name =
+      case Map.get(contacts, String.downcase(pubkey_hex || "")) do
+        %{name: n} when is_binary(n) and n != "" -> n
+        _ -> nil
+      end
 
-    Phoenix.PubSub.broadcast(
-      Isthmus.PubSub,
-      "announce:sightings",
-      {:sighting, %{network: "meshcore", identity_ref: pubkey_hex, direction: "in"}}
-    )
+    Inbound.record_meshcore(pubkey_hex, name, "push_advert")
   end
+
+  defp record_contact_sighting(%{public_key: ref, name: name})
+       when is_binary(ref) and is_binary(name) and name != "" do
+    Inbound.record_meshcore(ref, name, "contact")
+  end
+
+  defp record_contact_sighting(_), do: :ok
 
   defp maybe_record_peer_snr(%{from_ref: from_ref} = msg) when is_binary(from_ref) do
     snr = Map.get(msg, :snr)

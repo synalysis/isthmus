@@ -1,15 +1,24 @@
 defmodule IsthmusWeb.Admin.RegistrationsLive do
   use IsthmusWeb, :live_view
 
+  alias Isthmus.Announce.KnownAddresses
   alias Isthmus.Registrations
 
   @impl true
+  @default_attach_network "meshcore"
+
   def mount(_params, _session, socket) do
     {:ok,
      socket
      |> assign(:page_title, "Groups")
+     |> assign(:modal, nil)
      |> assign(:bridge_form, to_form(%{"display_name" => ""}))
      |> assign(:attach_form, to_form(%{"group_id" => "", "network" => "nostr", "identity" => ""}))
+     |> assign(:attach_network, "nostr")
+     |> assign(:attach_group_id, nil)
+     |> assign(:attach_group_name, nil)
+     |> assign(:identity_suggestions, [])
+     |> assign(:filtered_suggestions, [])
      |> assign(:selected_bridge_id, nil)
      |> refresh()}
   end
@@ -107,6 +116,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
          |> put_flash(:info, "Bridge group created.")
          |> assign(:selected_bridge_id, group.id)
          |> assign(:bridge_form, to_form(%{"display_name" => ""}))
+         |> assign(:modal, nil)
          |> refresh()}
 
       {:error, reason} ->
@@ -115,14 +125,81 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
   end
 
   def handle_event("select_bridge", %{"id" => id}, socket) do
+    {:noreply, socket |> assign(:selected_bridge_id, id) |> refresh()}
+  end
+
+  def handle_event("open_new_group", _params, socket) do
     {:noreply,
      socket
-     |> assign(:selected_bridge_id, id)
+     |> assign(:bridge_form, to_form(%{"display_name" => ""}))
+     |> assign(:modal, :new_group)}
+  end
+
+  def handle_event("open_attach", %{"id" => id}, socket) do
+    group = Enum.find(socket.assigns.groups, &(&1.id == id))
+    network = @default_attach_network
+    suggestions = KnownAddresses.for_network(network)
+
+    {:noreply,
+     socket
+     |> assign(:attach_group_id, id)
+     |> assign(:attach_group_name, group && group.display_name)
+     |> assign(:attach_network, network)
+     |> assign(:identity_suggestions, suggestions)
+     |> assign(:filtered_suggestions, filter_suggestions(suggestions, ""))
      |> assign(
        :attach_form,
-       to_form(%{"group_id" => id, "network" => "nostr", "identity" => ""})
+       to_form(%{"group_id" => id, "network" => network, "identity" => ""})
      )
-     |> refresh()}
+     |> assign(:modal, :attach)}
+  end
+
+  def handle_event("close_modal", _params, socket) do
+    {:noreply, assign(socket, :modal, nil)}
+  end
+
+  # Refresh address suggestions when the target network changes; suggestions are
+  # recomputed only on an actual network switch, and filtered as the admin types.
+  def handle_event("attach_form_changed", params, socket) do
+    network = params["network"] || socket.assigns.attach_network
+    identity = params["identity"] || ""
+    network_changed? = network != socket.assigns.attach_network
+
+    suggestions =
+      if network_changed?,
+        do: KnownAddresses.for_network(network),
+        else: socket.assigns.identity_suggestions
+
+    {:noreply,
+     socket
+     |> assign(:attach_network, network)
+     |> assign(:identity_suggestions, suggestions)
+     |> assign(:filtered_suggestions, filter_suggestions(suggestions, identity))
+     |> assign(
+       :attach_form,
+       to_form(%{
+         "group_id" => socket.assigns.attach_group_id,
+         "network" => network,
+         "identity" => identity
+       })
+     )}
+  end
+
+  def handle_event("pick_suggestion", %{"ref" => ref}, socket) do
+    {:noreply,
+     socket
+     |> assign(
+       :filtered_suggestions,
+       filter_suggestions(socket.assigns.identity_suggestions, ref)
+     )
+     |> assign(
+       :attach_form,
+       to_form(%{
+         "group_id" => socket.assigns.attach_group_id,
+         "network" => socket.assigns.attach_network,
+         "identity" => ref
+       })
+     )}
   end
 
   def handle_event("attach_member", params, socket) do
@@ -137,21 +214,15 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
         {:noreply,
          socket
          |> put_flash(:info, "Member attached.")
-         |> assign(
-           :attach_form,
-           to_form(%{
-             "group_id" => group.id,
-             "network" => params["network"],
-             "identity" => ""
-           })
-         )
+         |> assign(:modal, nil)
+         |> assign(:selected_bridge_id, group.id)
          |> refresh()}
 
       {:error, :identity_already_linked} ->
         {:noreply, put_flash(socket, :error, "Identity already linked to another group.")}
 
       {:error, :not_a_bridge_group} ->
-        {:noreply, put_flash(socket, :error, "Not a bridge group.")}
+        {:noreply, put_flash(socket, :error, "Not a group that can attach members.")}
 
       {:error, %Ecto.Changeset{} = changeset} ->
         {:noreply, put_flash(socket, :error, attach_changeset_error(changeset))}
@@ -189,6 +260,22 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
     |> assign(:bridges, bridges)
     |> assign(:selected_bridge, selected)
     |> assign(:selected_bridge_id, selected && selected.id)
+  end
+
+  @suggestion_limit 20
+
+  # Filter recently-heard addresses by the typed query (matches name or ref),
+  # so the combobox narrows as the admin types. Empty query shows the newest.
+  defp filter_suggestions(suggestions, query) do
+    q = query |> to_string() |> String.trim() |> String.downcase()
+
+    suggestions
+    |> Enum.filter(fn s ->
+      q == "" or
+        String.contains?(String.downcase(to_string(s.ref)), q) or
+        (is_binary(s.name) and String.contains?(String.downcase(s.name), q))
+    end)
+    |> Enum.take(@suggestion_limit)
   end
 
   defp attach_changeset_error(%Ecto.Changeset{} = changeset) do
@@ -229,110 +316,40 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
           <div>
             <h1 class="text-3xl font-semibold">Groups</h1>
             <p class="mt-1 text-sm text-base-content/70">
-              Registrations mint proxies. Bridge groups only attach real identities.
-              MeshCore channels are configured under <.link
-                navigate={~p"/admin/meshcore"}
-                class="link"
-              >MeshCore</.link>.
+              Groups attach real identities across networks. Private MeshCore channels are
+              configured under <.link navigate={~p"/admin/meshcore"} class="link">MeshCore</.link>.
             </p>
           </div>
           <.admin_nav current={:groups} />
         </div>
 
-        <div class="grid gap-6 lg:grid-cols-2">
-          <div class="card bg-base-200 border border-base-300">
-            <div class="card-body space-y-3">
-              <h2 class="card-title text-lg">New bridge group</h2>
-              <.form
-                for={@bridge_form}
-                id="bridge-create-form"
-                phx-submit="create_bridge"
-                class="space-y-3"
-              >
-                <.input
-                  field={@bridge_form[:display_name]}
-                  type="text"
-                  label="Display name"
-                  placeholder="Camp bridge"
-                />
-                <button class="btn btn-primary btn-sm" type="submit">Create</button>
-              </.form>
-            </div>
-          </div>
-
-          <div class="card bg-base-200 border border-base-300">
-            <div class="card-body space-y-3">
-              <h2 class="card-title text-lg">Attach member</h2>
-              <%= if @bridges == [] do %>
-                <p class="text-sm opacity-70">Create a bridge group first.</p>
-              <% else %>
-                <.form
-                  for={@attach_form}
-                  id="bridge-attach-form"
-                  phx-submit="attach_member"
-                  class="space-y-3"
-                >
-                  <input type="hidden" name="group_id" value={@selected_bridge_id} />
-                  <div>
-                    <label class="label" for="attach-group">
-                      <span class="label-text">Bridge group</span>
-                    </label>
-                    <select
-                      id="attach-group"
-                      class="select select-bordered w-full"
-                      phx-change="select_bridge"
-                      name="id"
-                    >
-                      <option
-                        :for={g <- @bridges}
-                        value={g.id}
-                        selected={g.id == @selected_bridge_id}
-                      >
-                        {g.display_name} ({length(g.legs)} members)
-                      </option>
-                    </select>
-                  </div>
-                  <.input
-                    field={@attach_form[:network]}
-                    type="select"
-                    label="Network"
-                    options={[
-                      {"Nostr", "nostr"},
-                      {"MeshCore", "meshcore"},
-                      {"Reticulum", "reticulum"}
-                    ]}
-                  />
-                  <.input
-                    field={@attach_form[:identity]}
-                    type="text"
-                    label="Identity"
-                    placeholder="npub / MeshCore pubkey / RNS dest hash"
-                  />
-                  <button class="btn btn-primary btn-sm" type="submit">Attach</button>
-                </.form>
-              <% end %>
-            </div>
-          </div>
+        <div class="flex flex-wrap items-center gap-2">
+          <button class="btn btn-primary btn-sm" phx-click="open_new_group" type="button">
+            <.icon name="hero-plus" class="w-4 h-4" /> New group
+          </button>
+          <span class="text-xs opacity-60">
+            Attach members from each group's row below.
+          </span>
         </div>
 
         <div :if={@selected_bridge} class="space-y-3">
           <h2 class="text-xl font-medium">
             {@selected_bridge.display_name}
-            <span class="badge badge-secondary badge-sm ml-2">bridge</span>
+            <span class="badge badge-secondary badge-sm ml-2">group</span>
           </h2>
           <p class="text-sm opacity-70">
             MeshCore address token: <code class="font-mono">@{token_for(@selected_bridge)}</code>
           </p>
           <%= if @selected_bridge.meshcore_channel_idx != nil do %>
             <p class="text-sm opacity-70" id="bridge-channel-badge">
-              Linked MeshCore channel: slot {@selected_bridge.meshcore_channel_idx} ·
+              Linked private MeshCore channel · slot {@selected_bridge.meshcore_channel_idx} ·
               <.link navigate={~p"/admin/meshcore"} class="link">
                 Manage invite / unlink on MeshCore →
               </.link>
             </p>
           <% else %>
             <p class="text-sm opacity-70">
-              No MeshCore channel linked.
+              No private MeshCore channel linked.
               <.link navigate={~p"/admin/meshcore"} class="link">Configure on MeshCore →</.link>
             </p>
           <% end %>
@@ -388,7 +405,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                       group.kind == "bridge" && "badge-secondary",
                       group.kind != "bridge" && "badge-ghost"
                     ]}>
-                      {group.kind}
+                      {AdminCopy.group_kind_label(group.kind)}
                     </span>
                   </td>
                   <td class="font-mono text-xs break-all max-w-xs">{group.owner_pubkey_hex}</td>
@@ -410,6 +427,14 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                   </td>
                   <td>
                     <div class="flex flex-wrap gap-1 justify-end">
+                      <button
+                        :if={group.kind == "bridge" and group.status == "active"}
+                        class="btn btn-primary btn-xs"
+                        phx-click="open_attach"
+                        phx-value-id={group.id}
+                      >
+                        Attach member
+                      </button>
                       <button
                         :if={group.kind == "bridge" and group.status == "active"}
                         class="btn btn-ghost btn-xs"
@@ -465,6 +490,111 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
               </tbody>
             </table>
           </div>
+        </div>
+
+        <%!-- New group modal --%>
+        <div :if={@modal == :new_group} class="modal modal-open" role="dialog" id="new-group-modal">
+          <div class="modal-box">
+            <h3 class="text-lg font-semibold">New group</h3>
+            <p class="mt-1 text-sm opacity-70">
+              Groups mint proxies and attach real identities across networks.
+            </p>
+            <.form
+              for={@bridge_form}
+              id="bridge-create-form"
+              phx-submit="create_bridge"
+              class="mt-4 space-y-4"
+            >
+              <.input
+                field={@bridge_form[:display_name]}
+                type="text"
+                label="Display name"
+                placeholder="Lobby"
+              />
+              <div class="modal-action">
+                <button class="btn btn-ghost btn-sm" phx-click="close_modal" type="button">
+                  Cancel
+                </button>
+                <button class="btn btn-primary btn-sm" type="submit">Create</button>
+              </div>
+            </.form>
+          </div>
+          <div class="modal-backdrop" phx-click="close_modal"></div>
+        </div>
+
+        <%!-- Attach member modal --%>
+        <div :if={@modal == :attach} class="modal modal-open" role="dialog" id="attach-member-modal">
+          <div class="modal-box">
+            <h3 class="text-lg font-semibold">
+              Attach member
+              <span :if={@attach_group_name} class="opacity-60 font-normal">
+                → {@attach_group_name}
+              </span>
+            </h3>
+            <.form
+              for={@attach_form}
+              id="bridge-attach-form"
+              phx-submit="attach_member"
+              phx-change="attach_form_changed"
+              class="mt-4 space-y-4"
+            >
+              <input type="hidden" name="group_id" value={@attach_group_id} />
+              <.input
+                field={@attach_form[:network]}
+                type="select"
+                label="Network"
+                options={[
+                  {"MeshCore", "meshcore"},
+                  {"Reticulum", "reticulum"},
+                  {"Nostr", "nostr"}
+                ]}
+              />
+              <div>
+                <.input
+                  field={@attach_form[:identity]}
+                  type="text"
+                  label="Identity"
+                  placeholder="npub / MeshCore pubkey / RNS dest hash"
+                  autocomplete="off"
+                  phx-debounce="150"
+                />
+                <div :if={@attach_network in ["meshcore", "reticulum"]} class="mt-2">
+                  <p class="text-xs opacity-60 mb-1">
+                    <%= if @identity_suggestions == [] do %>
+                      No {@attach_network} adverts heard in the last 24h.
+                      <.link navigate={~p"/admin/adverts"} class="link">See Adverts →</.link>
+                    <% else %>
+                      Heard on {@attach_network} in the last 24h — click to fill:
+                    <% end %>
+                  </p>
+                  <ul
+                    :if={@filtered_suggestions != []}
+                    class="menu menu-sm bg-base-100 rounded-box border border-base-300 max-h-52 flex-nowrap overflow-y-auto p-1"
+                    id="identity-suggestions"
+                  >
+                    <li :for={s <- @filtered_suggestions} id={"suggestion-#{s.ref}"}>
+                      <button
+                        type="button"
+                        phx-click="pick_suggestion"
+                        phx-value-ref={s.ref}
+                        class="flex flex-col items-start gap-0"
+                      >
+                        <span class="text-sm">{s.name || "(unnamed)"}</span>
+                        <span class="font-mono text-[10px] opacity-60 break-all">{s.ref}</span>
+                      </button>
+                    </li>
+                  </ul>
+                </div>
+              </div>
+              <div class="modal-action">
+                <button class="btn btn-ghost btn-sm" phx-click="close_modal" type="button">
+                  Cancel
+                </button>
+                <button class="btn btn-primary btn-sm" type="submit">Attach</button>
+              </div>
+            </.form>
+          </div>
+          <div class="modal-backdrop" phx-click="close_modal"></div>
         </div>
       </section>
     </Layouts.app>

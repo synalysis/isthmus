@@ -12,12 +12,14 @@ defmodule IsthmusWeb.TopologyGraph do
     router: IsthmusWeb.Router,
     statics: IsthmusWeb.static_paths()
 
-  @group_w 188
-  @group_h 46
-  @net_w 150
-  @net_h 46
-  @tunnel_w 156
-  @tunnel_h 44
+  # Sized so labels stay readable when the viewBox scales down to fit the
+  # page (a 1220-wide graph in an ~800px column is ~0.65× — 22px → ~14px).
+  @group_w 260
+  @group_h 72
+  @net_w 200
+  @net_h 68
+  @tunnel_w 220
+  @tunnel_h 68
 
   attr :graph, :map, required: true
   attr :selected, :string, default: nil
@@ -39,7 +41,7 @@ defmodule IsthmusWeb.TopologyGraph do
               viewBox={"0 0 #{@graph.width} #{@graph.height}"}
               width="100%"
               height={@graph.height}
-              class="min-w-[640px] text-base-content"
+              class="min-w-[800px] text-base-content"
               role="img"
               aria-label="Bridge topology graph"
             >
@@ -63,7 +65,7 @@ defmodule IsthmusWeb.TopologyGraph do
                   x={(edge_x1(edge, @graph) + edge_x2(edge, @graph)) / 2}
                   y={(edge_y1(edge, @graph) + edge_y2(edge, @graph)) / 2 - 5}
                   text-anchor="middle"
-                  class={["fill-accent text-[10px] font-medium", edge_dim(@selected, edge)]}
+                  class={["fill-accent text-[16px] font-medium", edge_dim(@selected, edge)]}
                 >
                   {edge.ref}
                 </text>
@@ -75,7 +77,7 @@ defmodule IsthmusWeb.TopologyGraph do
             </svg>
           </div>
 
-          <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs" id="topo-legend">
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm" id="topo-legend">
             <span
               :for={item <- @graph.legend}
               class="inline-flex items-center gap-1.5"
@@ -126,17 +128,17 @@ defmodule IsthmusWeb.TopologyGraph do
       />
       <text
         x={@node.x}
-        y={@node.y - 3}
+        y={@node.y - 4}
         text-anchor="middle"
-        class="fill-base-content text-[13px] font-medium"
+        class="fill-base-content text-[24px] font-semibold"
       >
-        {truncate(@node.label, 20)}
+        {truncate(@node.label, 22)}
       </text>
       <text
         x={@node.x}
-        y={@node.y + 12}
+        y={@node.y + 22}
         text-anchor="middle"
-        class="fill-base-content/60 text-[10px]"
+        class="fill-base-content/70 text-[17px]"
       >
         {@node.meta.kind}{channel_suffix(@node.meta.channel_idx)}
       </text>
@@ -165,9 +167,9 @@ defmodule IsthmusWeb.TopologyGraph do
       />
       <text
         x={@node.x}
-        y={@node.y + 4}
+        y={@node.y + 7}
         text-anchor="middle"
-        class="fill-base-content text-[13px] font-semibold"
+        class="fill-base-content text-[24px] font-semibold"
       >
         {@node.label}
       </text>
@@ -212,17 +214,17 @@ defmodule IsthmusWeb.TopologyGraph do
       />
       <text
         x={@node.x}
-        y={@node.y - 3}
+        y={@node.y - 4}
         text-anchor="middle"
-        class="fill-base-content text-[12px] font-medium"
+        class="fill-base-content text-[24px] font-semibold"
       >
-        {truncate(@node.label, 16)}
+        {truncate(@node.label, 18)}
       </text>
       <text
         x={@node.x}
-        y={@node.y + 11}
+        y={@node.y + 22}
         text-anchor="middle"
-        class="fill-base-content/60 text-[9px]"
+        class="fill-base-content/70 text-[16px]"
       >
         tunnel{unless @node.meta.enabled, do: " · off"}
       </text>

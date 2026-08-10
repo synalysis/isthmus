@@ -1,0 +1,90 @@
+defmodule Isthmus.Networks.MeshCore.DevicesTest do
+  use ExUnit.Case, async: true
+
+  alias Isthmus.Networks.MeshCore.Devices
+
+  test "device_id prefers usb vid:pid:serial" do
+    assert Devices.device_id(%{
+             vendor_id: 0x303A,
+             product_id: 0x1001,
+             serial_number: "ABC123",
+             path: "/dev/ttyACM0"
+           }) == "usb:303a:1001:ABC123"
+  end
+
+  test "device_id falls back to path" do
+    assert Devices.device_id(%{path: "/dev/ttyACM9"}) == "path:/dev/ttyACM9"
+  end
+
+  test "inventory groups dual-CDC bridge by serial and attaches roles" do
+    ports = [
+      %{
+        name: "ttyACM0",
+        path: "/dev/ttyACM0",
+        score: 1,
+        reasons: [],
+        description: "Bridge",
+        manufacturer: "Heltec",
+        serial_number: "BR1",
+        vendor_id: 0x303A,
+        product_id: 0x1001
+      },
+      %{
+        name: "ttyACM1",
+        path: "/dev/ttyACM1",
+        score: 1,
+        reasons: [],
+        description: "Bridge",
+        manufacturer: "Heltec",
+        serial_number: "BR1",
+        vendor_id: 0x303A,
+        product_id: 0x1001
+      },
+      %{
+        name: "ttyACM2",
+        path: "/dev/ttyACM2",
+        score: 1,
+        reasons: [],
+        description: "Companion",
+        manufacturer: "Seeed",
+        serial_number: "CP1",
+        vendor_id: 0x2886,
+        product_id: 0x802F
+      }
+    ]
+
+    roles = %{
+      companion: %{path: "/dev/ttyACM2", detail: %{}},
+      bridge_cli: %{path: "/dev/ttyACM0", detail: %{}},
+      bridge_packet: %{path: "/dev/ttyACM1", detail: %{}}
+    }
+
+    devices =
+      Devices.inventory(
+        ports: ports,
+        roles: roles,
+        companion: %{status: :online, port: "/dev/ttyACM2", self_name: "Gate"},
+        bridge_cli: %{status: :online, port: "/dev/ttyACM0"},
+        bridge_link: %{status: :online, port: "/dev/ttyACM1", frames_in: 3}
+      )
+
+    assert length(devices) == 2
+
+    companion = Enum.find(devices, & &1.companion?)
+    bridge = Enum.find(devices, & &1.bridge_cli?)
+
+    assert companion.id == "usb:2886:802f:CP1"
+    assert companion.kind == :companion
+    assert companion.label == "Gate"
+    assert companion.active_companion?
+    assert length(companion.ports) == 1
+
+    assert bridge.id == "usb:303a:1001:BR1"
+    assert bridge.kind == :bridge_repeater
+    assert bridge.bridge_packet?
+    assert bridge.active_bridge_cli?
+    assert bridge.active_bridge_link?
+    assert Enum.map(bridge.ports, & &1.role) == [:bridge_cli, :bridge_packet]
+    assert bridge.bridge_link_health[:frames_in] == 3
+  end
+end

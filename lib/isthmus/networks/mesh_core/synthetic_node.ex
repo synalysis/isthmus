@@ -362,7 +362,11 @@ defmodule Isthmus.Networks.MeshCore.SyntheticNode do
                     direction: "out",
                     identity_ref: ref,
                     hops: nil,
-                    meta: %{source: "synthetic_advert", flood: true}
+                    meta: %{
+                      source: "synthetic_advert",
+                      flood: true,
+                      name: id.name
+                    }
                   })
 
                 unless opts[:from_tunnel] in [true, "true", "1", 1] do

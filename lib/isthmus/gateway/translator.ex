@@ -8,7 +8,9 @@ defmodule Isthmus.Gateway.Translator do
   - outbound DMs to member/primary npubs are sent *from* that group's proxy
   - inbound gift-wraps addressed to a proxy (`#p` / decrypt) route to that group
   - optional NIP-17 `subject` (`isthmus/<slug>`) remains a secondary room hint
-  - `ISTHMUS_NOSTR_NSEC` is a legacy shared fallback inbox/sender when no proxy exists
+  - DMs to `ISTHMUS_NOSTR_NSEC` (service identity) are retained in
+    `Networks.Nostr.ServiceInbox` for operators — they are **not** matched to groups
+  - Outbound group DMs always send from that group's Nostr proxy (no service-key sender)
   """
   use GenServer
 
@@ -22,6 +24,7 @@ defmodule Isthmus.Gateway.Translator do
   alias Isthmus.Networks.MeshCore.Companion
   alias Isthmus.Networks.MeshCore.SyntheticNode
   alias Isthmus.Networks.Nostr.RelayPool
+  alias Isthmus.Networks.Nostr.ServiceInbox
   alias Isthmus.Networks.Reticulum.Sidecar
   alias Isthmus.Nostr.Crypto
   alias Isthmus.Policy
@@ -186,7 +189,18 @@ defmodule Isthmus.Gateway.Translator do
     Gateway.log(log_attrs(msg, "none", "dropped", "empty_body"))
   end
 
-  defp bridge(%Message{} = msg) do
+  defp bridge(%Message{from_network: :nostr} = msg) do
+    if service_recipient?(msg) do
+      ServiceInbox.record(msg)
+      Gateway.log(log_attrs(msg, "none", "retained", "service_inbox"))
+    else
+      bridge_to_group(msg)
+    end
+  end
+
+  defp bridge(%Message{} = msg), do: bridge_to_group(msg)
+
+  defp bridge_to_group(%Message{} = msg) do
     {group, msg} = resolve_group(msg)
 
     case group do
@@ -204,8 +218,18 @@ defmodule Isthmus.Gateway.Translator do
     end
   end
 
+  defp service_recipient?(%Message{to_ref: to}) when is_binary(to) do
+    case Crypto.service_pubkey_hex() do
+      hex when is_binary(hex) -> String.downcase(to) == hex
+      _ -> false
+    end
+  end
+
+  defp service_recipient?(_), do: false
+
   # Returns {group | nil, msg} — msg may have @token stripped from body.
   # Prefer recipient (proxy) → subject room → author leg.
+  # Never called for service-identity recipients (see bridge/1).
   defp resolve_group(%Message{from_network: :nostr} = msg) do
     subject = msg.meta["subject"] || msg.meta[:subject]
     to = msg.to_ref && String.downcase(msg.to_ref)
@@ -593,20 +617,7 @@ defmodule Isthmus.Gateway.Translator do
         {:error, _} -> group
       end
 
-    seckey =
-      case Registrations.nostr_proxy_seckey(group) do
-        {:ok, sk} ->
-          {:ok, sk}
-
-        {:error, _} ->
-          case Crypto.service_keypair() do
-            {:ok, sk, _} -> {:ok, sk}
-            :none -> :none
-            :invalid -> :invalid
-          end
-      end
-
-    case seckey do
+    case Registrations.nostr_proxy_seckey(group) do
       {:ok, sk} ->
         subject = Registrations.nostr_room_subject(group)
         opts = [subject: subject]
@@ -631,15 +642,13 @@ defmodule Isthmus.Gateway.Translator do
             {:error, reason}
         end
 
-      :none ->
+      {:error, reason} ->
         Outbox.enqueue("gateway:nostr", leg.identity_ref, prefix_body(msg), %{
-          "note" => "mint a Nostr proxy (or set ISTHMUS_NOSTR_NSEC) to enable Nostr DM delivery"
+          "note" => "mint a Nostr proxy for this group to enable Nostr DM delivery",
+          "reason" => error_string(reason)
         })
 
-        {:error, :no_nostr_sender}
-
-      :invalid ->
-        {:error, :invalid_service_nsec}
+        {:error, :no_nostr_proxy}
     end
   end
 

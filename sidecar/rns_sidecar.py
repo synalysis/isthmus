@@ -32,11 +32,17 @@ def read_msg():
     return json.loads(body.decode("utf-8"))
 
 
+# Announce/delivery callbacks fire from RNS worker threads, so serialize writes
+# to keep length-prefixed frames from interleaving on stdout.
+_write_lock = threading.Lock()
+
+
 def write_msg(obj: dict) -> None:
     body = json.dumps(obj, default=str).encode("utf-8")
-    sys.stdout.buffer.write(struct.pack("!I", len(body)))
-    sys.stdout.buffer.write(body)
-    sys.stdout.buffer.flush()
+    with _write_lock:
+        sys.stdout.buffer.write(struct.pack("!I", len(body)))
+        sys.stdout.buffer.write(body)
+        sys.stdout.buffer.flush()
 
 
 def reply(req_id: Optional[str], **payload) -> None:
@@ -63,6 +69,22 @@ def tunnel_addressed_enabled() -> bool:
     )
 
 
+class _AnnounceHandler:
+    """RNS announce handler; forwards matching announces to the outer Sidecar.
+
+    RNS calls ``received_announce`` from Transport threads. ``aspect_filter``
+    scopes us to LXMF delivery destinations (the ones that carry display names).
+    """
+
+    def __init__(self, outer: "Sidecar", aspect_filter: str) -> None:
+        self.outer = outer
+        self.aspect_filter = aspect_filter
+        self.receive_path_responses = False
+
+    def received_announce(self, destination_hash, announced_identity, app_data, **_kwargs):
+        self.outer._emit_announce(destination_hash, announced_identity, app_data)
+
+
 class Sidecar:
     def __init__(self) -> None:
         self.RNS = None
@@ -78,6 +100,7 @@ class Sidecar:
         self.destinations: dict[str, Any] = {}  # dest_hash_hex -> Destination
         self.tunnel_identity: Any = None
         self.tunnel_destination: Any = None  # IN SINGLE "isthmus.tunnel" endpoint
+        self._announce_handler: Any = None
         self._path_requests: dict[bytes, float] = {}  # dest_hash -> last request ts
         self._lock = threading.RLock()
 
@@ -125,6 +148,11 @@ class Sidecar:
             self.router.register_delivery_callback(self._on_delivery)
             self.live = True
 
+            try:
+                self._register_announce_handler()
+            except Exception as exc:  # noqa: BLE001
+                write_msg({"type": "error", "error": f"announce_handler:{exc}"})
+
             tunnel_hex = None
             if tunnel_addressed_enabled():
                 try:
@@ -148,6 +176,84 @@ class Sidecar:
                 "error": f"boot_failed:{exc}",
                 "trace": traceback.format_exc()[-800:],
             }
+
+    def _register_announce_handler(self) -> None:
+        """Listen for LXMF delivery announces so Elixir can suggest recently-heard
+        Reticulum peers (with display names) when attaching group members.
+
+        ``aspect_filter=None`` receives every announce; we tag LXMF delivery ones
+        when the destination hash matches ``lxmf.delivery`` for that identity.
+        """
+        handler = _AnnounceHandler(self, None)
+        self.RNS.Transport.register_announce_handler(handler)
+        # Keep a reference; RNS only holds a weakref-friendly list but be safe.
+        self._announce_handler = handler
+        write_msg({"type": "status", "announce_handler": True, "aspect": "all"})
+
+    def _announce_aspect(self, destination_hash, announced_identity) -> Optional[str]:
+        """Return ``lxmf.delivery`` / ``isthmus.tunnel`` when the dest matches."""
+        identity = announced_identity
+        if identity is None:
+            try:
+                identity = self.RNS.Identity.recall(destination_hash)
+            except Exception:  # noqa: BLE001
+                identity = None
+        if identity is None:
+            return None
+        try:
+            for aspect in ("lxmf.delivery", "isthmus.tunnel"):
+                expected = self.RNS.Destination.hash_from_name_and_identity(
+                    aspect, identity
+                )
+                if expected == destination_hash:
+                    return aspect
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
+    def _announce_name(self, app_data, aspect: Optional[str]) -> Optional[str]:
+        name = None
+        # LXMF packs the display name into app_data; other aspects usually don't.
+        if aspect in (None, "lxmf.delivery"):
+            try:
+                fn = getattr(self.LXMF, "display_name_from_app_data", None)
+                if fn is not None:
+                    name = fn(app_data)
+            except Exception:  # noqa: BLE001
+                name = None
+
+        if name is None and isinstance(app_data, (bytes, bytearray)):
+            try:
+                name = bytes(app_data).decode("utf-8", errors="ignore")
+            except Exception:  # noqa: BLE001
+                name = None
+
+        if isinstance(name, (bytes, bytearray)):
+            name = bytes(name).decode("utf-8", errors="replace")
+
+        if isinstance(name, str):
+            name = name.strip()
+            # Drop control chars that sometimes leak from packed app_data.
+            name = "".join(ch for ch in name if ch.isprintable()).strip()
+            return name or None
+
+        return None
+
+    def _emit_announce(self, destination_hash, announced_identity, app_data) -> None:
+        try:
+            aspect = self._announce_aspect(destination_hash, announced_identity)
+            name = self._announce_name(app_data, aspect)
+            write_msg(
+                {
+                    "type": "announce",
+                    "aspect": aspect,
+                    "destination_hash": hex_of(destination_hash),
+                    "identity_hash": getattr(announced_identity, "hexhash", None),
+                    "name": name,
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            write_msg({"type": "error", "error": f"announce_emit:{exc}"})
 
     def _on_delivery(self, lxm) -> None:
         try:

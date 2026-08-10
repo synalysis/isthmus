@@ -48,7 +48,21 @@ defmodule Isthmus.Announce.Sightings do
       expires_at: expires_at
     })
     |> Repo.insert()
+    |> tap_broadcast()
   end
+
+  defp tap_broadcast({:ok, %Sighting{} = row} = result) do
+    Phoenix.PubSub.broadcast(
+      Isthmus.PubSub,
+      "announce:sightings",
+      {:sighting,
+       %{network: row.network, identity_ref: row.identity_ref, direction: row.direction}}
+    )
+
+    result
+  end
+
+  defp tap_broadcast(result), do: result
 
   @doc "Recent sightings, newest first."
   def list_recent(limit \\ @default_limit) do
@@ -56,7 +70,19 @@ defmodule Isthmus.Announce.Sightings do
 
     Sighting
     |> where([s], s.expires_at > ^now)
-    |> order_by([s], desc: s.seen_at)
+    |> order_by([s], desc: s.seen_at, desc: s.inserted_at)
+    |> limit(^limit)
+    |> Repo.all()
+  end
+
+  @doc "Recent (unexpired) sightings for one network, newest first."
+  def recent_for_network(network, limit \\ @default_limit) do
+    network = to_string(network)
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    Sighting
+    |> where([s], s.network == ^network and s.expires_at > ^now)
+    |> order_by([s], desc: s.seen_at, desc: s.inserted_at)
     |> limit(^limit)
     |> Repo.all()
   end
@@ -72,7 +98,7 @@ defmodule Isthmus.Announce.Sightings do
       [s],
       s.network == ^network and s.identity_ref == ^identity_ref and s.expires_at > ^now
     )
-    |> order_by([s], desc: s.seen_at)
+    |> order_by([s], desc: s.seen_at, desc: s.inserted_at)
     |> limit(1)
     |> Repo.one()
   end
@@ -83,10 +109,25 @@ defmodule Isthmus.Announce.Sightings do
 
     Sighting
     |> where([s], s.tunnel_id == ^tunnel_id and s.expires_at > ^now)
-    |> order_by([s], desc: s.seen_at)
+    |> order_by([s], desc: s.seen_at, desc: s.inserted_at)
     |> limit(1)
     |> Repo.one()
   end
+
+  @doc """
+  Attach a display name to an existing sighting's meta (and broadcast).
+  Used when a contact sync teaches us the name for a recently-heard advert.
+  """
+  def put_name(%Sighting{} = row, name) when is_binary(name) and name != "" do
+    meta = Map.put(row.meta || %{}, "name", String.trim(name))
+
+    row
+    |> Sighting.changeset(%{meta: meta})
+    |> Repo.update()
+    |> tap_broadcast()
+  end
+
+  def put_name(row, _), do: {:ok, row}
 
   @doc "Delete expired rows."
   def purge_expired do

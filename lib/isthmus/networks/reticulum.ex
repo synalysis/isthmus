@@ -270,6 +270,7 @@ defmodule Isthmus.Networks.Reticulum do
          {:ok, _} <- Sidecar.tunnel_send(ref, payload) do
       :ok
     else
+      # no_path / timeout / sidecar exit → broadcast fallback
       _ -> :skip
     end
   end

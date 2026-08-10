@@ -148,6 +148,64 @@ defmodule Isthmus.Gateway.TranslatorRoutingTest do
     assert Enum.any?(Gateway.list_forward_log(20), &(&1.registration_group_id == group.id))
   end
 
+  test "nostr DMs to service identity are retained, not matched to groups" do
+    {sk, _pk} = Secp256k1.keypair(:xonly)
+    nsec = Isthmus.Nostr.Bech32.encode("nsec", sk)
+    prev = System.get_env("ISTHMUS_NOSTR_NSEC")
+    System.put_env("ISTHMUS_NOSTR_NSEC", nsec)
+
+    on_exit(fn ->
+      if prev,
+        do: System.put_env("ISTHMUS_NOSTR_NSEC", prev),
+        else: System.delete_env("ISTHMUS_NOSTR_NSEC")
+    end)
+
+    service_hex = Isthmus.Nostr.Crypto.service_pubkey_hex()
+    assert is_binary(service_hex)
+
+    owner = owner_hex()
+
+    assert {:ok, group} =
+             Registrations.create_bridge_group(owner, %{display_name: "Service Trap"})
+
+    mc = String.duplicate("ff", 32)
+    {_sk_m, pk_m} = Secp256k1.keypair(:xonly)
+    nostr = Base.encode16(pk_m, case: :lower)
+
+    assert {:ok, _} = Registrations.attach_member(group, "meshcore", mc)
+    assert {:ok, _} = Registrations.attach_member(group, "nostr", nostr)
+
+    Isthmus.Networks.Nostr.ServiceInbox.clear()
+
+    {_sk2, stranger_pk} = Secp256k1.keypair(:xonly)
+    stranger = Base.encode16(stranger_pk, case: :lower)
+    ext = "svc-dm-#{System.unique_integer([:positive])}"
+
+    Translator.ingest(%Message{
+      from_network: :nostr,
+      from_ref: stranger,
+      to_ref: service_hex,
+      body: "hello service key",
+      external_id: ext,
+      meta: %{"kind" => 1059, "subject" => Registrations.nostr_room_subject(group)}
+    })
+
+    _ = :sys.get_state(Translator)
+
+    refute Enum.any?(
+             Gateway.list_forward_log(30),
+             &(&1.registration_group_id == group.id and &1.external_id == ext)
+           )
+
+    assert Enum.any?(Gateway.list_recent(30), fn row ->
+             row.external_id == ext and row.status == "retained" and row.error == "service_inbox"
+           end)
+
+    [dm | _] = Isthmus.Networks.Nostr.ServiceInbox.list(5)
+    assert dm.body == "hello service key"
+    assert dm.from_ref == stranger
+  end
+
   defp owner_hex do
     {_seckey, pubkey} = Secp256k1.keypair(:xonly)
     Base.encode16(pubkey, case: :lower)

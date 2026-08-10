@@ -2,6 +2,7 @@ defmodule IsthmusWeb.Admin.NostrLive do
   use IsthmusWeb, :live_view
 
   alias Isthmus.Networks.Nostr.RelayPool
+  alias Isthmus.Networks.Nostr.ServiceInbox
   alias Isthmus.Nostr.Bech32
   alias Isthmus.Nostr.Crypto
   alias Isthmus.Relays
@@ -9,7 +10,10 @@ defmodule IsthmusWeb.Admin.NostrLive do
 
   @impl true
   def mount(_params, _session, socket) do
-    if connected?(socket), do: :timer.send_interval(3_000, self(), :refresh)
+    if connected?(socket) do
+      Phoenix.PubSub.subscribe(Isthmus.PubSub, ServiceInbox.topic())
+      :timer.send_interval(3_000, self(), :refresh)
+    end
 
     {:ok,
      socket
@@ -19,6 +23,10 @@ defmodule IsthmusWeb.Admin.NostrLive do
 
   @impl true
   def handle_info(:refresh, socket), do: {:noreply, assign_relays(socket)}
+
+  def handle_info({:service_dm, _entry}, socket) do
+    {:noreply, assign(socket, :service_dms, ServiceInbox.list(50))}
+  end
 
   @impl true
   def handle_event("save", %{"relay" => params}, socket) do
@@ -72,6 +80,7 @@ defmodule IsthmusWeb.Admin.NostrLive do
     |> assign(:relays, rows)
     |> assign(:pool, health)
     |> assign(:service_npub, service_npub)
+    |> assign(:service_dms, ServiceInbox.list(50))
     |> assign(:form, socket.assigns[:form] || to_form(Relays.change_relay(%Relay{})))
   end
 
@@ -83,13 +92,33 @@ defmodule IsthmusWeb.Admin.NostrLive do
     end
   end
 
-  defp status_badge(:online), do: {"online", "badge-success"}
-  defp status_badge(:connecting), do: {"connecting", "badge-warning"}
-  defp status_badge(:reconnecting), do: {"reconnecting", "badge-warning"}
-  defp status_badge(:down), do: {"down", "badge-error"}
-  defp status_badge(:error), do: {"error", "badge-error"}
-  defp status_badge(:disabled), do: {"disabled", "badge-ghost"}
-  defp status_badge(_), do: {"unknown", "badge-ghost"}
+  defp status_badge(:online), do: {"Connected", "badge-success"}
+  defp status_badge(:connecting), do: {"Connecting", "badge-warning"}
+  defp status_badge(:reconnecting), do: {"Reconnecting", "badge-warning"}
+  defp status_badge(:down), do: {"Offline", "badge-error"}
+  defp status_badge(:error), do: {"Error", "badge-error"}
+  defp status_badge(:disabled), do: {"Offline", "badge-ghost"}
+  defp status_badge(_), do: {"Unknown", "badge-ghost"}
+
+  defp format_from(nil), do: "—"
+
+  defp format_from(hex) when is_binary(hex) do
+    case Base.decode16(hex, case: :mixed) do
+      {:ok, bin} when byte_size(bin) == 32 -> Bech32.encode_npub(bin)
+      _ -> hex
+    end
+  end
+
+  defp format_age(%DateTime{} = at) do
+    case DateTime.diff(DateTime.utc_now(), at) do
+      s when s < 2 -> "just now"
+      s when s < 60 -> "#{s}s ago"
+      s when s < 3_600 -> "#{div(s, 60)}m ago"
+      s -> "#{div(s, 3_600)}h ago"
+    end
+  end
+
+  defp format_age(_), do: "—"
 
   @impl true
   def render(assigns) do
@@ -100,27 +129,70 @@ defmodule IsthmusWeb.Admin.NostrLive do
           <div>
             <h1 class="text-3xl font-semibold">Nostr</h1>
             <p class="text-sm opacity-70 mt-1">
-              Relays and service identity for DM bridging.
+              Relays and the Isthmus service identity. Group chat uses each group’s own
+              proxy npub (see Groups) — not this key.
             </p>
           </div>
           <.admin_nav current={:nostr} />
         </div>
 
-        <div class="alert alert-info text-sm">
-          <%= if @service_npub do %>
-            Service identity: <span class="font-mono">{@service_npub}</span>
-            — users DM this key to reach their MeshCore/RNS proxies.
-          <% else %>
-            Set <code>ISTHMUS_NOSTR_NSEC</code> to enable Nostr DM bridging via a service identity.
-          <% end %>
+        <div class="card bg-base-200 border border-base-300" id="service-identity-card">
+          <div class="card-body space-y-3">
+            <h2 class="card-title text-base">Service identity</h2>
+            <%= if @service_npub do %>
+              <p class="font-mono text-sm break-all" id="service-npub">{@service_npub}</p>
+              <p class="text-sm opacity-70">
+                This Isthmus node’s Nostr address for tunnel carrier traffic (opaque frames
+                demuxed by tunnel id). DMs sent here appear in the mailbox below only —
+                they never fan out to groups. Group chat uses each group’s proxy npub.
+              </p>
+            <% else %>
+              <p class="text-sm opacity-70">
+                Set <code class="font-mono">ISTHMUS_NOSTR_NSEC</code>
+                for this node’s tunnel carrier identity. Group DMs use per-group proxy keys.
+              </p>
+            <% end %>
+          </div>
+        </div>
+
+        <div class="card bg-base-200 border border-base-300" id="service-inbox-card">
+          <div class="card-body space-y-3">
+            <div>
+              <h2 class="card-title text-base">DMs to service identity</h2>
+              <p class="text-xs opacity-70 mt-1">
+                Operator mailbox only — no bridge fan-out.
+              </p>
+            </div>
+
+            <%= if @service_dms == [] do %>
+              <p class="text-sm opacity-70" id="service-inbox-empty">No messages yet.</p>
+            <% else %>
+              <ul class="space-y-3" id="service-inbox-list">
+                <li
+                  :for={dm <- @service_dms}
+                  class="rounded-lg border border-base-300 bg-base-100/40 p-3 space-y-1"
+                  id={"service-dm-#{dm.id}"}
+                >
+                  <div class="flex flex-wrap items-center justify-between gap-2 text-xs opacity-70">
+                    <span class="font-mono truncate max-w-full">{format_from(dm.from_ref)}</span>
+                    <span>{format_age(dm.received_at)}</span>
+                  </div>
+                  <p :if={dm.subject} class="text-xs opacity-60 font-mono">
+                    subject: {dm.subject}
+                  </p>
+                  <p class="text-sm whitespace-pre-wrap break-words">{dm.body}</p>
+                </li>
+              </ul>
+            <% end %>
+          </div>
         </div>
 
         <div>
           <h2 class="text-xl font-medium mb-1">Relays</h2>
           <p class="text-sm opacity-70 mb-4">
-            Pool {@pool[:status]} · {@pool[:online] || 0}/{@pool[:relays_enabled] || 0} online · {@pool[
-              :events_seen
-            ] || 0} events seen
+            Pool {AdminCopy.status_plain(@pool[:status])} · {@pool[:online] || 0}/{@pool[
+              :relays_enabled
+            ] || 0} online · {@pool[:events_seen] || 0} events seen
           </p>
 
           <.form

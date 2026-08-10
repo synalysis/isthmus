@@ -38,7 +38,7 @@ defmodule Isthmus.Gateway.Activity do
     ])
     |> validate_required([:direction, :from_network, :to_network, :status])
     |> validate_inclusion(:direction, ~w(in out bridge))
-    |> validate_inclusion(:status, ~w(accepted delivered failed dropped))
+    |> validate_inclusion(:status, ~w(accepted delivered failed dropped retained))
     |> put_default_body()
   end
 

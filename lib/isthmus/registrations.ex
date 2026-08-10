@@ -547,7 +547,8 @@ defmodule Isthmus.Registrations do
 
   @doc """
   Active Nostr inbox keypairs for inbound decrypt: every vaulted `nostr/proxy`
-  leg, plus the optional `ISTHMUS_NOSTR_NSEC` service identity as fallback.
+  leg, plus the optional `ISTHMUS_NOSTR_NSEC` service identity (operator mailbox /
+  tunnel carrier — not used for group fan-out).
   """
   def list_nostr_inbox_keypairs do
     proxy_pairs =
