@@ -28,6 +28,9 @@ defmodule Isthmus.Tunnel.Engine do
   # for addressed (point-to-point) delivery. Without this, one side may have a
   # path (works) while the other keeps hitting `no_path` (fails) — an asymmetry.
   @announce_ms 5 * 60_000
+  # Soft-heal (request_path + tunnel announce) when a reticulum peer is
+  # unreachable / has no path / is stuck on broadcast fallback. Not a sidecar restart.
+  @heal_ms 60_000
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -123,6 +126,7 @@ defmodule Isthmus.Tunnel.Engine do
         state
       end
 
+    state = maybe_soft_heal(state)
     state = maybe_announce_tunnels(state)
 
     schedule_ping()
@@ -615,6 +619,90 @@ defmodule Isthmus.Tunnel.Engine do
 
   defp ping_enabled?, do: Application.get_env(:isthmus, :tunnel_ping_enabled, true)
   defp ping_interval, do: Application.get_env(:isthmus, :tunnel_ping_ms, @ping_ms)
+  defp heal_interval, do: Application.get_env(:isthmus, :tunnel_heal_ms, @heal_ms)
+
+  # When a reticulum peer looks one-way (no path / broadcast / unreachable),
+  # request a path to them and re-announce our tunnel dest. Throttled per peer.
+  defp maybe_soft_heal(state) do
+    now_ms = System.system_time(:millisecond)
+
+    peers =
+      Peer
+      |> where([p], p.enabled == true and p.carrier_network == ^"reticulum")
+      |> Repo.all()
+
+    {liveness, healed_any?} =
+      Enum.reduce(peers, {state.liveness, false}, fn peer, {liv, any?} ->
+        entry = Map.get(liv, peer.tunnel_id, blank_liveness())
+
+        if needs_soft_heal?(entry, peer.tunnel_id, liv, now_ms) and heal_due?(entry, now_ms) do
+          Logger.info(
+            "tunnel soft-heal #{String.slice(peer.tunnel_id, 0, 12)}… " <>
+              "(request_path + announce; mode=#{inspect(entry.last_ping_mode)} path=#{inspect(entry.path)})"
+          )
+
+          _ = safe_request_path(peer.peer_ref)
+          entry = %{entry | last_heal_at: now_ms}
+          {Map.put(liv, peer.tunnel_id, entry), true}
+        else
+          {liv, any?}
+        end
+      end)
+
+    state = %{state | liveness: liveness}
+
+    if healed_any? do
+      _ = safe_tunnel_announce()
+      Map.put(state, :last_announce_at, System.monotonic_time(:millisecond))
+    else
+      state
+    end
+  rescue
+    e ->
+      Logger.debug("tunnel soft-heal failed: #{inspect(e)}")
+      state
+  catch
+    :exit, _ -> state
+  end
+
+  defp needs_soft_heal?(entry, tunnel_id, liveness, now_ms) do
+    # Wait until we've actually pinged once so we don't heal on a cold start.
+    if is_nil(entry.last_ping_at) do
+      false
+    else
+      status = liveness_status(liveness, tunnel_id, now_ms)
+      path_ok? = is_map(entry.path) and Map.get(entry.path, :path_known) == true
+      broadcast? = entry.last_ping_mode == :broadcast
+      send_error? = entry.last_ping_mode == :error
+
+      cond do
+        status == :reachable and path_ok? and not broadcast? and not send_error? ->
+          false
+
+        true ->
+          true
+      end
+    end
+  end
+
+  defp heal_due?(%{last_heal_at: nil}, _now_ms), do: true
+
+  defp heal_due?(%{last_heal_at: at}, now_ms) when is_integer(at),
+    do: now_ms - at >= heal_interval()
+
+  defp heal_due?(_, _), do: true
+
+  defp safe_request_path(ref) when is_binary(ref) and ref != "" do
+    Reticulum.request_path(ref)
+  rescue
+    e ->
+      Logger.debug("tunnel request_path failed: #{inspect(e)}")
+      :error
+  catch
+    :exit, _ -> :error
+  end
+
+  defp safe_request_path(_), do: :ok
 
   # Periodically re-announce our tunnel destination so remote peers can learn a
   # path back to us and use addressed delivery in BOTH directions.
@@ -813,7 +901,8 @@ defmodule Isthmus.Tunnel.Engine do
       last_ping_error: nil,
       last_inbound_at: nil,
       last_inbound_kind: nil,
-      path: nil
+      path: nil,
+      last_heal_at: nil
     }
   end
 

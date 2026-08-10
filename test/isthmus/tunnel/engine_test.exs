@@ -214,6 +214,56 @@ defmodule Isthmus.Tunnel.EngineTest do
     assert refreshed.status in ["inflight", "acked", "pending"]
   end
 
+  test "soft-heal runs for reticulum peers that lack a path after ping" do
+    prev_ping = Application.get_env(:isthmus, :tunnel_ping_enabled, true)
+    prev_heal = Application.get_env(:isthmus, :tunnel_heal_ms)
+    Application.put_env(:isthmus, :tunnel_ping_enabled, true)
+    Application.put_env(:isthmus, :tunnel_heal_ms, 60_000)
+
+    on_exit(fn ->
+      Application.put_env(:isthmus, :tunnel_ping_enabled, prev_ping)
+
+      if prev_heal,
+        do: Application.put_env(:isthmus, :tunnel_heal_ms, prev_heal),
+        else: Application.delete_env(:isthmus, :tunnel_heal_ms)
+    end)
+
+    {:ok, peer} =
+      Tunnel.create_peer(%{
+        name: "RNS heal peer",
+        peer_ref: String.duplicate("ab", 16),
+        payload_network: "reticulum",
+        carrier_network: "reticulum"
+      })
+
+    send(Engine, :ping)
+    state = :sys.get_state(Engine)
+    entry = Map.fetch!(state.liveness, peer.tunnel_id)
+
+    assert is_integer(entry.last_heal_at)
+    assert is_integer(state.last_announce_at)
+
+    healed_at = entry.last_heal_at
+    send(Engine, :ping)
+    state2 = :sys.get_state(Engine)
+    entry2 = Map.fetch!(state2.liveness, peer.tunnel_id)
+
+    # Within heal interval — do not re-heal.
+    assert entry2.last_heal_at == healed_at
+  end
+
+  test "soft-heal skips meshtastic peers", %{peer: peer} do
+    prev = Application.get_env(:isthmus, :tunnel_ping_enabled, true)
+    Application.put_env(:isthmus, :tunnel_ping_enabled, true)
+    on_exit(fn -> Application.put_env(:isthmus, :tunnel_ping_enabled, prev) end)
+
+    send(Engine, :ping)
+    state = :sys.get_state(Engine)
+    entry = Map.get(state.liveness, peer.tunnel_id, %{})
+
+    refute Map.get(entry, :last_heal_at)
+  end
+
   defp find_frame(outbound, pred) do
     Enum.find_value(outbound, fn %{payload: raw} ->
       case Frame.decode(raw) do
