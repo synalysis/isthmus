@@ -20,6 +20,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
      socket
      |> assign(:carrier, @default_carrier)
      |> assign(:payload, @default_payload)
+     |> assign(:modal, nil)
      |> assign(:editing_peer, nil)
      |> assign(:edit_form, nil)
      |> assign(:edit_pairing, "")
@@ -53,10 +54,31 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
 
   def handle_event("form_changed", _params, socket), do: {:noreply, socket}
 
+  def handle_event("open_add_peer", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:modal, :add_peer)
+     |> assign(:carrier, @default_carrier)
+     |> assign(:payload, @default_payload)
+     |> assign(:form, to_form(Tunnel.change_peer(%Peer{})))
+     |> assign_local_identity()}
+  end
+
+  def handle_event("close_modal", _params, socket) do
+    {:noreply, assign(socket, :modal, nil)}
+  end
+
   def handle_event("save", %{"peer" => params}, socket) do
     case Tunnel.create_peer(params) do
       {:ok, _} ->
-        {:noreply, socket |> put_flash(:info, "Tunnel peer added.") |> assign_data()}
+        {:noreply,
+         socket
+         |> put_flash(:info, "Tunnel peer added.")
+         |> assign(:modal, nil)
+         |> assign(:form, to_form(Tunnel.change_peer(%Peer{})))
+         |> assign(:carrier, @default_carrier)
+         |> assign(:payload, @default_payload)
+         |> assign_data()}
 
       {:error, changeset} ->
         {:noreply, assign(socket, :form, to_form(changeset))}
@@ -310,112 +332,143 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
           </div>
         </div>
 
-        <.form
-          for={@form}
-          id="peer-form"
-          phx-change="form_changed"
-          phx-submit="save"
-          class="card bg-base-200 border border-base-300"
-        >
-          <div class="card-body grid gap-3 md:grid-cols-2">
-            <h2 class="card-title md:col-span-2">Add tunnel peer</h2>
-            <input class="input input-bordered" name="peer[name]" placeholder="Name" required />
-            <input
-              class="input input-bordered"
-              name="peer[peer_ref]"
-              placeholder="Remote's ref on the carrier network"
-              required
-            />
-            <div class="md:col-span-2">
-              <input
-                class="input input-bordered w-full"
-                name="peer[pairing_code]"
-                placeholder="Shared tunnel code — both sides enter the same phrase"
-              />
-              <p class="mt-1 text-xs opacity-60">
-                Both endpoints must derive the same tunnel id: enter an identical code on each side
-                (case-insensitive). Inbound frames are demuxed by tunnel id, not by carrier address,
-                so a return path only works when both sides match. Leave blank for a one-off random
-                tunnel (outbound only until the other side pairs the id).
-              </p>
-            </div>
-            <select class="select select-bordered" name="peer[payload_network]">
-              <option value="reticulum" selected={@payload == "reticulum"}>Payload: reticulum</option>
-              <option value="meshcore" selected={@payload == "meshcore"}>Payload: meshcore</option>
-              <option value="nostr" selected={@payload == "nostr"}>Payload: nostr</option>
-            </select>
-            <select class="select select-bordered" name="peer[carrier_network]" value={@carrier}>
-              <option value="meshcore" selected={@carrier == "meshcore"}>Carrier: meshcore</option>
-              <option value="reticulum" selected={@carrier == "reticulum"}>
-                Carrier: reticulum
-              </option>
-              <option value="nostr" selected={@carrier == "nostr"}>Carrier: nostr</option>
-            </select>
-
-            <div
-              id="local-identity"
-              class="md:col-span-2 rounded-box border border-base-300 bg-base-100 p-3 space-y-2"
-            >
-              <div class="flex flex-wrap items-center justify-between gap-2">
-                <h3 class="text-sm font-semibold">
-                  Your ref on {@local_identity.network}
-                </h3>
-                <% {badge_label, badge_class} = identity_badge(@local_identity.status) %>
-                <span class={["badge badge-sm", badge_class]}>{badge_label}</span>
-              </div>
-
-              <p class="text-xs opacity-70">
-                Send this to the remote operator — they enter it as the peer ref on their side.
-              </p>
-
-              <div :for={{ref, idx} <- Enum.with_index(@local_identity.refs)} class="flex gap-2">
-                <code class="flex-1 select-all break-all rounded-lg bg-base-200 px-2 py-1.5 font-mono text-xs">
-                  {ref}
-                </code>
-                <button
-                  type="button"
-                  id={"copy-local-ref-#{idx}"}
-                  phx-hook=".CopyRef"
-                  data-ref={ref}
-                  class="btn btn-sm btn-outline shrink-0"
-                >
-                  Copy
-                </button>
-              </div>
-
-              <p :if={@local_identity.note} class="text-xs opacity-70">{@local_identity.note}</p>
-              <p :if={@local_identity.hint} class="text-xs opacity-60">{@local_identity.hint}</p>
-            </div>
-
-            <button class="btn btn-primary md:col-span-2" type="submit">Create</button>
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+          <div class="space-y-1">
+            <h2 class="text-lg font-medium">Tunnel peers</h2>
+            <p class="text-xs opacity-60">
+              Each enabled tunnel is pinged periodically over its carrier; the badge shows whether the
+              far side is reachable and the round-trip time.
+            </p>
           </div>
-          <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyRef">
-            export default {
-              mounted() {
-                this.el.addEventListener("click", async () => {
-                  const ref = this.el.dataset.ref
-                  if (!ref) { return }
-                  try {
-                    await navigator.clipboard.writeText(ref)
-                  } catch (_err) {
-                    return
-                  }
-                  const original = this.el.textContent
-                  this.el.textContent = "Copied"
-                  setTimeout(() => { this.el.textContent = original }, 1200)
-                })
-              }
-            }
-          </script>
-        </.form>
-
-        <div class="space-y-1">
-          <h2 class="text-lg font-medium">Tunnel peers</h2>
-          <p class="text-xs opacity-60">
-            Each enabled tunnel is pinged periodically over its carrier; the badge shows whether the
-            far side is reachable and the round-trip time.
-          </p>
+          <button
+            type="button"
+            id="open-add-peer"
+            class="btn btn-primary btn-sm shrink-0"
+            phx-click="open_add_peer"
+          >
+            <.icon name="hero-plus" class="size-4" /> Add tunnel peer
+          </button>
         </div>
+
+        <div
+          :if={@modal == :add_peer}
+          class="modal modal-open"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="add-peer-title"
+          id="add-peer-modal"
+        >
+          <div class="modal-box max-w-2xl">
+            <h3 id="add-peer-title" class="text-lg font-semibold">Add tunnel peer</h3>
+            <p class="mt-1 text-sm opacity-70">
+              Pair with a remote Isthmus over a carrier network to carry opaque payload traffic.
+            </p>
+            <.form
+              for={@form}
+              id="peer-form"
+              phx-change="form_changed"
+              phx-submit="save"
+              class="mt-4 grid gap-3 md:grid-cols-2"
+            >
+              <input class="input input-bordered" name="peer[name]" placeholder="Name" required />
+              <input
+                class="input input-bordered"
+                name="peer[peer_ref]"
+                placeholder="Remote's ref on the carrier network"
+                required
+              />
+              <div class="md:col-span-2">
+                <input
+                  class="input input-bordered w-full"
+                  name="peer[pairing_code]"
+                  placeholder="Shared tunnel code — both sides enter the same phrase"
+                />
+                <p class="mt-1 text-xs opacity-60">
+                  Both endpoints must derive the same tunnel id: enter an identical code on each side
+                  (case-insensitive). Inbound frames are demuxed by tunnel id, not by carrier address,
+                  so a return path only works when both sides match. Leave blank for a one-off random
+                  tunnel (outbound only until the other side pairs the id).
+                </p>
+              </div>
+              <select class="select select-bordered" name="peer[payload_network]">
+                <option value="reticulum" selected={@payload == "reticulum"}>
+                  Payload: reticulum
+                </option>
+                <option value="meshcore" selected={@payload == "meshcore"}>Payload: meshcore</option>
+                <option value="nostr" selected={@payload == "nostr"}>Payload: nostr</option>
+              </select>
+              <select class="select select-bordered" name="peer[carrier_network]" value={@carrier}>
+                <option value="meshcore" selected={@carrier == "meshcore"}>Carrier: meshcore</option>
+                <option value="reticulum" selected={@carrier == "reticulum"}>
+                  Carrier: reticulum
+                </option>
+                <option value="nostr" selected={@carrier == "nostr"}>Carrier: nostr</option>
+              </select>
+
+              <div
+                id="local-identity"
+                class="md:col-span-2 rounded-box border border-base-300 bg-base-100 p-3 space-y-2"
+              >
+                <div class="flex flex-wrap items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold">
+                    Your ref on {@local_identity.network}
+                  </h4>
+                  <% {badge_label, badge_class} = identity_badge(@local_identity.status) %>
+                  <span class={["badge badge-sm", badge_class]}>{badge_label}</span>
+                </div>
+
+                <p class="text-xs opacity-70">
+                  Send this to the remote operator — they enter it as the peer ref on their side.
+                </p>
+
+                <div :for={{ref, idx} <- Enum.with_index(@local_identity.refs)} class="flex gap-2">
+                  <code class="flex-1 select-all break-all rounded-lg bg-base-200 px-2 py-1.5 font-mono text-xs">
+                    {ref}
+                  </code>
+                  <button
+                    type="button"
+                    id={"copy-local-ref-#{idx}"}
+                    phx-hook=".CopyRef"
+                    data-ref={ref}
+                    class="btn btn-sm btn-outline shrink-0"
+                  >
+                    Copy
+                  </button>
+                </div>
+
+                <p :if={@local_identity.note} class="text-xs opacity-70">{@local_identity.note}</p>
+                <p :if={@local_identity.hint} class="text-xs opacity-60">{@local_identity.hint}</p>
+              </div>
+
+              <div class="modal-action md:col-span-2 mt-0">
+                <button class="btn btn-ghost btn-sm" phx-click="close_modal" type="button">
+                  Cancel
+                </button>
+                <button class="btn btn-primary btn-sm" type="submit">Create</button>
+              </div>
+            </.form>
+          </div>
+          <div class="modal-backdrop" phx-click="close_modal"></div>
+        </div>
+
+        <script :type={Phoenix.LiveView.ColocatedHook} name=".CopyRef">
+          export default {
+            mounted() {
+              this.el.addEventListener("click", async () => {
+                const ref = this.el.dataset.ref
+                if (!ref) { return }
+                try {
+                  await navigator.clipboard.writeText(ref)
+                } catch (_err) {
+                  return
+                }
+                const original = this.el.textContent
+                this.el.textContent = "Copied"
+                setTimeout(() => { this.el.textContent = original }, 1200)
+              })
+            }
+          }
+        </script>
 
         <ul class="space-y-2">
           <li
