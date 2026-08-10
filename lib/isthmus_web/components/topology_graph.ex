@@ -7,6 +7,8 @@ defmodule IsthmusWeb.TopologyGraph do
   """
   use Phoenix.Component
 
+  import IsthmusWeb.CoreComponents, only: [format_identity_ref: 2, short_identity_ref: 2]
+
   use Phoenix.VerifiedRoutes,
     endpoint: IsthmusWeb.Endpoint,
     router: IsthmusWeb.Router,
@@ -277,7 +279,12 @@ defmodule IsthmusWeb.TopologyGraph do
           <dt class="opacity-60">Tunnel</dt>
           <dd class="col-span-2 font-mono break-all">{@detail.tunnel_id}</dd>
           <dt class="opacity-60">Peer</dt>
-          <dd class="col-span-2 font-mono">{short_ref(@detail.peer_ref)}</dd>
+          <dd
+            class="col-span-2 font-mono"
+            title={format_identity_ref(@detail.carrier_network, @detail.peer_ref)}
+          >
+            {short_identity_ref(@detail.carrier_network, @detail.peer_ref)}
+          </dd>
           <dt class="opacity-60">Seq</dt>
           <dd class="col-span-2 font-mono">{@detail.seq}</dd>
           <dt :if={@detail.sighting} class="opacity-60">Last seen</dt>
@@ -299,7 +306,12 @@ defmodule IsthmusWeb.TopologyGraph do
               <span :if={Map.get(leg, :network)} class="capitalize">{leg.network}</span>
               <span class="opacity-60">{leg.role}</span>
             </span>
-            <code class="font-mono opacity-70">{short_ref(leg.ref)}</code>
+            <code
+              class="font-mono opacity-70"
+              title={format_identity_ref(Map.get(leg, :network), leg.ref)}
+            >
+              {short_identity_ref(Map.get(leg, :network), leg.ref)}
+            </code>
           </li>
         </ul>
       </div>
@@ -439,9 +451,4 @@ defmodule IsthmusWeb.TopologyGraph do
     if String.length(text) > max, do: String.slice(text, 0, max - 1) <> "…", else: text
   end
 
-  defp short_ref(nil), do: "—"
-
-  defp short_ref(ref) when is_binary(ref) do
-    if String.length(ref) > 14, do: String.slice(ref, 0, 12) <> "…", else: ref
-  end
 end

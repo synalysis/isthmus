@@ -64,6 +64,18 @@ defmodule Isthmus.Tunnel.PeerTest do
       })
 
     assert sighting.tunnel_id == peer.tunnel_id
+
+    {:ok, _unrelated} =
+      Sightings.record(%{
+        network: "reticulum",
+        direction: "in",
+        identity_ref: String.duplicate("ee", 16),
+        hops: 1
+      })
+
+    linked = Sightings.list_recent_for_tunnels(20)
+    assert Enum.any?(linked, &(&1.id == sighting.id))
+    refute Enum.any?(linked, &(&1.identity_ref == String.duplicate("ee", 16)))
   end
 
   test "a blank peer_ref is still rejected after trimming" do

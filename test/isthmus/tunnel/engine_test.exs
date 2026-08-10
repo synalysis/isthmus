@@ -203,6 +203,39 @@ defmodule Isthmus.Tunnel.EngineTest do
     assert result == {:error, :bridge_disabled}
   end
 
+  test "MeshCore advert via tunnel is recorded with tunnel via" do
+    alias Isthmus.Announce.Sightings
+    alias Isthmus.Networks.MeshCore.{Advert, Crypto}
+
+    {:ok, peer} =
+      Tunnel.create_peer(%{
+        name: "Local Test",
+        peer_ref: "aa" <> String.duplicate("bb", 31),
+        payload_network: "meshcore",
+        carrier_network: "meshtastic"
+      })
+
+    {pub, seed} = Crypto.generate_keypair()
+    hex = Base.encode16(pub, case: :lower)
+    packet = Advert.build_flood(seed, pub, "Remote Phone")
+
+    peer.tunnel_id
+    |> Frame.tunnel_id_from_string()
+    |> Frame.fragment(9, packet, 512)
+    |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1)))
+
+    _ = :sys.get_state(Engine)
+
+    assert_receive {:tunnel_delivered, %{payload_network: "meshcore"}}, 1_000
+
+    sighting = Sightings.best_for("meshcore", hex)
+    assert sighting
+    assert sighting.meta["source"] == "tunnel_advert"
+    assert sighting.meta["peer"] == "Local Test"
+    assert sighting.meta["name"] == "Remote Phone"
+    assert sighting.tunnel_id == peer.tunnel_id
+  end
+
   test "outbox uses msg.payload (not the struct) when draining", %{peer: peer} do
     assert {:ok, msg} = Tunnel.send_payload(peer, "payload-bytes")
     assert is_binary(msg.payload)

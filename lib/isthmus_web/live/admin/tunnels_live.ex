@@ -246,11 +246,11 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
     |> assign(:preferred_ids, preferred_ids)
     |> assign(:routing_notes, routing_notes)
     |> assign(:outbox_by_tunnel, waiting)
-    |> assign(:sightings, Sightings.list_recent(50))
+    |> assign(:tunnel_sightings, Sightings.list_recent_for_tunnels(20))
     |> assign(:outbox, Outbox.stats())
     |> assign(:dlq, dlq)
     |> assign(:governor, Governor.stats())
-    |> assign(:drops, Governor.drops_by_reason(20))
+    |> assign(:drops, Governor.drops_summary(20))
     |> assign(:form, socket.assigns[:form] || to_form(Tunnel.change_peer(%Peer{})))
   end
 
@@ -318,8 +318,8 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
             <div class="stat-value text-2xl">{@governor.allowed}</div>
           </div>
           <div class="stat bg-base-200 rounded-box border border-base-300">
-            <div class="stat-title">Sightings (24h)</div>
-            <div class="stat-value text-2xl">{length(@sightings)}</div>
+            <div class="stat-title">Tunnel sightings</div>
+            <div class="stat-value text-2xl">{length(@tunnel_sightings)}</div>
           </div>
         </div>
 
@@ -645,8 +645,11 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                   <div class="space-y-1 text-xs min-w-0">
                     <p class="font-medium opacity-80">Path details</p>
                     <p class="opacity-70">{tunnel_diag_summary(health)}</p>
-                    <p class="font-mono opacity-60 break-all">
-                      Their ref (peer_ref): {peer.peer_ref}
+                    <p
+                      class="font-mono opacity-60 break-all"
+                      title={peer.peer_ref}
+                    >
+                      Their ref (peer_ref): {format_identity_ref(peer.carrier_network, peer.peer_ref)}
                     </p>
                     <p :if={@local_tunnel_dest} class="font-mono opacity-60 break-all">
                       Our tunnel dest: {@local_tunnel_dest}
@@ -755,9 +758,19 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
         </ul>
 
         <div>
-          <h2 class="text-xl font-medium mb-2">Announce flow (24h)</h2>
+          <div class="flex flex-wrap items-end justify-between gap-2 mb-2">
+            <div>
+              <h2 class="text-xl font-medium">Tunnel-linked sightings</h2>
+              <p class="text-xs opacity-60">
+                Announces matched to a configured peer_ref. Full announce feed is on <.link
+                  navigate={~p"/admin/adverts"}
+                  class="link"
+                >Adverts</.link>.
+              </p>
+            </div>
+          </div>
           <div class="overflow-x-auto rounded-box border border-base-300">
-            <table class="table table-sm">
+            <table id="tunnel-sightings" class="table table-sm">
               <thead>
                 <tr>
                   <th>When</th>
@@ -766,28 +779,29 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                   <th>Name</th>
                   <th>Identity</th>
                   <th>Hops</th>
-                  <th>Latency</th>
                   <th>Tunnel</th>
                 </tr>
               </thead>
               <tbody>
-                <tr :if={@sightings == []}>
-                  <td colspan="8" class="text-sm opacity-60">No sightings yet.</td>
+                <tr :if={@tunnel_sightings == []}>
+                  <td colspan="7" class="text-sm opacity-60">
+                    No tunnel-linked sightings yet.
+                  </td>
                 </tr>
-                <tr :for={s <- @sightings}>
-                  <td class="text-xs whitespace-nowrap">{s.seen_at}</td>
+                <tr :for={s <- @tunnel_sightings}>
+                  <td class="text-xs whitespace-nowrap">{ago_dt(s.seen_at)}</td>
                   <td class="text-xs">{s.network}</td>
                   <td class="text-xs">{s.direction}</td>
-                  <td class="text-sm">{sighting_name(s) || "—"}</td>
-                  <td class="text-xs font-mono max-w-xs truncate" title={s.identity_ref}>
-                    {short_ref(s.identity_ref)}
+                  <td class="text-sm">{sighting_name(s, @peers) || "—"}</td>
+                  <td
+                    class="text-xs font-mono max-w-xs truncate"
+                    title={format_identity_ref(s.network, s.identity_ref)}
+                  >
+                    {short_identity_ref(s.network, s.identity_ref)}
                   </td>
                   <td class="text-xs font-mono">{s.hops || "—"}</td>
-                  <td class="text-xs font-mono">
-                    {if s.latency_ms, do: "#{s.latency_ms} ms", else: "—"}
-                  </td>
                   <td class="text-xs font-mono truncate max-w-[8rem]" title={s.tunnel_id}>
-                    {s.tunnel_id || "—"}
+                    {short_ref(s.tunnel_id)}
                   </td>
                 </tr>
               </tbody>
@@ -797,9 +811,26 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
 
         <div>
           <h2 class="text-xl font-medium mb-2">Recent governor drops</h2>
-          <ul class="text-sm space-y-1">
-            <li :for={drop <- @drops} class="font-mono opacity-80">
-              {drop.network}/{drop.class} {drop.reason} · {drop.identity_key}
+          <p class="text-xs opacity-60 mb-2">
+            Collapsed by reason · relative time is last occurrence
+          </p>
+          <ul id="governor-drops" class="text-sm space-y-1.5">
+            <li :if={@drops == []} class="opacity-60">No drops recorded</li>
+            <li
+              :for={drop <- @drops}
+              id={"governor-drop-#{drop.network}-#{drop.class}-#{drop.reason}-#{drop.identity_key}"}
+              class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5"
+            >
+              <span class="tabular-nums opacity-60 shrink-0">{ago_dt(drop.seen_at)}</span>
+              <span
+                :if={drop.count > 1}
+                class="badge badge-ghost badge-xs shrink-0"
+              >
+                ×{drop.count}
+              </span>
+              <span class="font-mono opacity-80 break-all">
+                {drop.network}/{drop.class} {drop.reason} · {short_id(drop.identity_key)}
+              </span>
             </li>
           </ul>
         </div>
@@ -933,13 +964,24 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
 
   defp ago(ms) when is_integer(ms) do
     secs = max(div(System.system_time(:millisecond) - ms, 1000), 0)
-
-    cond do
-      secs < 60 -> "#{secs}s"
-      secs < 3600 -> "#{div(secs, 60)}m"
-      true -> "#{div(secs, 3600)}h"
-    end
+    format_ago_secs(secs)
   end
+
+  defp ago_dt(%DateTime{} = dt) do
+    secs = max(DateTime.diff(DateTime.utc_now(), dt, :second), 0)
+    "#{format_ago_secs(secs)} ago"
+  end
+
+  defp ago_dt(_), do: "—"
+
+  defp format_ago_secs(secs) when secs < 60, do: "#{secs}s"
+  defp format_ago_secs(secs) when secs < 3600, do: "#{div(secs, 60)}m"
+  defp format_ago_secs(secs) when secs < 86_400, do: "#{div(secs, 3600)}h"
+  defp format_ago_secs(secs), do: "#{div(secs, 86_400)}d"
+
+  defp short_id(id) when is_binary(id) and byte_size(id) > 16, do: String.slice(id, 0, 16) <> "…"
+  defp short_id(id) when is_binary(id), do: id
+  defp short_id(_), do: "—"
 
   defp peer_metric_label(nil), do: "No path metrics yet"
 
@@ -988,11 +1030,11 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
 
   defp outbox_kind_label(_), do: "Payload"
 
-  defp sighting_name(%{meta: meta, network: network, identity_ref: ref}) do
+  defp sighting_name(%{meta: meta, network: network, identity_ref: ref} = s, peers) do
     from_meta =
       case meta do
         m when is_map(m) ->
-          case m["name"] || m["display_name"] do
+          case m["name"] || m["display_name"] || m["peer"] || m[:name] || m[:peer] do
             n when is_binary(n) and n != "" -> n
             _ -> nil
           end
@@ -1001,10 +1043,27 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
           nil
       end
 
-    from_meta || KnownAddresses.name_for(network, ref)
+    from_meta || peer_name_for_sighting(peers, s) || KnownAddresses.name_for(network, ref)
   end
 
-  defp sighting_name(_), do: nil
+  defp sighting_name(_, _), do: nil
+
+  defp peer_name_for_sighting(peers, %{tunnel_id: tid, identity_ref: ref})
+       when is_list(peers) do
+    Enum.find_value(peers, fn
+      %{name: name, tunnel_id: ^tid} when is_binary(name) and name != "" ->
+        name
+
+      %{name: name, peer_ref: pref}
+      when is_binary(name) and name != "" and is_binary(pref) and pref == ref ->
+        name
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp peer_name_for_sighting(_, _), do: nil
 
   defp short_ref(ref) when is_binary(ref) do
     if String.length(ref) > 16 do

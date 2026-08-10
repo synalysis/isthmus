@@ -6,6 +6,24 @@ defmodule Isthmus.TopologyTest do
   alias Isthmus.Topology
   alias Isthmus.Tunnel
 
+  test "network detail includes network on connected legs for display formatting" do
+    owner = owner_hex()
+
+    assert {:ok, _group} =
+             Registrations.register_self(owner, %{
+               display_name: "Npub View",
+               created_by: "admin"
+             })
+
+    graph = Topology.build(:all)
+    detail = Topology.detail(graph, "network:nostr")
+
+    assert detail.kind == :network
+    assert detail.legs != []
+    assert Enum.all?(detail.legs, &(&1.network == "nostr"))
+    assert Enum.all?(detail.legs, &(byte_size(&1.ref) == 64))
+  end
+
   test "build(:all) emits group and network nodes plus leg edges" do
     owner = owner_hex()
     mc = String.duplicate("ab", 32)

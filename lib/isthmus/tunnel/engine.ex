@@ -12,9 +12,12 @@ defmodule Isthmus.Tunnel.Engine do
   require Logger
   import Ecto.Query
 
-  alias Isthmus.Announce.Sightings
   alias Isthmus.Announce.Governor
+  alias Isthmus.Announce.Inbound
+  alias Isthmus.Announce.Sightings
   alias Isthmus.Networks
+  alias Isthmus.Networks.MeshCore.Advert
+  alias Isthmus.Networks.MeshCore.Packet
   alias Isthmus.Networks.Reticulum
   alias Isthmus.Networks.Reticulum.Sidecar
   alias Isthmus.Tunnel
@@ -360,7 +363,7 @@ defmodule Isthmus.Tunnel.Engine do
         tunnel_id: tunnel_id,
         hops: 0,
         latency_ms: latency_ms,
-        meta: %{source: "tunnel_ack", seq: seq}
+        meta: %{source: "tunnel_ack", seq: seq, peer: peer.name, name: peer.name}
       })
 
     Phoenix.PubSub.broadcast(
@@ -476,7 +479,12 @@ defmodule Isthmus.Tunnel.Engine do
 
         # Record the injected packet as already-bridged BEFORE it hits the island,
         # so the repeater's echo isn't re-forwarded back down the tunnel (loop).
-        if peer.payload_network == "meshcore", do: Bridge.mark_forwarded(payload)
+        if peer.payload_network == "meshcore" do
+          Bridge.mark_forwarded(payload)
+          # Record advert identity here (true ingress), before any radio echo
+          # would mis-attribute the same packet as a local bridge hear.
+          maybe_record_tunnel_meshcore_advert(peer, tunnel_hex, payload)
+        end
 
         opts = %{
           direction: :from_tunnel,
@@ -544,6 +552,24 @@ defmodule Isthmus.Tunnel.Engine do
     end
   end
 
+  defp maybe_record_tunnel_meshcore_advert(%Peer{} = peer, tunnel_hex, payload)
+       when is_binary(payload) do
+    with {:ok, decoded} <- Packet.decode(payload),
+         true <- decoded.payload_type == Packet.type_advert(),
+         {:ok, %{public_key: pub, name: name}} <- Advert.parse_payload(decoded.payload) do
+      hex = Base.encode16(pub, case: :lower)
+
+      Inbound.record("meshcore", hex, name, "tunnel_advert", %{
+        peer: peer.name,
+        tunnel_id: tunnel_hex
+      })
+    else
+      _ -> :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
   # Persist a lightweight "in" sighting so inbound tunnel payloads are visible in
   # the Tunnels announce-flow table / topology, making direction issues diagnosable.
   defp record_inbound_sighting(peer, tunnel_hex, result) do
@@ -561,7 +587,7 @@ defmodule Isthmus.Tunnel.Engine do
           identity_ref: peer.peer_ref || tunnel_hex,
           direction: "in",
           tunnel_id: tunnel_hex,
-          meta: %{"source" => "tunnel_data", "peer" => peer.name}
+          meta: %{"source" => "tunnel_data", "peer" => peer.name, "name" => peer.name}
         })
       rescue
         _ -> :ok

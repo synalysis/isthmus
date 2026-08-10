@@ -52,11 +52,31 @@ const NostrLogin = {
   }
 }
 
+const pad2 = (n) => String(n).padStart(2, "0")
+
+const LocalTime = {
+  mounted() {
+    this.renderLocal()
+  },
+  updated() {
+    this.renderLocal()
+  },
+  renderLocal() {
+    const iso = this.el.dataset.utc
+    if (!iso) return
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return
+    this.el.textContent =
+      `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}` +
+      ` ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+  }
+}
+
 const csrfToken = document.querySelector("meta[name='csrf-token']").getAttribute("content")
 const liveSocket = new LiveSocket("/live", Socket, {
   longPollFallbackMs: 2500,
   params: {_csrf_token: csrfToken},
-  hooks: {...colocatedHooks, NostrLogin},
+  hooks: {...colocatedHooks, NostrLogin, LocalTime},
 })
 
 topbar.config({barColors: {0: "#29d"}, shadowColor: "rgba(0, 0, 0, .3)"})

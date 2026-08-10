@@ -74,6 +74,41 @@ defmodule Isthmus.Announce.Governor do
     |> Repo.all()
   end
 
+  @doc """
+  Recent drops collapsed by network/class/reason/identity.
+
+  Each row includes `count` and `seen_at` (most recent occurrence) so the admin
+  UI can show how stale a repeated dedup storm is.
+  """
+  def drops_summary(limit \\ 20) do
+    import Ecto.Query
+
+    # Pull a wider window, then collapse — identical advert/tunnel dedups
+    # otherwise drown the list.
+    sample = max(limit * 10, 100)
+
+    Event
+    |> where([e], e.action == "drop")
+    |> order_by([e], desc: e.seen_at)
+    |> limit(^sample)
+    |> Repo.all()
+    |> Enum.group_by(&{&1.network, &1.class, &1.reason, &1.identity_key})
+    |> Enum.map(fn {{network, class, reason, identity_key}, events} ->
+      latest = Enum.max_by(events, & &1.seen_at, DateTime)
+
+      %{
+        network: network,
+        class: class,
+        reason: reason,
+        identity_key: identity_key,
+        count: length(events),
+        seen_at: latest.seen_at
+      }
+    end)
+    |> Enum.sort_by(& &1.seen_at, {:desc, DateTime})
+    |> Enum.take(limit)
+  end
+
   @impl true
   def init(_opts) do
     {:ok, %{tokens: %{}, hour_bucket: current_hour(), allowed: 0, dropped: 0}}

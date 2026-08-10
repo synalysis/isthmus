@@ -56,15 +56,20 @@ defmodule IsthmusWeb.Admin.AuditLive do
                 <td colspan="6" class="text-sm opacity-60">No governor events yet.</td>
               </tr>
               <tr :for={e <- @events}>
-                <td class="whitespace-nowrap text-xs font-mono">{e.seen_at}</td>
+                <td>
+                  <.local_time id={"audit-when-#{e.id}"} at={e.seen_at} />
+                </td>
                 <td>
                   <% {label, class} = action_badge(e.action) %>
                   <span class={["badge badge-sm", class]}>{label}</span>
                 </td>
                 <td class="text-xs">{e.network}</td>
                 <td class="text-xs font-mono">{e.class}</td>
-                <td class="text-xs font-mono max-w-[12rem] truncate" title={e.identity_key}>
-                  {e.identity_key}
+                <td
+                  class="text-xs font-mono max-w-[12rem] truncate"
+                  title={format_identity_ref(e.network, e.identity_key)}
+                >
+                  {short_identity_ref(e.network, e.identity_key)}
                 </td>
                 <td class="text-xs opacity-70">{e.reason || "—"}</td>
               </tr>

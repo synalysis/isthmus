@@ -65,6 +65,19 @@ defmodule IsthmusWeb.Admin.RegistrationsLiveTest do
     assert has_element?(view, "#bridge-attach-form input[name='identity'][value='#{ref}']")
   end
 
+  test "revoked groups are hidden by default and can be shown", %{conn: conn, group: group} do
+    {:ok, _} = Registrations.revoke(group)
+    {:ok, view, _html} = live(conn, ~p"/admin/registrations")
+
+    refute has_element?(view, "#group-#{group.id}")
+    assert has_element?(view, "#toggle-show-revoked", "Show revoked")
+
+    view |> element("#toggle-show-revoked") |> render_click()
+
+    assert has_element?(view, "#group-#{group.id}")
+    assert has_element?(view, "#toggle-show-revoked", "Hide revoked")
+  end
+
   test "attaching a reticulum member closes the modal and lists the member",
        %{conn: conn, group: group} do
     ref = String.duplicate("cd", 16)

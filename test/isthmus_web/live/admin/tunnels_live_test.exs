@@ -54,4 +54,24 @@ defmodule IsthmusWeb.Admin.TunnelsLiveTest do
     assert has_element?(view, "#request-path-#{peer.id}")
     assert has_element?(view, "#announce-tunnel-#{peer.id}")
   end
+
+  test "governor drops section shows relative time", %{conn: conn} do
+    key = "drop-ui-#{System.unique_integer()}"
+    assert :ok = Isthmus.Announce.Governor.allow?(:advert, :meshcore, key)
+    assert {:drop, :dedup} = Isthmus.Announce.Governor.allow?(:advert, :meshcore, key)
+
+    {:ok, view, _html} = live(conn, ~p"/admin/tunnels")
+
+    assert has_element?(view, "#governor-drops")
+    assert render(view) =~ "ago"
+    assert render(view) =~ "meshcore/advert"
+  end
+
+  test "shows tunnel-linked sightings and links to Adverts", %{conn: conn} do
+    {:ok, view, html} = live(conn, ~p"/admin/tunnels")
+
+    assert html =~ "Tunnel-linked sightings"
+    assert html =~ ~p"/admin/adverts"
+    assert has_element?(view, "#tunnel-sightings")
+  end
 end

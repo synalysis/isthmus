@@ -29,6 +29,7 @@ defmodule IsthmusWeb.CoreComponents do
   use Phoenix.Component
   use Gettext, backend: IsthmusWeb.Gettext
 
+  alias Isthmus.Nostr.Bech32
   alias Phoenix.LiveView.JS
 
   @doc """
@@ -474,6 +475,102 @@ defmodule IsthmusWeb.CoreComponents do
          "opacity-0 translate-y-4 sm:translate-y-0 sm:scale-95"}
     )
   end
+
+  @doc """
+  Format a network identity for display. Nostr hex pubkeys become `npub…`.
+  """
+  def format_identity_ref(network, ref)
+  def format_identity_ref("nostr", ref), do: format_npub(ref)
+  def format_identity_ref(:nostr, ref), do: format_npub(ref)
+  def format_identity_ref(_network, ref) when is_binary(ref) and ref != "", do: ref
+  def format_identity_ref(_, _), do: "—"
+
+  @doc "Encode a 32-byte hex pubkey (or pass-through npub) for display."
+  def format_npub(nil), do: "—"
+  def format_npub(""), do: "—"
+
+  def format_npub(ref) when is_binary(ref) do
+    trimmed = String.trim(ref)
+
+    cond do
+      String.starts_with?(String.downcase(trimmed), "npub1") ->
+        trimmed
+
+      true ->
+        case Base.decode16(trimmed, case: :mixed) do
+          {:ok, bin} when byte_size(bin) == 32 -> Bech32.encode_npub(bin)
+          _ -> trimmed
+        end
+    end
+  end
+
+  @doc """
+  Short display form for identity refs. Nostr values are shortened npubs
+  (`npub1abcd…wxyz`); other networks keep a hex-style ellipsis.
+  """
+  def short_identity_ref(network, ref)
+
+  def short_identity_ref(network, ref) when network in ["nostr", :nostr] do
+    case format_npub(ref) do
+      "—" ->
+        "—"
+
+      npub ->
+        if String.length(npub) > 20 do
+          String.slice(npub, 0, 12) <> "…" <> String.slice(npub, -6, 6)
+        else
+          npub
+        end
+    end
+  end
+
+  def short_identity_ref(_network, ref) when is_binary(ref) do
+    if String.length(ref) > 20 do
+      String.slice(ref, 0, 10) <> "…" <> String.slice(ref, -6, 6)
+    else
+      ref
+    end
+  end
+
+  def short_identity_ref(_, _), do: "—"
+
+  @doc """
+  Renders a UTC timestamp in the browser's local timezone as `YYYY-MM-DD HH:MM:SS`
+  (no ISO `T`). Falls back to the same format in UTC before JS runs.
+  """
+  attr :id, :string, required: true
+  attr :at, :any, required: true, doc: "DateTime, NaiveDateTime, or ISO8601 string"
+  attr :class, :any, default: "whitespace-nowrap text-xs font-mono"
+
+  def local_time(assigns) do
+    assigns =
+      assigns
+      |> assign(:iso, datetime_to_iso(assigns.at))
+      |> assign(:fallback, datetime_fallback(assigns.at))
+
+    ~H"""
+    <time id={@id} phx-hook="LocalTime" datetime={@iso} data-utc={@iso} class={@class}>
+      {@fallback}
+    </time>
+    """
+  end
+
+  defp datetime_to_iso(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
+
+  defp datetime_to_iso(%NaiveDateTime{} = ndt) do
+    ndt |> DateTime.from_naive!("Etc/UTC") |> DateTime.to_iso8601()
+  end
+
+  defp datetime_to_iso(iso) when is_binary(iso), do: iso
+  defp datetime_to_iso(_), do: ""
+
+  defp datetime_fallback(%DateTime{} = dt), do: Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S")
+
+  defp datetime_fallback(%NaiveDateTime{} = ndt),
+    do: Calendar.strftime(ndt, "%Y-%m-%d %H:%M:%S")
+
+  defp datetime_fallback(iso) when is_binary(iso), do: String.replace(iso, "T", " ", global: false)
+  defp datetime_fallback(_), do: "—"
 
   @doc """
   Translates an error message using gettext.

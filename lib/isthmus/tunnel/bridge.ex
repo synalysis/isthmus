@@ -12,6 +12,8 @@ defmodule Isthmus.Tunnel.Bridge do
 
   alias Isthmus.Announce.Dedup
   alias Isthmus.Announce.Governor
+  alias Isthmus.Announce.Inbound
+  alias Isthmus.Networks.MeshCore.Advert
   alias Isthmus.Networks.MeshCore.Packet
   alias Isthmus.Tunnel
   alias Isthmus.Tunnel.{Frame, Peer}
@@ -26,7 +28,8 @@ defmodule Isthmus.Tunnel.Bridge do
   Enqueue an opaque island packet onto matching tunnel peers.
 
   Skips when `opts[:from_tunnel]` is set (loop prevention) or the packet was
-  recently forwarded (hash dedup).
+  recently forwarded (hash dedup). MeshCore ADVERT packets are also recorded as
+  announce sightings so they appear on the Adverts page.
   """
   def forward_packet(payload_network, packet, opts \\ %{})
 
@@ -34,14 +37,16 @@ defmodule Isthmus.Tunnel.Bridge do
       when is_binary(payload_network) and is_binary(packet) and byte_size(packet) > 0 do
     opts = Map.new(opts)
 
-    cond do
-      truthy?(opts[:from_tunnel] || opts["from_tunnel"]) ->
-        :ok
+    if truthy?(opts[:from_tunnel] || opts["from_tunnel"]) do
+      :ok
+    else
+      # Sightings are independent of tunnel forward dedup — an advert may still
+      # need to show on Adverts even when we collapse a re-flood for the outbox.
+      _ = maybe_record_meshcore_advert(payload_network, packet)
 
-      recently_seen_packet?(payload_network, packet) ->
+      if recently_seen_packet?(payload_network, packet) do
         :ok
-
-      true ->
+      else
         peers = peers_for_payload(payload_network)
 
         Enum.each(peers, fn peer ->
@@ -55,6 +60,7 @@ defmodule Isthmus.Tunnel.Bridge do
         end)
 
         :ok
+      end
     end
   end
 
@@ -141,6 +147,21 @@ defmodule Isthmus.Tunnel.Bridge do
   defp recently_seen_packet?(payload_network, packet) do
     Dedup.seen?(dedup_key(payload_network, packet), @packet_dedup_ttl)
   end
+
+  defp maybe_record_meshcore_advert("meshcore", packet) do
+    with {:ok, decoded} <- Packet.decode(packet),
+         true <- decoded.payload_type == Packet.type_advert(),
+         {:ok, %{public_key: pub, name: name}} <- Advert.parse_payload(decoded.payload) do
+      hex = Base.encode16(pub, case: :lower)
+      Inbound.record("meshcore", hex, name, "bridge_advert")
+    else
+      _ -> :ok
+    end
+  rescue
+    _ -> :ok
+  end
+
+  defp maybe_record_meshcore_advert(_, _), do: :ok
 
   defp dedup_key("meshcore", packet) do
     case Packet.decode(packet) do

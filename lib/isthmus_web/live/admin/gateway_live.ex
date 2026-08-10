@@ -40,17 +40,6 @@ defmodule IsthmusWeb.Admin.GatewayLive do
   defp status_badge("dropped"), do: {"dropped", "badge-warning"}
   defp status_badge(other), do: {other || "unknown", "badge-ghost"}
 
-  defp short_ref(nil), do: "—"
-  defp short_ref(""), do: "—"
-
-  defp short_ref(ref) when is_binary(ref) do
-    if String.length(ref) > 16 do
-      String.slice(ref, 0, 8) <> "…" <> String.slice(ref, -6, 6)
-    else
-      ref
-    end
-  end
-
   defp status_count(stats, key) do
     Map.get(stats.by_status_24h, key, 0)
   end
@@ -136,7 +125,9 @@ defmodule IsthmusWeb.Admin.GatewayLive do
               </thead>
               <tbody>
                 <tr :for={m <- @dead}>
-                  <td class="whitespace-nowrap text-xs font-mono">{m.inserted_at}</td>
+                  <td>
+                    <.local_time id={"gateway-dead-when-#{m.id}"} at={m.inserted_at} />
+                  </td>
                   <td class="text-xs font-mono">{m.from_network} → {m.to_network}</td>
                   <td>
                     <% {label, class} = status_badge(m.status) %>
@@ -174,16 +165,22 @@ defmodule IsthmusWeb.Admin.GatewayLive do
                   <td colspan="6" class="text-sm opacity-60">No forwards logged yet.</td>
                 </tr>
                 <tr :for={m <- @entries}>
-                  <td class="whitespace-nowrap text-xs font-mono">{m.inserted_at}</td>
+                  <td>
+                    <.local_time id={"gateway-when-#{m.id}"} at={m.inserted_at} />
+                  </td>
                   <td class="text-xs">
                     <span class="font-medium">{m.from_network}</span>
                     <br />
-                    <span class="font-mono opacity-70" title={m.from_ref}>{short_ref(m.from_ref)}</span>
+                    <span class="font-mono opacity-70" title={format_identity_ref(m.from_network, m.from_ref)}>
+                      {short_identity_ref(m.from_network, m.from_ref)}
+                    </span>
                   </td>
                   <td class="text-xs">
                     <span class="font-medium">{m.to_network}</span>
                     <br />
-                    <span class="font-mono opacity-70" title={m.to_ref}>{short_ref(m.to_ref)}</span>
+                    <span class="font-mono opacity-70" title={format_identity_ref(m.to_network, m.to_ref)}>
+                      {short_identity_ref(m.to_network, m.to_ref)}
+                    </span>
                   </td>
                   <td>
                     <% {label, class} = status_badge(m.status) %>

@@ -33,6 +33,43 @@ defmodule Isthmus.Announce.SightingsTest do
     assert Sightings.list_recent(10) == []
   end
 
+  test "list_recent :networks applies before the limit window" do
+    older = DateTime.utc_now() |> DateTime.add(-120, :second) |> DateTime.truncate(:second)
+    mc = String.duplicate("ef", 32)
+
+    assert {:ok, _} =
+             Sightings.record(%{
+               network: "meshcore",
+               direction: "in",
+               identity_ref: mc,
+               seen_at: older,
+               expires_at: DateTime.add(older, Sighting.retention_seconds(), :second)
+             })
+
+    for i <- 1..5 do
+      ref = Base.encode16(<<i::128>>, case: :lower)
+
+      assert {:ok, _} =
+               Sightings.record(%{
+                 network: "reticulum",
+                 direction: "in",
+                 identity_ref: ref
+               })
+    end
+
+    # Global newest-3 are all Reticulum — MeshCore would vanish if we filtered after.
+    assert Enum.all?(Sightings.list_recent(3), &(&1.network == "reticulum"))
+
+    only_mc = Sightings.list_recent(3, networks: ["meshcore"])
+    assert Enum.map(only_mc, & &1.identity_ref) == [mc]
+
+    mixed =
+      Sightings.list_recent(3, networks: ["meshcore", "reticulum"], per_network: true)
+
+    assert Enum.any?(mixed, &(&1.identity_ref == mc))
+    assert Enum.count(mixed, &(&1.network == "reticulum")) == 3
+  end
+
   test "best_for returns latest matching sighting" do
     ref = String.duplicate("cd", 16)
     t1 = DateTime.utc_now() |> DateTime.add(-120, :second) |> DateTime.truncate(:second)

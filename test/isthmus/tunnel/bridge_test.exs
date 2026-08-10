@@ -111,4 +111,46 @@ defmodule Isthmus.Tunnel.BridgeTest do
     assert body["op"] == "announce"
     assert body["ref"] == ref
   end
+
+  test "MeshCore flood advert from the bridge is recorded on the Adverts feed" do
+    alias Isthmus.Announce.Sightings
+    alias Isthmus.Networks.MeshCore.{Advert, Crypto}
+
+    {:ok, _mc} =
+      Tunnel.create_peer(%{
+        name: "Advert peer",
+        peer_ref: "11" <> String.duplicate("22", 31),
+        payload_network: "meshcore",
+        carrier_network: "meshtastic"
+      })
+
+    {pub, seed} = Crypto.generate_keypair()
+    hex = Base.encode16(pub, case: :lower)
+    packet = Advert.build_flood(seed, pub, "Phone Node")
+
+    assert :ok = Bridge.forward_packet("meshcore", packet, %{source: "bridge"})
+
+    sighting = Sightings.best_for("meshcore", hex)
+    assert sighting
+    assert sighting.meta["source"] == "bridge_advert"
+    assert sighting.meta["name"] == "Phone Node"
+  end
+
+  test "bridge echo does not re-label a tunnel advert via" do
+    alias Isthmus.Announce.Inbound
+    alias Isthmus.Announce.Sightings
+    alias Isthmus.Networks.MeshCore.{Advert, Crypto}
+
+    {pub, seed} = Crypto.generate_keypair()
+    hex = Base.encode16(pub, case: :lower)
+    packet = Advert.build_flood(seed, pub, "Tunnel First")
+
+    assert :ok =
+             Inbound.record("meshcore", hex, "Tunnel First", "tunnel_advert", %{
+               peer: "Local Test"
+             })
+
+    assert :ok = Bridge.forward_packet("meshcore", packet, %{source: "bridge"})
+    assert Sightings.best_for("meshcore", hex).meta["source"] == "tunnel_advert"
+  end
 end

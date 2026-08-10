@@ -100,15 +100,6 @@ defmodule IsthmusWeb.Admin.NostrLive do
   defp status_badge(:disabled), do: {"Offline", "badge-ghost"}
   defp status_badge(_), do: {"Unknown", "badge-ghost"}
 
-  defp format_from(nil), do: "—"
-
-  defp format_from(hex) when is_binary(hex) do
-    case Base.decode16(hex, case: :mixed) do
-      {:ok, bin} when byte_size(bin) == 32 -> Bech32.encode_npub(bin)
-      _ -> hex
-    end
-  end
-
   defp format_age(%DateTime{} = at) do
     case DateTime.diff(DateTime.utc_now(), at) do
       s when s < 2 -> "just now"
@@ -174,7 +165,9 @@ defmodule IsthmusWeb.Admin.NostrLive do
                   id={"service-dm-#{dm.id}"}
                 >
                   <div class="flex flex-wrap items-center justify-between gap-2 text-xs opacity-70">
-                    <span class="font-mono truncate max-w-full">{format_from(dm.from_ref)}</span>
+                    <span class="font-mono truncate max-w-full" title={format_npub(dm.from_ref)}>
+                      {format_npub(dm.from_ref)}
+                    </span>
                     <span>{format_age(dm.received_at)}</span>
                   </div>
                   <p :if={dm.subject} class="text-xs opacity-60 font-mono">

@@ -35,6 +35,7 @@ defmodule Isthmus.Audit do
     |> Repo.all()
     |> Enum.map(fn e ->
       %{
+        id: e.id,
         at: e.seen_at,
         kind: "governor",
         summary: "#{e.action} #{e.network}/#{e.class}",
@@ -57,6 +58,7 @@ defmodule Isthmus.Audit do
     |> Repo.all()
     |> Enum.map(fn a ->
       %{
+        id: a.id,
         at: a.inserted_at,
         kind: "gateway",
         summary: "#{a.from_network} → #{a.to_network} · #{a.status}",
@@ -84,6 +86,7 @@ defmodule Isthmus.Audit do
       lat = if s.latency_ms, do: "#{s.latency_ms}ms", else: nil
 
       %{
+        id: s.id,
         at: s.seen_at,
         kind: "sighting",
         summary: "#{s.network} #{s.direction} · #{hops}",

@@ -51,10 +51,10 @@ defmodule Isthmus.Announce.Inbound do
   end
 
   @doc "Record a MeshCore advert/contact sighting with optional display name."
-  def record_meshcore(pubkey_hex, name, source \\ "advert")
+  def record_meshcore(pubkey_hex, name, source \\ "advert", extra \\ %{})
       when is_binary(pubkey_hex) do
     # Off the companion GenServer — contact sync can deliver many at once.
-    Task.start(fn -> record("meshcore", pubkey_hex, normalize_name(name), source) end)
+    Task.start(fn -> record("meshcore", pubkey_hex, normalize_name(name), source, extra) end)
     :ok
   end
 
@@ -64,9 +64,12 @@ defmodule Isthmus.Announce.Inbound do
   end
 
   @doc false
-  def record(network, identity_ref, name, source)
+  def record(network, identity_ref, name, source, extra \\ %{})
+
+  def record(network, identity_ref, name, source, extra)
       when is_binary(network) and is_binary(identity_ref) do
     ref = String.downcase(String.trim(identity_ref))
+    extra = Map.new(extra || %{})
 
     if ref == "" do
       :ok
@@ -85,13 +88,22 @@ defmodule Isthmus.Announce.Inbound do
           meta =
             %{"source" => to_string(source)}
             |> maybe_put_name(name)
+            |> merge_extra_meta(extra)
 
-          case Sightings.record(%{
-                 network: network,
-                 direction: "in",
-                 identity_ref: ref,
-                 meta: meta
-               }) do
+          attrs = %{
+            network: network,
+            direction: "in",
+            identity_ref: ref,
+            meta: meta
+          }
+
+          attrs =
+            case extra[:tunnel_id] || extra["tunnel_id"] do
+              tid when is_binary(tid) and tid != "" -> Map.put(attrs, :tunnel_id, tid)
+              _ -> attrs
+            end
+
+          case Sightings.record(attrs) do
             {:ok, _} -> :ok
             {:error, reason} -> Logger.debug("announce sighting failed: #{inspect(reason)}")
           end
@@ -128,6 +140,21 @@ defmodule Isthmus.Announce.Inbound do
 
   defp maybe_put_name(meta, nil), do: meta
   defp maybe_put_name(meta, name), do: Map.put(meta, "name", name)
+
+  # Persist ingress hints (peer name, etc.) without clobbering source/name.
+  defp merge_extra_meta(meta, extra) when map_size(extra) == 0, do: meta
+
+  defp merge_extra_meta(meta, extra) do
+    Enum.reduce(extra, meta, fn {k, v}, acc ->
+      key = to_string(k)
+
+      cond do
+        key in ["source", "name", "tunnel_id"] -> acc
+        is_nil(v) -> acc
+        true -> Map.put(acc, key, v)
+      end
+    end)
+  end
 
   defp normalize_name(name) when is_binary(name) do
     case String.trim(name) do

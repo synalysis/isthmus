@@ -361,7 +361,12 @@ defmodule Isthmus.Topology do
       edges
       |> Enum.filter(&(&1.to == id and &1.type in [:leg, :channel]))
       |> Enum.map(fn edge ->
-        %{role: edge.role, ref: edge.ref, external?: edge.external?}
+        %{
+          role: edge.role,
+          ref: edge.ref,
+          network: edge.network,
+          external?: edge.external?
+        }
       end)
 
     legs = Enum.count(edges, &(&1.to == id and &1.type == :leg))
@@ -399,6 +404,7 @@ defmodule Isthmus.Topology do
       enabled: meta.enabled,
       tunnel_id: meta.tunnel_id,
       peer_ref: meta.peer_ref,
+      carrier_network: meta.carrier_network,
       seq: meta.seq,
       sighting: sighting_summary(meta.sighting),
       legs: []

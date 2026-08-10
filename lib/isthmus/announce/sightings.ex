@@ -64,12 +64,66 @@ defmodule Isthmus.Announce.Sightings do
 
   defp tap_broadcast(result), do: result
 
-  @doc "Recent sightings, newest first."
-  def list_recent(limit \\ @default_limit) do
+  @doc """
+  Recent sightings, newest first.
+
+  Options:
+  * `:networks` — list of network names; applied in SQL so a chatty network
+    cannot crowd others out of the limit window (Adverts network toggles).
+  * `:per_network` — when true with `:networks`, apply `limit` to **each**
+    network then merge (so MeshCore stays visible while Reticulum is busy).
+  """
+  def list_recent(limit \\ @default_limit, opts \\ [])
+
+  def list_recent(limit, opts) when is_integer(limit) and is_list(opts) do
+    now = DateTime.utc_now() |> DateTime.truncate(:second)
+
+    networks =
+      case Keyword.get(opts, :networks) do
+        nil ->
+          nil
+
+        list ->
+          list
+          |> List.wrap()
+          |> Enum.map(&to_string/1)
+          |> Enum.reject(&(&1 == ""))
+          |> Enum.uniq()
+      end
+
+    per_network? = Keyword.get(opts, :per_network, false)
+
+    cond do
+      networks == [] ->
+        []
+
+      per_network? and is_list(networks) ->
+        networks
+        |> Enum.flat_map(&recent_for_network(&1, limit))
+        |> Enum.sort_by(& &1.seen_at, {:desc, DateTime})
+
+      true ->
+        Sighting
+        |> where([s], s.expires_at > ^now)
+        |> then(fn q ->
+          if is_nil(networks), do: q, else: where(q, [s], s.network in ^networks)
+        end)
+        |> order_by([s], desc: s.seen_at, desc: s.inserted_at)
+        |> limit(^limit)
+        |> Repo.all()
+    end
+  end
+
+  @doc """
+  Recent sightings linked to a tunnel peer (`tunnel_id` set).
+
+  Used on the Tunnels admin page; the full announce feed lives on Adverts.
+  """
+  def list_recent_for_tunnels(limit \\ @default_limit) do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
 
     Sighting
-    |> where([s], s.expires_at > ^now)
+    |> where([s], s.expires_at > ^now and not is_nil(s.tunnel_id) and s.tunnel_id != "")
     |> order_by([s], desc: s.seen_at, desc: s.inserted_at)
     |> limit(^limit)
     |> Repo.all()

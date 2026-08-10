@@ -55,7 +55,9 @@ defmodule IsthmusWeb.Admin.TimelineLive do
                 <td colspan="4" class="text-sm opacity-60">No recent activity.</td>
               </tr>
               <tr :for={e <- @entries}>
-                <td class="whitespace-nowrap text-xs font-mono">{e.at}</td>
+                <td>
+                  <.local_time id={"timeline-when-#{e.kind}-#{e.id}"} at={e.at} />
+                </td>
                 <td>
                   <% {label, class} = kind_badge(e.kind) %>
                   <span class={["badge badge-sm", class]}>{label}</span>

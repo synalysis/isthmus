@@ -12,6 +12,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
      socket
      |> assign(:page_title, "Groups")
      |> assign(:modal, nil)
+     |> assign(:show_revoked, false)
      |> assign(:bridge_form, to_form(%{"display_name" => ""}))
      |> assign(:attach_form, to_form(%{"group_id" => "", "network" => "nostr", "identity" => ""}))
      |> assign(:attach_network, "nostr")
@@ -24,6 +25,13 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
   end
 
   @impl true
+  def handle_event("toggle_show_revoked", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:show_revoked, !socket.assigns.show_revoked)
+     |> refresh()}
+  end
+
   def handle_event("revoke", %{"id" => id}, socket) do
     group = Registrations.get_group!(id)
     {:ok, _} = Registrations.revoke(group)
@@ -146,7 +154,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
      |> assign(:attach_group_name, group && group.display_name)
      |> assign(:attach_network, network)
      |> assign(:identity_suggestions, suggestions)
-     |> assign(:filtered_suggestions, filter_suggestions(suggestions, ""))
+     |> assign(:filtered_suggestions, filter_suggestions(suggestions, "", network))
      |> assign(
        :attach_form,
        to_form(%{"group_id" => id, "network" => network, "identity" => ""})
@@ -174,7 +182,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
      socket
      |> assign(:attach_network, network)
      |> assign(:identity_suggestions, suggestions)
-     |> assign(:filtered_suggestions, filter_suggestions(suggestions, identity))
+     |> assign(:filtered_suggestions, filter_suggestions(suggestions, identity, network))
      |> assign(
        :attach_form,
        to_form(%{
@@ -186,18 +194,21 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
   end
 
   def handle_event("pick_suggestion", %{"ref" => ref}, socket) do
+    network = socket.assigns.attach_network
+    display_ref = format_identity_ref(network, ref)
+
     {:noreply,
      socket
      |> assign(
        :filtered_suggestions,
-       filter_suggestions(socket.assigns.identity_suggestions, ref)
+       filter_suggestions(socket.assigns.identity_suggestions, display_ref, network)
      )
      |> assign(
        :attach_form,
        to_form(%{
          "group_id" => socket.assigns.attach_group_id,
-         "network" => socket.assigns.attach_network,
-         "identity" => ref
+         "network" => network,
+         "identity" => display_ref
        })
      )}
   end
@@ -249,14 +260,24 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
   end
 
   defp refresh(socket) do
-    groups = Registrations.list_all()
-    bridges = Enum.filter(groups, &(&1.kind == "bridge" and &1.status == "active"))
+    all_groups = Registrations.list_all()
+    revoked_count = Enum.count(all_groups, &(&1.status == "revoked"))
+
+    groups =
+      if socket.assigns.show_revoked do
+        all_groups
+      else
+        Enum.reject(all_groups, &(&1.status == "revoked"))
+      end
+
+    bridges = Enum.filter(all_groups, &(&1.kind == "bridge" and &1.status == "active"))
 
     selected =
       Enum.find(bridges, &(&1.id == socket.assigns.selected_bridge_id)) || List.first(bridges)
 
     socket
     |> assign(:groups, groups)
+    |> assign(:revoked_count, revoked_count)
     |> assign(:bridges, bridges)
     |> assign(:selected_bridge, selected)
     |> assign(:selected_bridge_id, selected && selected.id)
@@ -266,13 +287,19 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
 
   # Filter recently-heard addresses by the typed query (matches name or ref),
   # so the combobox narrows as the admin types. Empty query shows the newest.
-  defp filter_suggestions(suggestions, query) do
+  defp filter_suggestions(suggestions, query, network) do
     q = query |> to_string() |> String.trim() |> String.downcase()
 
     suggestions
     |> Enum.filter(fn s ->
+      display =
+        format_identity_ref(network, s.ref)
+        |> to_string()
+        |> String.downcase()
+
       q == "" or
         String.contains?(String.downcase(to_string(s.ref)), q) or
+        String.contains?(display, q) or
         (is_binary(s.name) and String.contains?(String.downcase(s.name), q))
     end)
     |> Enum.take(@suggestion_limit)
@@ -365,7 +392,12 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
               <tbody>
                 <tr :for={leg <- @selected_bridge.legs} id={"member-#{leg.id}"}>
                   <td class="capitalize">{leg.network}</td>
-                  <td class="font-mono text-xs break-all">{leg.identity_ref}</td>
+                  <td
+                    class="font-mono text-xs break-all"
+                    title={leg.identity_ref}
+                  >
+                    {format_identity_ref(leg.network, leg.identity_ref)}
+                  </td>
                   <td>
                     <button
                       class="btn btn-ghost btn-xs text-error"
@@ -383,7 +415,24 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
         </div>
 
         <div>
-          <h2 class="text-xl font-medium mb-3">All groups</h2>
+          <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 class="text-xl font-medium">All groups</h2>
+            <button
+              type="button"
+              id="toggle-show-revoked"
+              class={[
+                "btn btn-ghost btn-xs",
+                @show_revoked && "btn-active"
+              ]}
+              phx-click="toggle_show_revoked"
+            >
+              <%= if @show_revoked do %>
+                Hide revoked
+              <% else %>
+                Show revoked{if(@revoked_count > 0, do: " (#{@revoked_count})", else: "")}
+              <% end %>
+            </button>
+          </div>
           <div class="overflow-x-auto">
             <table class="table" id="groups-table">
               <thead>
@@ -408,7 +457,12 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                       {AdminCopy.group_kind_label(group.kind)}
                     </span>
                   </td>
-                  <td class="font-mono text-xs break-all max-w-xs">{group.owner_pubkey_hex}</td>
+                  <td
+                    class="font-mono text-xs break-all max-w-xs"
+                    title={group.owner_pubkey_hex}
+                  >
+                    {format_npub(group.owner_pubkey_hex)}
+                  </td>
                   <td>{group.display_name}</td>
                   <td><span class="badge">{group.status}</span></td>
                   <td>
@@ -580,7 +634,9 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                         class="flex flex-col items-start gap-0"
                       >
                         <span class="text-sm">{s.name || "(unnamed)"}</span>
-                        <span class="font-mono text-[10px] opacity-60 break-all">{s.ref}</span>
+                        <span class="font-mono text-[10px] opacity-60 break-all" title={s.ref}>
+                          {format_identity_ref(@attach_network, s.ref)}
+                        </span>
                       </button>
                     </li>
                   </ul>
