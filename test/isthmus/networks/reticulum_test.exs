@@ -59,4 +59,16 @@ defmodule Isthmus.Networks.ReticulumTest do
       assert Reticulum.tunnel_destination_hash() == nil
     end
   end
+
+  describe "path route nodes" do
+    test "renders direct, single-hop, and multi-hop chains from RNS next-hop data" do
+      dest = String.duplicate("ab", 16)
+      via = String.duplicate("cd", 16)
+
+      assert Reticulum.path_route_nodes(dest, nil, 0) == ["us", "abababab"]
+      assert Reticulum.path_route_nodes(dest, dest, 1) == ["us", "abababab"]
+      assert Reticulum.path_route_nodes(dest, via, 1) == ["us", "cdcdcdcd", "abababab"]
+      assert Reticulum.path_route_nodes(dest, via, 3) == ["us", "cdcdcdcd", "…", "abababab"]
+    end
+  end
 end

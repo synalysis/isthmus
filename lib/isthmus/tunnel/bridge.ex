@@ -14,7 +14,7 @@ defmodule Isthmus.Tunnel.Bridge do
   alias Isthmus.Announce.Governor
   alias Isthmus.Networks.MeshCore.Packet
   alias Isthmus.Tunnel
-  alias Isthmus.Tunnel.{Frame, Outbox, Peer}
+  alias Isthmus.Tunnel.{Frame, Peer}
   alias Isthmus.Repo
 
   import Ecto.Query
@@ -127,18 +127,10 @@ defmodule Isthmus.Tunnel.Bridge do
   end
 
   defp enqueue_control(%Peer{} = peer, payload) when is_binary(payload) do
-    Outbox.enqueue(
-      "tunnel:#{peer.tunnel_id}",
-      peer.peer_ref,
-      payload,
-      %{
-        "payload_network" => peer.payload_network,
-        "carrier_network" => peer.carrier_network,
-        "tunnel_id" => peer.tunnel_id,
-        "seq" => peer.next_seq,
-        "kind" => "control"
-      }
-    )
+    case Tunnel.send_payload(peer, payload, %{"kind" => "control"}) do
+      {:ok, _} -> :ok
+      {:error, reason} -> Logger.debug("tunnel control enqueue failed: #{inspect(reason)}")
+    end
   end
 
   # Dedup key must be path-INSENSITIVE for MeshCore so a flood that reaches us

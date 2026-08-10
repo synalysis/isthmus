@@ -2,6 +2,8 @@ defmodule Isthmus.Networks.Reticulum do
   @moduledoc "Reticulum adapter (Python RNS/LXMF sidecar)."
   @behaviour Isthmus.NetworkAdapter
 
+  require Logger
+
   alias Isthmus.Announce.Governor
   alias Isthmus.Announce.Sightings
   alias Isthmus.Networks.Reticulum.ConfigFile
@@ -203,11 +205,66 @@ defmodule Isthmus.Networks.Reticulum do
   end
 
   defp normalize_path_status(msg, fallback_hash) when is_map(msg) do
+    dest = msg["destination_hash"] || fallback_hash
+    hops = path_int(msg["hops"])
+    next_hop = path_hex(msg["next_hop"])
+    interface = path_str(msg["interface"])
+
     %{
-      destination_hash: msg["destination_hash"] || fallback_hash,
+      destination_hash: dest,
       identity_known: msg["identity_known"] == true,
-      path_known: msg["path_known"] == true
+      path_known: msg["path_known"] == true,
+      hops: hops,
+      next_hop: next_hop,
+      interface: interface,
+      # RNS only stores next hop + hop count — not intermediate transport nodes.
+      nodes: path_nodes(dest, next_hop, hops)
     }
+  end
+
+  defp path_int(n) when is_integer(n) and n >= 0, do: n
+  defp path_int(_), do: nil
+
+  defp path_hex(h) when is_binary(h) do
+    trimmed = h |> String.trim() |> String.downcase()
+    if trimmed != "" and String.match?(trimmed, ~r/^[0-9a-f]+$/), do: trimmed, else: nil
+  end
+
+  defp path_hex(_), do: nil
+
+  defp path_str(s) when is_binary(s) do
+    trimmed = String.trim(s)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp path_str(_), do: nil
+
+  @doc false
+  def path_route_nodes(dest, next_hop, hops), do: path_nodes(dest, next_hop, hops)
+
+  defp path_nodes(_dest, _next_hop, nil), do: []
+  defp path_nodes(dest, _next_hop, 0) when is_binary(dest), do: ["us", short_hash(dest)]
+
+  defp path_nodes(dest, next_hop, 1) when is_binary(dest) do
+    via = next_hop || dest
+
+    if via == dest do
+      ["us", short_hash(dest)]
+    else
+      ["us", short_hash(via), short_hash(dest)]
+    end
+  end
+
+  defp path_nodes(dest, next_hop, hops) when is_integer(hops) and hops > 1 do
+    via = if is_binary(next_hop), do: short_hash(next_hop), else: "?"
+    # Ellipsis stands in for unknown intermediate transport nodes.
+    ["us", via, "…", short_hash(dest)]
+  end
+
+  defp path_nodes(_, _, _), do: []
+
+  defp short_hash(hash) when is_binary(hash) do
+    if byte_size(hash) > 8, do: String.slice(hash, 0, 8), else: hash
   end
 
   @doc "Rewrite config is picked up by killing and respawning the Python sidecar."
@@ -259,18 +316,37 @@ defmodule Isthmus.Networks.Reticulum do
     # so only that peer receives the frame. Falls back to broadcast when disabled,
     # when we have no peer ref, or until the peer's identity + a path are known.
     case addressed_send(payload, opts) do
-      :ok -> :ok
-      :skip -> broadcast_raw(payload)
+      :ok ->
+        {:ok, :addressed}
+
+      {:error, reason} ->
+        Logger.debug("RNS addressed tunnel send failed (#{inspect(reason)}); trying broadcast")
+        broadcast_send_mode(payload)
+
+      :skip ->
+        broadcast_send_mode(payload)
+    end
+  end
+
+  defp broadcast_send_mode(payload) do
+    case broadcast_raw(payload) do
+      :ok -> {:ok, :broadcast}
+      {:ok, _} -> {:ok, :broadcast}
+      other -> other
     end
   end
 
   defp addressed_send(payload, opts) do
     with true <- addressed_enabled?(),
-         ref when is_binary(ref) <- tunnel_peer_ref(opts),
-         {:ok, _} <- Sidecar.tunnel_send(ref, payload) do
-      :ok
+         ref when is_binary(ref) <- tunnel_peer_ref(opts) do
+      case Sidecar.tunnel_send(ref, payload) do
+        {:ok, _} -> :ok
+        {:error, reason, _} -> {:error, reason}
+        {:error, reason} -> {:error, reason}
+        other -> {:error, other}
+      end
     else
-      # no_path / timeout / sidecar exit → broadcast fallback
+      # addressed disabled / no peer ref → caller broadcasts
       _ -> :skip
     end
   end

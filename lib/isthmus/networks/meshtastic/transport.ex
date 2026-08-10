@@ -59,7 +59,10 @@ defmodule Isthmus.Networks.Meshtastic.Transport do
         {:meshtastic_raw_out, item}
       )
 
-      {:reply, :ok, %{state | outbound: outbound, sent: state.sent + 1}}
+      # Tests can force `:broadcast` via `:meshtastic_send_mode` to exercise
+      # Engine last_ping_mode without a live RNS sidecar.
+      mode = Application.get_env(:isthmus, :meshtastic_send_mode, :addressed)
+      {:reply, {:ok, mode}, %{state | outbound: outbound, sent: state.sent + 1}}
     end
   end
 

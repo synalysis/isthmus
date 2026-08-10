@@ -5,6 +5,8 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
   alias Isthmus.Announce.KnownAddresses
   alias Isthmus.Announce.Sightings
   alias Isthmus.Networks.LocalIdentity
+  alias Isthmus.Networks.Reticulum
+  alias Isthmus.Networks.Reticulum.Sidecar
   alias Isthmus.Tunnel
   alias Isthmus.Tunnel.Outbox
   alias Isthmus.Tunnel.Peer
@@ -155,9 +157,16 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
   end
 
   def handle_event("retry_outbox", %{"id" => id}, socket) do
-    case Outbox.retry(id) do
+    result =
+      case Outbox.nudge(id) do
+        {:ok, _} = ok -> ok
+        {:error, :not_active} -> Outbox.retry(id)
+        other -> other
+      end
+
+    case result do
       {:ok, _} ->
-        {:noreply, socket |> put_flash(:info, "Re-queued for delivery.") |> assign_data()}
+        {:noreply, socket |> put_flash(:info, "Queued for delivery.") |> assign_data()}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Retry failed: #{inspect(reason)}")}
@@ -166,14 +175,43 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
 
   def handle_event("drop_outbox", %{"id" => id}, socket) do
     case Outbox.drop(id) do
-      {:ok, _} -> {:noreply, socket |> put_flash(:info, "Dropped from DLQ.") |> assign_data()}
+      {:ok, _} -> {:noreply, socket |> put_flash(:info, "Dropped from outbox.") |> assign_data()}
       {:error, reason} -> {:noreply, put_flash(socket, :error, "Drop failed: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("request_path", %{"id" => id}, socket) do
+    peer = Tunnel.get_peer!(id)
+
+    case Reticulum.request_path(peer.peer_ref) do
+      {:ok, status} ->
+        known =
+          if status[:path_known] || status["path_known"], do: "path known", else: "requested"
+
+        {:noreply, socket |> put_flash(:info, "RNS path #{known} for peer.") |> assign_data()}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Path request failed: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("announce_tunnel", _params, socket) do
+    case Sidecar.tunnel_announce() do
+      {:ok, _} ->
+        {:noreply, socket |> put_flash(:info, "Tunnel destination announced.") |> assign_data()}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Tunnel announce failed: #{inspect(reason)}")}
+
+      other ->
+        {:noreply, put_flash(socket, :error, "Tunnel announce failed: #{inspect(other)}")}
     end
   end
 
   defp assign_data(socket) do
     peers = Tunnel.list_peers()
     peer_refs = peers |> Enum.map(& &1.peer_ref) |> Enum.uniq()
+    tunnel_ids = Enum.map(peers, & &1.tunnel_id)
 
     routing_notes =
       peer_refs
@@ -192,19 +230,42 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
       |> Enum.reject(&is_nil/1)
       |> Map.new(&{&1.id, true})
 
+    waiting = Outbox.list_waiting_by_tunnel(tunnel_ids)
+
+    # Global DLQ: non-tunnel leftovers only (tunnel waiting shows under each peer).
+    dlq =
+      Outbox.list_failed(30)
+      |> Enum.reject(&String.starts_with?(&1.channel || "", "tunnel:"))
+
     socket
     |> assign(:page_title, "Tunnels")
     |> assign(:peers, peers)
     |> assign(:tunnel_health, Tunnel.Engine.health())
+    |> assign(:local_tunnel_dest, local_tunnel_destination())
     |> assign(:peer_metrics, peer_metrics)
     |> assign(:preferred_ids, preferred_ids)
     |> assign(:routing_notes, routing_notes)
+    |> assign(:outbox_by_tunnel, waiting)
     |> assign(:sightings, Sightings.list_recent(50))
     |> assign(:outbox, Outbox.stats())
-    |> assign(:dlq, Outbox.list_failed(30))
+    |> assign(:dlq, dlq)
     |> assign(:governor, Governor.stats())
     |> assign(:drops, Governor.drops_by_reason(20))
     |> assign(:form, socket.assigns[:form] || to_form(Tunnel.change_peer(%Peer{})))
+  end
+
+  defp local_tunnel_destination do
+    case Sidecar.health() do
+      %{meta: meta} when is_map(meta) ->
+        meta["tunnel_destination_hash"] || meta[:tunnel_destination_hash]
+
+      _ ->
+        nil
+    end
+  rescue
+    _ -> nil
+  catch
+    :exit, _ -> nil
   end
 
   defp assign_local_identity(socket) do
@@ -263,9 +324,9 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
         </div>
 
         <div :if={@dlq != []} class="space-y-2">
-          <h2 class="text-lg font-medium">Dead letter queue</h2>
+          <h2 class="text-lg font-medium">Other failed outbox</h2>
           <p class="text-xs opacity-60">
-            Failed outbox frames after max retries. Retry or drop permanently.
+            Non-tunnel leftovers (e.g. gateway). Tunnel waiting traffic is listed under each peer.
           </p>
           <div class="overflow-x-auto rounded-box border border-base-300">
             <table class="table table-sm" id="outbox-dlq">
@@ -521,15 +582,25 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
             <% else %>
               <% health = Map.get(@tunnel_health, peer.tunnel_id) %>
               <% {health_label, health_class} = tunnel_badge(peer, health) %>
+              <% waiting = Map.get(@outbox_by_tunnel, peer.tunnel_id, []) %>
               <div class="flex flex-wrap items-center justify-between gap-2">
                 <div class="space-y-1">
                   <p class="font-medium flex items-center gap-2">
                     {peer.name}
                     <span class={["badge badge-sm", health_class]}>{health_label}</span>
+                    <span
+                      :if={health && Map.get(health, :inbound_only?)}
+                      class="badge badge-warning badge-sm"
+                    >
+                      inbound only
+                    </span>
                     <span :if={Map.get(@preferred_ids, peer.id)} class="badge badge-success badge-sm">
                       preferred
                     </span>
                     <span :if={not peer.enabled} class="badge badge-ghost badge-sm">disabled</span>
+                    <span :if={waiting != []} class="badge badge-warning badge-sm">
+                      {length(waiting)} waiting
+                    </span>
                   </p>
                   <p class="text-xs font-mono opacity-70">
                     {peer.payload_network} over {peer.carrier_network} · {peer.tunnel_id} · seq {peer.next_seq}
@@ -563,6 +634,121 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                     Delete
                   </button>
                 </div>
+              </div>
+
+              <div
+                :if={peer.enabled}
+                id={"peer-path-#{peer.id}"}
+                class="mt-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2 space-y-2"
+              >
+                <div class="flex flex-wrap items-start justify-between gap-2">
+                  <div class="space-y-1 text-xs min-w-0">
+                    <p class="font-medium opacity-80">Path details</p>
+                    <p class="opacity-70">{tunnel_diag_summary(health)}</p>
+                    <p class="font-mono opacity-60 break-all">
+                      Their ref (peer_ref): {peer.peer_ref}
+                    </p>
+                    <p :if={@local_tunnel_dest} class="font-mono opacity-60 break-all">
+                      Our tunnel dest: {@local_tunnel_dest}
+                      <span class="opacity-50">
+                        — they must use this as peer_ref on their side
+                      </span>
+                    </p>
+                    <ul class="mt-1 space-y-0.5 opacity-70">
+                      <li>Outbound: {tunnel_outbound_label(health)}</li>
+                      <li>Inbound: {tunnel_inbound_label(health)}</li>
+                      <li :if={health && health[:last_ping_mode]}>
+                        Last ping send: {tunnel_send_mode_label(health)}
+                      </li>
+                      <li :if={health && is_map(health[:path])}>
+                        RNS path: {tunnel_path_label(health[:path])}
+                      </li>
+                      <li
+                        :if={health && is_map(health[:path]) && tunnel_path_route(health[:path])}
+                        class="font-mono break-all"
+                      >
+                        Route: {tunnel_path_route(health[:path])}
+                      </li>
+                    </ul>
+                  </div>
+                  <div :if={peer.carrier_network == "reticulum"} class="flex flex-wrap gap-1 shrink-0">
+                    <button
+                      type="button"
+                      id={"request-path-#{peer.id}"}
+                      class="btn btn-ghost btn-xs"
+                      phx-click="request_path"
+                      phx-value-id={peer.id}
+                    >
+                      Request path
+                    </button>
+                    <button
+                      type="button"
+                      id={"announce-tunnel-#{peer.id}"}
+                      class="btn btn-ghost btn-xs"
+                      phx-click="announce_tunnel"
+                    >
+                      Announce tunnel
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div
+                :if={waiting != []}
+                id={"peer-outbox-#{peer.id}"}
+                class="mt-3 rounded-lg border border-base-300 bg-base-100 px-3 py-2 space-y-2"
+              >
+                <p class="text-xs font-medium opacity-80">
+                  Waiting to send
+                  <span class="font-normal opacity-60">
+                    — durable data retries automatically; drop only if you no longer want it.
+                  </span>
+                </p>
+                <ul class="space-y-1.5">
+                  <li
+                    :for={m <- waiting}
+                    id={"peer-outbox-msg-#{m.id}"}
+                    class="flex flex-wrap items-center justify-between gap-2 text-xs"
+                  >
+                    <div class="min-w-0 space-y-0.5">
+                      <p class="font-medium">
+                        {outbox_kind_label(m)}
+                        <span class="font-normal opacity-60">· {byte_size(m.payload)} B</span>
+                        <span class="badge badge-ghost badge-xs ml-1">{m.status}</span>
+                      </p>
+                      <p class="opacity-60 font-mono truncate max-w-xl" title={m.last_error}>
+                        attempts {m.attempts}
+                        <%= if m.last_error do %>
+                          · {m.last_error}
+                        <% end %>
+                        <%= if m.next_attempt_at do %>
+                          · next {m.next_attempt_at}
+                        <% end %>
+                      </p>
+                    </div>
+                    <div class="flex gap-1 shrink-0">
+                      <button
+                        type="button"
+                        id={"nudge-#{m.id}"}
+                        class="btn btn-ghost btn-xs"
+                        phx-click="retry_outbox"
+                        phx-value-id={m.id}
+                      >
+                        Send now
+                      </button>
+                      <button
+                        type="button"
+                        id={"drop-waiting-#{m.id}"}
+                        class="btn btn-ghost btn-xs text-error"
+                        phx-click="drop_outbox"
+                        phx-value-id={m.id}
+                        data-confirm="Drop this waiting payload permanently?"
+                      >
+                        Drop
+                      </button>
+                    </div>
+                  </li>
+                </ul>
               </div>
             <% end %>
           </li>
@@ -631,24 +817,117 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
   defp tunnel_badge(_peer, %{status: :unreachable}), do: {"unreachable", "badge-error"}
   defp tunnel_badge(_peer, _health), do: {"checking…", "badge-ghost"}
 
-  defp tunnel_health_line(%{status: :reachable, rtt_ms: rtt, last_ack_at: ack})
-       when is_integer(rtt) do
-    "Round-trip #{rtt} ms · last reply #{ago(ack)} ago"
+  defp tunnel_health_line(%{status: :reachable, inbound_only?: true} = health) do
+    # reachable shouldn't combine with inbound_only, but be defensive
+    tunnel_diag_summary(health)
   end
 
-  defp tunnel_health_line(%{status: :reachable, last_ack_at: ack}) do
-    "Reachable · last reply #{ago(ack)} ago"
-  end
-
-  defp tunnel_health_line(%{status: :unreachable, last_ack_at: nil, misses: misses}) do
-    "No reply yet · #{misses} ping(s) sent"
-  end
-
-  defp tunnel_health_line(%{status: :unreachable, last_ack_at: ack, misses: misses}) do
-    "No reply · last ok #{ago(ack)} ago · #{misses} missed"
-  end
-
+  defp tunnel_health_line(health) when is_map(health), do: tunnel_diag_summary(health)
   defp tunnel_health_line(_), do: "Awaiting first ping…"
+
+  defp tunnel_diag_summary(%{status: :reachable, rtt_ms: rtt}) when is_integer(rtt) do
+    "Round-trip OK · #{rtt} ms"
+  end
+
+  defp tunnel_diag_summary(%{status: :reachable}), do: "Round-trip OK"
+
+  defp tunnel_diag_summary(%{inbound_only?: true, path: %{path_known: false}}) do
+    "They reach us · we do not reach them (no RNS path to peer)"
+  end
+
+  defp tunnel_diag_summary(%{inbound_only?: true}) do
+    "They reach us · we do not reach them"
+  end
+
+  defp tunnel_diag_summary(%{status: :unreachable, last_ping_mode: :broadcast}) do
+    "Ping sent (broadcast fallback) · waiting for ACK"
+  end
+
+  defp tunnel_diag_summary(%{status: :unreachable, last_ping_mode: :addressed}) do
+    "Ping sent addressed · waiting for ACK"
+  end
+
+  defp tunnel_diag_summary(%{status: :unreachable, last_ping_mode: :error, last_ping_error: err})
+       when is_binary(err) do
+    "Ping send failed · #{err}"
+  end
+
+  defp tunnel_diag_summary(%{status: :unreachable, misses: misses}) when is_integer(misses) do
+    "No reply · #{misses} missed ping(s)"
+  end
+
+  defp tunnel_diag_summary(%{status: :unreachable}), do: "No reply to our pings"
+  defp tunnel_diag_summary(_), do: "Awaiting first ping…"
+
+  defp tunnel_outbound_label(%{status: :reachable, rtt_ms: rtt, last_ack_at: ack})
+       when is_integer(rtt) do
+    "OK · #{rtt} ms · last ACK #{ago(ack)} ago"
+  end
+
+  defp tunnel_outbound_label(%{status: :reachable, last_ack_at: ack}),
+    do: "OK · last ACK #{ago(ack)} ago"
+
+  defp tunnel_outbound_label(%{status: :unreachable, last_ping_at: ping}),
+    do: "no ACK · last ping #{ago(ping)} ago"
+
+  defp tunnel_outbound_label(_), do: "unknown"
+
+  defp tunnel_inbound_label(%{
+         inbound_status: :fresh,
+         last_inbound_kind: kind,
+         last_inbound_at: at
+       }) do
+    "fresh · last #{kind || "frame"} #{ago(at)} ago"
+  end
+
+  defp tunnel_inbound_label(%{inbound_status: :stale, last_inbound_at: at}),
+    do: "stale · last #{ago(at)} ago"
+
+  defp tunnel_inbound_label(_), do: "none yet"
+
+  defp tunnel_send_mode_label(%{last_ping_mode: :addressed}), do: "addressed (point-to-point)"
+  defp tunnel_send_mode_label(%{last_ping_mode: :broadcast}), do: "broadcast fallback"
+
+  defp tunnel_send_mode_label(%{last_ping_mode: :error, last_ping_error: err}),
+    do: "error · #{err}"
+
+  defp tunnel_send_mode_label(_), do: "—"
+
+  defp tunnel_path_label(%{identity_known: id?, path_known: path?} = path) do
+    id = if id?, do: "identity known", else: "identity unknown"
+
+    path_txt =
+      cond do
+        path? and is_integer(path[:hops]) -> "path known · #{path[:hops]} hop(s)"
+        path? -> "path known"
+        true -> "no path"
+      end
+
+    iface =
+      case path[:interface] do
+        iface when is_binary(iface) and iface != "" -> " · via #{iface}"
+        _ -> ""
+      end
+
+    "#{id} · #{path_txt}#{iface}"
+  end
+
+  defp tunnel_path_label(_), do: "—"
+
+  # RNS only knows next hop + hop count (not the full intermediate chain).
+  defp tunnel_path_route(%{path_known: true, nodes: nodes})
+       when is_list(nodes) and nodes != [] do
+    Enum.join(nodes, " → ")
+  end
+
+  defp tunnel_path_route(%{path_known: true, next_hop: nh, hops: hops, destination_hash: dest})
+       when is_binary(nh) do
+    hops_txt = if is_integer(hops), do: " (#{hops} hop(s))", else: ""
+    dest_short = if is_binary(dest), do: String.slice(dest, 0, 8), else: "?"
+    "us → #{String.slice(nh, 0, 8)} → … → #{dest_short}#{hops_txt}"
+  end
+
+  defp tunnel_path_route(_), do: nil
 
   defp ago(nil), do: "—"
 
@@ -694,6 +973,20 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
   end
 
   defp routing_reason(_), do: ""
+
+  defp outbox_kind_label(%{meta: meta, payload: payload}) when is_map(meta) do
+    class = meta["class"] || "durable"
+    kind = meta["kind"] || "data"
+
+    cond do
+      kind == "control" -> "Control #{class}"
+      class == "ephemeral" -> "Ephemeral data"
+      is_binary(payload) and byte_size(payload) > 0 -> "Durable data"
+      true -> "Payload"
+    end
+  end
+
+  defp outbox_kind_label(_), do: "Payload"
 
   defp sighting_name(%{meta: meta, network: network, identity_ref: ref}) do
     from_meta =

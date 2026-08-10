@@ -129,7 +129,49 @@ defmodule Isthmus.Tunnel.EngineTest do
     assert tunnel_id == peer.tunnel_id
     assert is_integer(rtt) and rtt >= 0
 
-    assert %{status: :reachable, rtt_ms: ^rtt} = Map.get(Engine.health(), peer.tunnel_id)
+    assert %{status: :reachable, rtt_ms: ^rtt, last_ping_mode: :addressed} =
+             Map.get(Engine.health(), peer.tunnel_id)
+  end
+
+  test "inbound ping records last_inbound without marking outbound reachable", %{peer: peer} do
+    tid = Frame.tunnel_id_from_string(peer.tunnel_id)
+
+    remote_ping =
+      Frame.control_frame(
+        tid,
+        99,
+        Jason.encode!(%{"v" => 1, "op" => "ping", "ts" => System.system_time(:millisecond)})
+      )
+
+    Engine.handle_inbound_frame(Frame.encode(remote_ping))
+    _ = :sys.get_state(Engine)
+
+    health = Map.get(Engine.health(), peer.tunnel_id)
+
+    assert health.last_inbound_kind == :ping
+    assert is_integer(health.last_inbound_at)
+    assert health.inbound_status == :fresh
+    assert health.status != :reachable
+    assert health.inbound_only? == true
+  end
+
+  test "health records last_ping_mode when send reports broadcast fallback", %{peer: peer} do
+    prev = Application.get_env(:isthmus, :tunnel_ping_enabled, true)
+    Application.put_env(:isthmus, :tunnel_ping_enabled, true)
+    Application.put_env(:isthmus, :meshtastic_send_mode, :broadcast)
+
+    on_exit(fn ->
+      Application.put_env(:isthmus, :tunnel_ping_enabled, prev)
+      Application.delete_env(:isthmus, :meshtastic_send_mode)
+    end)
+
+    send(Engine, :ping)
+    _ = :sys.get_state(Engine)
+
+    assert %{last_ping_mode: :broadcast, status: status} =
+             Map.get(Engine.health(), peer.tunnel_id)
+
+    assert status in [:unreachable, :unknown]
   end
 
   test "a meshcore payload is delivered through the bridge, not the companion" do

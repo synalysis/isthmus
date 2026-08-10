@@ -43,11 +43,18 @@ defmodule Isthmus.Tunnel.Engine do
   end
 
   @doc """
-  Per-tunnel reachability derived from the keepalive ping loop.
+  Per-tunnel reachability and path diagnostics from the keepalive loop.
 
-  Returns a map of `tunnel_id => %{status, rtt_ms, last_ack_at, last_ping_at,
-  misses}` where `status` is `:reachable | :unreachable | :unknown`. Safe to call
-  when the Engine isn't running (returns `%{}`).
+  Returns a map of `tunnel_id => health` where health includes:
+
+  * `status` — outbound RTT: `:reachable | :unreachable | :unknown`
+  * `inbound_status` — whether we recently received traffic from them
+  * `rtt_ms`, `last_ack_at`, `last_ping_at`, `misses`
+  * `last_ping_mode` — `:addressed | :broadcast | :error | nil`
+  * `last_inbound_at`, `last_inbound_kind`
+  * `path` — RNS path snapshot when carrier is reticulum
+
+  Safe to call when the Engine isn't running (returns `%{}`).
   """
   def health do
     GenServer.call(__MODULE__, :health)
@@ -90,6 +97,7 @@ defmodule Isthmus.Tunnel.Engine do
   @impl true
   def handle_info(:tick, state) do
     Sightings.purge_expired()
+    _ = maybe_requeue_reachable(state)
     state = drain_outbox(state)
     schedule_tick()
     {:noreply, state}
@@ -150,7 +158,15 @@ defmodule Isthmus.Tunnel.Engine do
             {:tunnel_ping, %{tunnel_id: tunnel_id, rtt_ms: rtt_ms}}
           )
 
-          %{state | liveness: mark_ack_liveness(state.liveness, tunnel_id, now_ms, rtt_ms)}
+          state = %{
+            state
+            | liveness: mark_ack_liveness(state.liveness, tunnel_id, now_ms, rtt_ms)
+          }
+
+          # Unattended recovery: any successful ping means durable DLQ rows can fly again.
+          _ = Outbox.requeue_failed_for_tunnel(tunnel_id)
+
+          state
 
         {sent_at, %Peer{} = peer} ->
           record_ack_latency(peer, tunnel_id, seq, sent_at)
@@ -180,17 +196,60 @@ defmodule Isthmus.Tunnel.Engine do
   end
 
   defp drain_outbox(state) do
-    Enum.reduce(Outbox.due(16), state, fn msg, acc ->
-      case dispatch(msg) do
-        :ok ->
-          {:ok, _} = Outbox.mark_inflight(msg)
-          update_in(acc, [:stats, :sent], &(&1 + 1))
+    now_ms = System.system_time(:millisecond)
 
-        {:error, reason} ->
-          {:ok, _} = Outbox.mark_retry(msg, reason)
+    Enum.reduce(Outbox.due(16), state, fn msg, acc ->
+      cond do
+        Outbox.ephemeral_expired?(msg) ->
+          {:ok, _} = Outbox.expire(msg)
+          update_in(acc, [:stats, :dropped], &(&1 + 1))
+
+        durable_tunnel_unreachable?(msg, acc.liveness, now_ms) ->
+          # Don't burn attempts while the peer is known down — wait and retry.
+          {:ok, _} = Outbox.defer(msg, :tunnel_unreachable, 30)
           acc
+
+        true ->
+          case dispatch(msg) do
+            :ok ->
+              {:ok, _} = Outbox.mark_inflight(msg)
+              update_in(acc, [:stats, :sent], &(&1 + 1))
+
+            {:error, reason} ->
+              case Outbox.mark_retry(msg, reason) do
+                {:ok, %{status: "dropped"}} ->
+                  update_in(acc, [:stats, :dropped], &(&1 + 1))
+
+                {:ok, _} ->
+                  acc
+
+                _ ->
+                  acc
+              end
+          end
       end
     end)
+  end
+
+  defp durable_tunnel_unreachable?(%{channel: "tunnel:" <> tunnel_id} = msg, liveness, now_ms) do
+    Outbox.Class.durable?(msg.meta, msg.payload) and
+      liveness_status(liveness, tunnel_id, now_ms) == :unreachable
+  end
+
+  defp durable_tunnel_unreachable?(_, _, _), do: false
+
+  defp maybe_requeue_reachable(state) do
+    now_ms = System.system_time(:millisecond)
+
+    state.liveness
+    |> Map.keys()
+    |> Enum.each(fn tunnel_id ->
+      if liveness_status(state.liveness, tunnel_id, now_ms) == :reachable do
+        _ = Outbox.requeue_failed_for_tunnel(tunnel_id)
+      end
+    end)
+
+    :ok
   end
 
   defp dispatch(%{channel: "tunnel:" <> tunnel_id} = msg) do
@@ -308,17 +367,20 @@ defmodule Isthmus.Tunnel.Engine do
   end
 
   defp ingest_frame(%Frame{flags: flags} = frame, state) do
+    tunnel_hex = Base.encode16(frame.tunnel_id, case: :lower)
+
     cond do
       Bitwise.band(flags, Frame.flag_ack()) != 0 ->
-        tunnel_hex = Base.encode16(frame.tunnel_id, case: :lower)
+        state = mark_inbound(state, tunnel_hex, :ack)
         GenServer.cast(self(), {:ack, tunnel_hex, frame.seq})
         state
 
       Bitwise.band(flags, Frame.flag_control()) != 0 ->
-        handle_control(frame)
+        state = handle_control(frame, state)
         update_in(state, [:stats, :control], &(&1 + 1))
 
       Bitwise.band(flags, Frame.flag_data()) != 0 ->
+        state = mark_inbound(state, tunnel_hex, :data)
         reassemble(frame, state)
 
       true ->
@@ -326,12 +388,13 @@ defmodule Isthmus.Tunnel.Engine do
     end
   end
 
-  defp handle_control(%Frame{} = frame) do
+  defp handle_control(%Frame{} = frame, state) do
     tunnel_hex = Base.encode16(frame.tunnel_id, case: :lower)
 
     case Jason.decode(frame.payload) do
       {:ok, %{"op" => "announce", "network" => network, "ref" => ref} = body}
       when is_binary(network) and is_binary(ref) ->
+        state = mark_inbound(state, tunnel_hex, :control)
         meta = Map.get(body, "meta", %{})
 
         result =
@@ -352,22 +415,22 @@ defmodule Isthmus.Tunnel.Engine do
           {:tunnel_control, %{tunnel_id: tunnel_hex, op: "announce", network: network, ref: ref}}
         )
 
-        :ok
+        state
 
       {:ok, %{"op" => "ping"}} ->
-        # Reachability probe from the far side — ACK it so the sender can measure
-        # RTT. No island side effects.
+        # Far side can reach us — record inbound without flipping outbound reachable.
+        state = mark_inbound(state, tunnel_hex, :ping)
         ack = Frame.encode(Frame.ack_frame(frame.tunnel_id, frame.seq))
         maybe_send_ack(frame.tunnel_id, ack)
-        :ok
+        state
 
       {:ok, other} ->
         Logger.debug("tunnel control ignored: #{inspect(other)}")
-        :ok
+        state
 
       {:error, _} ->
         Logger.debug("tunnel control decode failed for #{tunnel_hex}")
-        :ok
+        state
     end
   end
 
@@ -604,7 +667,8 @@ defmodule Isthmus.Tunnel.Engine do
 
   defp ping_peer(%Peer{} = peer, state) do
     now_ms = System.system_time(:millisecond)
-    state = %{state | liveness: touch_ping(state.liveness, peer.tunnel_id, now_ms)}
+    path = path_snapshot(peer)
+    state = %{state | liveness: touch_ping(state.liveness, peer.tunnel_id, now_ms, path)}
 
     try do
       carrier = network_atom(peer.carrier_network)
@@ -625,6 +689,13 @@ defmodule Isthmus.Tunnel.Engine do
             kind: :control
           })
 
+        {mode, err} = classify_send(send_result)
+
+        state = %{
+          state
+          | liveness: record_ping_send(state.liveness, peer.tunnel_id, now_ms, mode, err)
+        }
+
         if ok_send?(send_result) do
           pending = Map.put(state.pending_acks, {peer.tunnel_id, seq}, {sent_at, peer, :ping})
           %{state | pending_acks: pending}
@@ -637,13 +708,90 @@ defmodule Isthmus.Tunnel.Engine do
     rescue
       e ->
         Logger.debug("tunnel ping failed for #{peer.tunnel_id}: #{inspect(e)}")
-        state
+
+        %{
+          state
+          | liveness:
+              record_ping_send(
+                state.liveness,
+                peer.tunnel_id,
+                now_ms,
+                :error,
+                Exception.message(e)
+              )
+        }
     catch
       :exit, reason ->
         Logger.debug("tunnel ping exited for #{peer.tunnel_id}: #{inspect(reason)}")
-        state
+
+        %{
+          state
+          | liveness:
+              record_ping_send(state.liveness, peer.tunnel_id, now_ms, :error, inspect(reason))
+        }
     end
   end
+
+  defp path_snapshot(%Peer{carrier_network: "reticulum", peer_ref: ref})
+       when is_binary(ref) and ref != "" do
+    case Reticulum.path_status(ref) do
+      {:ok, status} when is_map(status) ->
+        %{
+          identity_known: status[:identity_known] == true or status["identity_known"] == true,
+          path_known: status[:path_known] == true or status["path_known"] == true,
+          destination_hash: status[:destination_hash] || status["destination_hash"] || ref,
+          hops: status[:hops],
+          next_hop: status[:next_hop],
+          interface: status[:interface],
+          nodes: status[:nodes] || []
+        }
+
+      _ ->
+        %{
+          identity_known: false,
+          path_known: false,
+          destination_hash: ref,
+          hops: nil,
+          next_hop: nil,
+          interface: nil,
+          nodes: []
+        }
+    end
+  rescue
+    _ ->
+      %{
+        identity_known: false,
+        path_known: false,
+        destination_hash: ref,
+        hops: nil,
+        next_hop: nil,
+        interface: nil,
+        nodes: []
+      }
+  catch
+    :exit, _ ->
+      %{
+        identity_known: false,
+        path_known: false,
+        destination_hash: ref,
+        hops: nil,
+        next_hop: nil,
+        interface: nil,
+        nodes: []
+      }
+  end
+
+  defp path_snapshot(_), do: nil
+
+  defp classify_send(:ok), do: {:addressed, nil}
+  defp classify_send({:ok, :addressed}), do: {:addressed, nil}
+  defp classify_send({:ok, :broadcast}), do: {:broadcast, nil}
+  defp classify_send({:ok, _}), do: {:addressed, nil}
+  defp classify_send({:error, reason}), do: {:error, truncate_err(reason)}
+  defp classify_send(other), do: {:error, truncate_err(other)}
+
+  defp truncate_err(err) when is_binary(err), do: String.slice(err, 0, 120)
+  defp truncate_err(err), do: err |> inspect() |> String.slice(0, 120)
 
   # function_exported?/3 returns false for a module that hasn't been loaded yet,
   # which flakes by test/boot ordering. Force a load first.
@@ -655,10 +803,36 @@ defmodule Isthmus.Tunnel.Engine do
   defp ok_send?({:ok, _}), do: true
   defp ok_send?(_), do: false
 
-  defp blank_liveness, do: %{last_ping_at: nil, last_ack_at: nil, rtt_ms: nil, misses: 0}
+  defp blank_liveness do
+    %{
+      last_ping_at: nil,
+      last_ack_at: nil,
+      rtt_ms: nil,
+      misses: 0,
+      last_ping_mode: nil,
+      last_ping_error: nil,
+      last_inbound_at: nil,
+      last_inbound_kind: nil,
+      path: nil
+    }
+  end
+
+  defp mark_inbound(state, tunnel_id, kind) do
+    now_ms = System.system_time(:millisecond)
+    entry = Map.get(state.liveness, tunnel_id, blank_liveness())
+
+    liveness =
+      Map.put(state.liveness, tunnel_id, %{
+        entry
+        | last_inbound_at: now_ms,
+          last_inbound_kind: kind
+      })
+
+    %{state | liveness: liveness}
+  end
 
   # Record a ping attempt. If the previous ping was never acked, count it as a miss.
-  defp touch_ping(liveness, tunnel_id, now_ms) do
+  defp touch_ping(liveness, tunnel_id, now_ms, path) do
     entry = Map.get(liveness, tunnel_id, blank_liveness())
 
     misses =
@@ -669,7 +843,23 @@ defmodule Isthmus.Tunnel.Engine do
         entry.misses
       end
 
-    Map.put(liveness, tunnel_id, %{entry | last_ping_at: now_ms, misses: misses})
+    Map.put(liveness, tunnel_id, %{
+      entry
+      | last_ping_at: now_ms,
+        misses: misses,
+        path: path || entry.path
+    })
+  end
+
+  defp record_ping_send(liveness, tunnel_id, now_ms, mode, error) do
+    entry = Map.get(liveness, tunnel_id, blank_liveness())
+
+    Map.put(liveness, tunnel_id, %{
+      entry
+      | last_ping_at: now_ms,
+        last_ping_mode: mode,
+        last_ping_error: error
+    })
   end
 
   defp mark_ack_liveness(liveness, tunnel_id, now_ms, rtt_ms) do
@@ -677,25 +867,53 @@ defmodule Isthmus.Tunnel.Engine do
     Map.put(liveness, tunnel_id, %{entry | last_ack_at: now_ms, rtt_ms: rtt_ms, misses: 0})
   end
 
-  defp compute_health(liveness) do
-    now_ms = System.system_time(:millisecond)
-    stale = ping_stale_ms()
+  defp liveness_status(liveness, tunnel_id, now_ms) do
+    case Map.get(liveness, tunnel_id) do
+      nil ->
+        :unknown
 
-    Map.new(liveness, fn {tunnel_id, e} ->
-      status =
+      e ->
+        stale = ping_stale_ms()
+
         cond do
           e.last_ack_at != nil and now_ms - e.last_ack_at <= stale -> :reachable
           e.last_ping_at != nil -> :unreachable
           true -> :unknown
         end
+    end
+  end
+
+  defp inbound_status(entry, now_ms) when is_map(entry) do
+    stale = ping_stale_ms()
+
+    cond do
+      is_integer(entry.last_inbound_at) and now_ms - entry.last_inbound_at <= stale -> :fresh
+      is_integer(entry.last_inbound_at) -> :stale
+      true -> :none
+    end
+  end
+
+  defp compute_health(liveness) do
+    now_ms = System.system_time(:millisecond)
+
+    Map.new(liveness, fn {tunnel_id, e} ->
+      status = liveness_status(liveness, tunnel_id, now_ms)
+      inbound = inbound_status(e, now_ms)
 
       {tunnel_id,
        %{
          status: status,
+         inbound_status: inbound,
+         inbound_only?: status != :reachable and inbound == :fresh,
          rtt_ms: e.rtt_ms,
          last_ack_at: e.last_ack_at,
          last_ping_at: e.last_ping_at,
-         misses: e.misses
+         misses: e.misses,
+         last_ping_mode: e.last_ping_mode,
+         last_ping_error: e.last_ping_error,
+         last_inbound_at: e.last_inbound_at,
+         last_inbound_kind: e.last_inbound_kind,
+         path: e.path
        }}
     end)
   end

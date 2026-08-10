@@ -137,19 +137,26 @@ defmodule Isthmus.Tunnel do
 
   @doc """
   Enqueue opaque payload for a tunnel peer (fragmented later by Engine against carrier MTU).
+
+  Ephemeral traffic (announces / MeshCore adverts) is skipped when the tunnel is
+  known unreachable so it does not pile up while the peer is offline.
   """
   def send_payload(%Peer{} = peer, payload, meta \\ %{}) when is_binary(payload) do
-    Outbox.enqueue(
-      "tunnel:#{peer.tunnel_id}",
-      peer.peer_ref,
-      payload,
-      Map.merge(meta, %{
+    meta =
+      Map.merge(stringify_keys(meta), %{
         "payload_network" => peer.payload_network,
         "carrier_network" => peer.carrier_network,
         "tunnel_id" => peer.tunnel_id,
         "seq" => peer.next_seq
       })
-    )
+
+    class = Isthmus.Tunnel.Outbox.Class.classify(payload, meta)
+
+    if class == :ephemeral and tunnel_unreachable?(peer.tunnel_id) do
+      {:ok, :skipped_unreachable}
+    else
+      Outbox.enqueue("tunnel:#{peer.tunnel_id}", peer.peer_ref, payload, meta)
+    end
   end
 
   @doc "Enqueue via the best peer for peer_ref (least hops / lowest latency)."
@@ -157,6 +164,13 @@ defmodule Isthmus.Tunnel do
     case best_peer(peer_ref) do
       nil -> {:error, :no_tunnel_peer}
       %Peer{} = peer -> send_payload(peer, payload, meta)
+    end
+  end
+
+  defp tunnel_unreachable?(tunnel_id) when is_binary(tunnel_id) do
+    case Map.get(Isthmus.Tunnel.Engine.health(), tunnel_id) do
+      %{status: :unreachable} -> true
+      _ -> false
     end
   end
 

@@ -556,12 +556,38 @@ class Sidecar:
         if self.router is not None:
             backchannel = to_hash in getattr(self.router, "backchannel_links", {})
             direct = to_hash in getattr(self.router, "direct_links", {})
+        hops = None
+        next_hop = None
+        interface = None
+        if has_path:
+            try:
+                raw_hops = int(self.RNS.Transport.hops_to(to_hash))
+                # PATHFINDER_M means "unknown" in RNS.
+                if raw_hops < int(self.RNS.Transport.PATHFINDER_M):
+                    hops = raw_hops
+            except Exception:  # noqa: BLE001
+                hops = None
+            try:
+                nh = self.RNS.Transport.next_hop(to_hash)
+                if isinstance(nh, (bytes, bytearray)) and nh:
+                    next_hop = bytes(nh).hex()
+            except Exception:  # noqa: BLE001
+                next_hop = None
+            try:
+                iface = self.RNS.Transport.next_hop_interface(to_hash)
+                if iface is not None:
+                    interface = str(iface)
+            except Exception:  # noqa: BLE001
+                interface = None
         return {
             "ok": True,
             "destination_hash": dest_hex,
             "identity_hash": resolved.get("identity_hash"),
             "identity_known": resolved["identity"] is not None,
             "path_known": has_path,
+            "hops": hops,
+            "next_hop": next_hop,
+            "interface": interface,
             "backchannel": backchannel,
             "direct_link": direct,
             "resolved_from_identity_hash": resolved.get("resolved_from_identity_hash", False),
@@ -588,6 +614,9 @@ class Sidecar:
             "identity_hash": status.get("identity_hash"),
             "identity_known": known,
             "path_known": has_path,
+            "hops": status.get("hops"),
+            "next_hop": status.get("next_hop"),
+            "interface": status.get("interface"),
             "requested": True,
             "resolved_from_identity_hash": status.get("resolved_from_identity_hash", False),
         }

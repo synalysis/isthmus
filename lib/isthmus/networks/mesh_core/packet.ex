@@ -102,6 +102,47 @@ defmodule Isthmus.Networks.MeshCore.Packet do
     :crypto.hash(:sha256, pre <> payload) |> binary_part(0, 8)
   end
 
+  @doc """
+  Logical identity for TXT_MSG retries when equality can be proven.
+
+  MeshCore changes the attempt byte on each resend, which re-encrypts the first
+  AES block. When the ciphertext has trailing blocks, those blocks are identical
+  across attempts that keep the same plaintext length — so hashing them (plus
+  src/dest and ciphertext length) is a confident same-message signal.
+
+  Returns `nil` for short (single-block) messages: the entire ciphertext changes
+  with the attempt byte and we cannot prove equality without decrypting. Prefer
+  duplicate waiting rows over dropping a distinct message.
+  """
+  def logical_message_key(packet) when is_binary(packet) do
+    case decode(packet) do
+      {:ok, decoded} -> logical_message_key(decoded)
+      _ -> nil
+    end
+  end
+
+  def logical_message_key(%{payload_type: type, payload: payload})
+      when type == @type_txt_msg do
+    case payload do
+      <<dest, src, _mac::binary-size(2), ct::binary>>
+      when byte_size(ct) > 16 and rem(byte_size(ct), 16) == 0 ->
+        pair = Base.encode16(<<dest, src>>, case: :lower)
+
+        trailing =
+          ct
+          |> binary_part(16, byte_size(ct) - 16)
+          |> then(&:crypto.hash(:sha256, &1))
+          |> Base.encode16(case: :lower)
+
+        "mc_txt|#{pair}|#{byte_size(ct)}|#{trailing}"
+
+      _ ->
+        nil
+    end
+  end
+
+  def logical_message_key(_), do: nil
+
   defp take_transport(route, rest)
        when route in [@route_transport_flood, @route_transport_direct] do
     case rest do
