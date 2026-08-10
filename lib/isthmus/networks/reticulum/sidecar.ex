@@ -13,6 +13,8 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
   # Tunnel carrier sends are on the Engine tick path — keep them short so a
   # stuck Python `packet.send()` cannot take the Engine down for 30s.
   @tunnel_send_timeout 5_000
+  # Admin UI status snapshot — must fail fast when the Python side is wedged.
+  @status_timeout 2_500
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -27,7 +29,7 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
 
   @doc "Live RNS instance/config/interface snapshot from the sidecar."
   def status do
-    safe_rpc("status", %{})
+    safe_rpc("status", %{}, @status_timeout)
   end
 
   def create_identity(opts \\ %{}) do
@@ -217,8 +219,23 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
   def handle_info({port, {:data, data}}, %{port: port} = state) do
     state =
       case Jason.decode(data) do
-        {:ok, msg} when is_map(msg) -> handle_port_msg(msg, state)
-        _ -> state
+        {:ok, msg} when is_map(msg) ->
+          handle_port_msg(msg, state)
+
+        {:ok, _other} ->
+          Logger.warning("RNS sidecar IPC: decoded non-map frame")
+          state
+
+        {:error, reason} ->
+          # Usually means stdout framing was corrupted (e.g. RNS print() logs
+          # mixed into {:packet, 4}). Sidecar must be restarted to resync.
+          preview = data |> binary_slice(0, 80) |> inspect(limit: 80)
+
+          Logger.error(
+            "RNS sidecar IPC decode failed (#{inspect(reason)}); frame preview=#{preview}"
+          )
+
+          %{state | last_error: "ipc_decode_failed"}
       end
 
     {:noreply, state}
@@ -369,12 +386,13 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
         python ->
           File.mkdir_p!(state.configdir)
 
+          # Do not use :stderr_to_stdout — any stderr byte would corrupt {:packet, 4}
+          # framing the same way RNS stdout logs do. RNS logs go to sidecar.log.
           port =
             Port.open({:spawn_executable, python}, [
               :binary,
               :exit_status,
               :use_stdio,
-              :stderr_to_stdout,
               {:args, [state.script]},
               {:packet, 4},
               {:env, state.env}

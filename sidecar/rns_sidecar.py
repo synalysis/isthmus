@@ -137,9 +137,15 @@ class Sidecar:
             except ValueError:
                 loglevel = 3
 
+            # CRITICAL: RNS defaults to LOG_STDOUT (print to stdout). That
+            # interleaves plaintext into the length-prefixed {:packet, 4} IPC
+            # stream, desyncs the Elixir Port forever, and looks like "RNS hung"
+            # (no announces, RPC timeouts) while this process sits idle in read_msg.
+            RNS.logfile = os.path.join(self.configdir, "sidecar.log")
             self.reticulum = RNS.Reticulum(
                 configdir=self.configdir,
                 loglevel=loglevel,
+                logdest=RNS.LOG_FILE,
             )
             self.router = LXMRouter(
                 storagepath=self.storagepath,

@@ -24,6 +24,7 @@ defmodule IsthmusWeb.Router do
   scope "/", IsthmusWeb do
     pipe_through :health
 
+    get "/health", HealthController, :liveness
     get "/healthz", HealthController, :liveness
     get "/readyz", HealthController, :readiness
   end

@@ -12,6 +12,7 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
      socket
      |> assign(:page_title, "Reticulum")
      |> assign(:iface_form, blank_iface_form())
+     |> assign(:sidecar_health, %{status: :unknown})
      |> assign_data()}
   end
 
@@ -117,6 +118,14 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
           |> assign(:status, status)
           |> assign(:error, nil)
 
+        {:error, :timeout} ->
+          socket
+          |> assign(:status, nil)
+          |> assign(
+            :error,
+            "RNS sidecar not responding (status timed out). Announces may be stalled — restart Isthmus or click Apply to respawn the sidecar."
+          )
+
         {:error, reason} ->
           socket
           |> assign(:status, nil)
@@ -136,10 +145,18 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
         _ -> true
       end
 
+    health =
+      try do
+        Reticulum.health()
+      catch
+        :exit, _ -> %{status: :unknown}
+      end
+
     socket
     |> assign(:config_path, Reticulum.config_path())
     |> assign(:config_interfaces, config_ifaces)
     |> assign(:share_instance, share?)
+    |> assign(:sidecar_health, health)
     |> assign(:allowed_types, ConfigFile.allowed_types())
   end
 
@@ -224,8 +241,18 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
           <.admin_nav current={:reticulum} />
         </div>
 
-        <div :if={@error} class="alert alert-error text-sm">
-          Could not load RNS status: {@error}
+        <div :if={@error} class="alert alert-error text-sm" id="rns-status-error">
+          <div class="space-y-1">
+            <p>{@error}</p>
+            <p :if={@sidecar_health} class="text-xs opacity-80">
+              Local sidecar process: {inspect(@sidecar_health[:status])} · live={inspect(
+                @sidecar_health[:live]
+              )}
+              <%= if @sidecar_health[:last_error] do %>
+                · {@sidecar_health[:last_error]}
+              <% end %>
+            </p>
+          </div>
         </div>
 
         <div :if={@status} id="rns-status" class="space-y-8">
