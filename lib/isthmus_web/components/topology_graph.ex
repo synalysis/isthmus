@@ -450,5 +450,4 @@ defmodule IsthmusWeb.TopologyGraph do
   defp truncate(text, max) when is_binary(text) do
     if String.length(text) > max, do: String.slice(text, 0, max - 1) <> "…", else: text
   end
-
 end

@@ -559,9 +559,11 @@ defmodule Isthmus.Tunnel.Engine do
          {:ok, %{public_key: pub, name: name}} <- Advert.parse_payload(decoded.payload) do
       hex = Base.encode16(pub, case: :lower)
 
+      # Direction "out": we are sourcing this advert onto the local island.
       Inbound.record("meshcore", hex, name, "tunnel_advert", %{
         peer: peer.name,
-        tunnel_id: tunnel_hex
+        tunnel_id: tunnel_hex,
+        direction: "out"
       })
     else
       _ -> :ok
@@ -570,28 +572,22 @@ defmodule Isthmus.Tunnel.Engine do
     _ -> :ok
   end
 
-  # Persist a lightweight "in" sighting so inbound tunnel payloads are visible in
-  # the Tunnels announce-flow table / topology, making direction issues diagnosable.
-  defp record_inbound_sighting(peer, tunnel_hex, result) do
-    delivered? =
-      case result do
-        :ok -> true
-        {:ok, _} -> true
-        _ -> false
-      end
-
-    if delivered? do
-      try do
-        Sightings.record(%{
-          network: peer.payload_network,
-          identity_ref: peer.peer_ref || tunnel_hex,
-          direction: "in",
-          tunnel_id: tunnel_hex,
-          meta: %{"source" => "tunnel_data", "peer" => peer.name, "name" => peer.name}
-        })
-      rescue
-        _ -> :ok
-      end
+  # Carrier-side "in" sighting for tunnel delivery diagnostics. Uses the carrier
+  # network (not payload) so MeshCore-over-Nostr shows as nostr/in, matching
+  # the outbound tunnel_ack rows (carrier/out) on the sending side.
+  # Recorded whenever a DATA payload is reassembled — independent of whether
+  # local island inject succeeded.
+  defp record_inbound_sighting(peer, tunnel_hex, _result) do
+    try do
+      Sightings.record(%{
+        network: peer.carrier_network,
+        identity_ref: peer.peer_ref || tunnel_hex,
+        direction: "in",
+        tunnel_id: tunnel_hex,
+        meta: %{"source" => "tunnel_data", "peer" => peer.name, "name" => peer.name}
+      })
+    rescue
+      _ -> :ok
     end
 
     :ok

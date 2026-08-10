@@ -9,6 +9,13 @@ defmodule Isthmus.Announce.GovernorTest do
     assert {:drop, :dedup} = Governor.allow?(:announce, :reticulum, key)
   end
 
+  test "tunnel_data is budget-only (no per-tunnel TTL dedup)" do
+    tid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    assert :ok = Governor.allow?(:tunnel_data, :nostr, tid)
+    assert :ok = Governor.allow?(:tunnel_data, :nostr, tid)
+    assert :ok = Governor.allow?(:tunnel_data, :nostr, tid)
+  end
+
   test "drops_summary collapses identical keys and keeps latest seen_at" do
     key = "collapse-#{System.unique_integer()}"
 

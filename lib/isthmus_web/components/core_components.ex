@@ -569,7 +569,9 @@ defmodule IsthmusWeb.CoreComponents do
   defp datetime_fallback(%NaiveDateTime{} = ndt),
     do: Calendar.strftime(ndt, "%Y-%m-%d %H:%M:%S")
 
-  defp datetime_fallback(iso) when is_binary(iso), do: String.replace(iso, "T", " ", global: false)
+  defp datetime_fallback(iso) when is_binary(iso),
+    do: String.replace(iso, "T", " ", global: false)
+
   defp datetime_fallback(_), do: "—"
 
   @doc """

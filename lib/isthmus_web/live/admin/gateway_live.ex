@@ -171,14 +171,20 @@ defmodule IsthmusWeb.Admin.GatewayLive do
                   <td class="text-xs">
                     <span class="font-medium">{m.from_network}</span>
                     <br />
-                    <span class="font-mono opacity-70" title={format_identity_ref(m.from_network, m.from_ref)}>
+                    <span
+                      class="font-mono opacity-70"
+                      title={format_identity_ref(m.from_network, m.from_ref)}
+                    >
                       {short_identity_ref(m.from_network, m.from_ref)}
                     </span>
                   </td>
                   <td class="text-xs">
                     <span class="font-medium">{m.to_network}</span>
                     <br />
-                    <span class="font-mono opacity-70" title={format_identity_ref(m.to_network, m.to_ref)}>
+                    <span
+                      class="font-mono opacity-70"
+                      title={format_identity_ref(m.to_network, m.to_ref)}
+                    >
                       {short_identity_ref(m.to_network, m.to_ref)}
                     </span>
                   </td>

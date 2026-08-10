@@ -1,6 +1,10 @@
 defmodule Isthmus.Announce.Governor do
   @moduledoc """
-  Rate/dedup authority for announces, adverts, tunnel data, and Nostr publishes.
+  Rate/dedup authority for announces, adverts, tunnel control, and Nostr publishes.
+
+  `tunnel_data` is budget-only: packet/outbox dedup already collapses repeats in
+  `Tunnel.Bridge` / `Tunnel.Outbox`. A per-tunnel TTL would block distinct chat
+  messages after an advert (or any prior DATA) for the whole window.
   """
   use GenServer
 
@@ -30,14 +34,17 @@ defmodule Isthmus.Announce.Governor do
     end
   end
 
+  # Classes listed here use identity-key TTL dedup. `tunnel_data` is intentionally
+  # absent — only the per-network hourly budget applies.
   @ttl %{
     "announce" => 3_600,
     "advert" => 21_600,
-    "tunnel_data" => 30,
     "tunnel_control" => 5,
     "nostr_metadata" => 86_400,
     "gateway_message" => 10
   }
+
+  @budget_only_classes MapSet.new(["tunnel_data"])
 
   @budgets %{
     # tokens per hour
@@ -117,12 +124,11 @@ defmodule Isthmus.Announce.Governor do
   @impl true
   def handle_call({:allow, class, network, identity_key}, _from, state) do
     state = maybe_rotate_hour(state)
-    key = "#{network}|#{class}|#{identity_key}"
-    ttl = Map.get(@ttl, class, 60)
 
     {result, state} =
       cond do
-        Dedup.seen?(key, ttl) ->
+        identity_dedup?(class) and
+            Dedup.seen?(dedup_key(network, class, identity_key), ttl_for(class)) ->
           record_drop(network, class, identity_key, "dedup")
           {{:drop, :dedup}, update_in(state.dropped, &(&1 + 1))}
 
@@ -149,6 +155,12 @@ defmodule Isthmus.Announce.Governor do
        policy_nostr_budget: Policy.get("nostr_publish_budget_per_hour")
      }, state}
   end
+
+  defp identity_dedup?(class), do: not MapSet.member?(@budget_only_classes, class)
+
+  defp dedup_key(network, class, identity_key), do: "#{network}|#{class}|#{identity_key}"
+
+  defp ttl_for(class), do: Map.get(@ttl, class, 60)
 
   defp tokens_available?(state, network) do
     budget = budget_for(network)

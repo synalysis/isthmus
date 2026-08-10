@@ -234,6 +234,18 @@ defmodule Isthmus.Tunnel.EngineTest do
     assert sighting.meta["peer"] == "Local Test"
     assert sighting.meta["name"] == "Remote Phone"
     assert sighting.tunnel_id == peer.tunnel_id
+    assert sighting.direction == "out"
+
+    # Carrier ingress row (network = carrier, not payload).
+    carrier =
+      Sightings.list_recent(50)
+      |> Enum.find(fn s ->
+        s.network == "meshtastic" and s.direction == "in" and s.tunnel_id == peer.tunnel_id and
+          s.meta["source"] == "tunnel_data"
+      end)
+
+    assert carrier
+    assert carrier.meta["name"] == "Local Test"
   end
 
   test "outbox uses msg.payload (not the struct) when draining", %{peer: peer} do

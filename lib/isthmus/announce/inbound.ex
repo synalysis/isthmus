@@ -90,9 +90,15 @@ defmodule Isthmus.Announce.Inbound do
             |> maybe_put_name(name)
             |> merge_extra_meta(extra)
 
+          direction =
+            case extra[:direction] || extra["direction"] do
+              d when d in ["in", "out", :in, :out] -> to_string(d)
+              _ -> "in"
+            end
+
           attrs = %{
             network: network,
-            direction: "in",
+            direction: direction,
             identity_ref: ref,
             meta: meta
           }
@@ -141,7 +147,7 @@ defmodule Isthmus.Announce.Inbound do
   defp maybe_put_name(meta, nil), do: meta
   defp maybe_put_name(meta, name), do: Map.put(meta, "name", name)
 
-  # Persist ingress hints (peer name, etc.) without clobbering source/name.
+  # Persist ingress hints (peer name, etc.) without clobbering reserved keys.
   defp merge_extra_meta(meta, extra) when map_size(extra) == 0, do: meta
 
   defp merge_extra_meta(meta, extra) do
@@ -149,7 +155,7 @@ defmodule Isthmus.Announce.Inbound do
       key = to_string(k)
 
       cond do
-        key in ["source", "name", "tunnel_id"] -> acc
+        key in ["source", "name", "tunnel_id", "direction"] -> acc
         is_nil(v) -> acc
         true -> Map.put(acc, key, v)
       end

@@ -42,6 +42,17 @@ defmodule Isthmus.Announce.InboundTest do
     assert %{meta: %{"name" => "Camp Node"}} = Sightings.best_for("meshcore", ref)
   end
 
+  test "honors explicit direction in extra opts" do
+    ref = String.duplicate("aa", 32)
+
+    assert :ok =
+             Inbound.record("meshcore", ref, "Remote", "tunnel_advert", %{direction: "out"})
+
+    assert %{direction: "out", meta: meta} = Sightings.best_for("meshcore", ref)
+    assert meta["source"] == "tunnel_advert"
+    refute Map.has_key?(meta, "direction")
+  end
+
   test "handle_reticulum records lxmf.delivery announces with names" do
     ref = String.duplicate("11", 16)
 
