@@ -90,6 +90,39 @@ defmodule Isthmus.Tunnel.PeerTest do
     assert "can't be blank" in errors_on(changeset).peer_ref
   end
 
+  test "nostr carrier converts npub peer_ref to hex" do
+    alias Isthmus.Nostr.Bech32
+
+    raw = :crypto.strong_rand_bytes(32)
+    hex = Base.encode16(raw, case: :lower)
+    npub = Bech32.encode_npub(raw)
+
+    {:ok, peer} =
+      Tunnel.create_peer(%{
+        name: "Nostr peer",
+        peer_ref: npub,
+        payload_network: "meshcore",
+        carrier_network: "nostr"
+      })
+
+    assert peer.peer_ref == hex
+
+    {:ok, peer} = Tunnel.update_peer(peer, %{peer_ref: String.upcase(hex)})
+    assert peer.peer_ref == hex
+  end
+
+  test "nostr carrier rejects invalid peer_ref" do
+    assert {:error, changeset} =
+             Tunnel.create_peer(%{
+               name: "Bad nostr",
+               peer_ref: "not-an-npub",
+               payload_network: "meshcore",
+               carrier_network: "nostr"
+             })
+
+    assert "must be a valid npub or 64-char hex pubkey" in errors_on(changeset).peer_ref
+  end
+
   test "a shared pairing code derives a matching tunnel_id on both sides" do
     expected = Tunnel.tunnel_id_from_code("Lobby Link")
 

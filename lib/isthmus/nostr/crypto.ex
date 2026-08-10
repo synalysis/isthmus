@@ -83,6 +83,16 @@ defmodule Isthmus.Nostr.Crypto do
     end
   end
 
+  @doc "NIP-44 v2 conversation encrypt. Keys may be binary or hex."
+  def nip44_encrypt(seckey, peer_pubkey, plaintext) when is_binary(plaintext) do
+    Nostr.NIP44.encrypt(plaintext, seckey_hex(seckey), pubkey_hex(peer_pubkey))
+  end
+
+  @doc "NIP-44 v2 conversation decrypt. Keys may be binary or hex."
+  def nip44_decrypt(seckey, peer_pubkey, content) when is_binary(content) do
+    Nostr.NIP44.decrypt(content, seckey_hex(seckey), pubkey_hex(peer_pubkey))
+  end
+
   @doc """
   Build outbound DM event map(s) for relay publish.
 

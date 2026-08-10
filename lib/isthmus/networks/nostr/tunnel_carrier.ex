@@ -2,9 +2,10 @@ defmodule Isthmus.Networks.Nostr.TunnelCarrier do
   @moduledoc """
   Opaque tunnel frames over Nostr (RNS-over-Nostr / MeshCore-over-Nostr carrier).
 
-  Uses ephemeral kind `21278` with tag `t=isthmus-tunnel`. Content is base64 of
-  the ISTH tunnel frame. When a peer pubkey is known, also tags `#p` and encrypts
-  with NIP-04 under the service identity.
+  Uses ephemeral kind `21278` with tag `t=isthmus-tunnel`. When a peer pubkey is
+  known, content is NIP-44 encrypted under the service identity (inner payload is
+  base64 of the ISTH frame). Inbound still accepts legacy `encryption=nip04` and
+  plaintext base64 for older peers.
   """
 
   require Logger
@@ -16,6 +17,8 @@ defmodule Isthmus.Networks.Nostr.TunnelCarrier do
 
   @kind 21_278
   @tag "isthmus-tunnel"
+  @enc_nip44 "nip44"
+  @enc_nip04 "nip04"
 
   def kind, do: @kind
   def tag, do: @tag
@@ -75,9 +78,24 @@ defmodule Isthmus.Networks.Nostr.TunnelCarrier do
   end
 
   defp encode_content(seckey, peer, payload) when is_binary(peer) and peer != "" do
-    b64 = Base.encode64(payload)
-    ciphertext = Crypto.nip04_encrypt(seckey, peer, b64)
-    {ciphertext, [["t", @tag], ["p", String.downcase(peer)], ["encryption", "nip04"]]}
+    case peer_pubkey_hex(peer) do
+      {:ok, hex} ->
+        # Base64 the binary ISTH frame so the NIP-44 plaintext is always UTF-8 safe.
+        b64 = Base.encode64(payload)
+        ciphertext = Crypto.nip44_encrypt(seckey, hex, b64)
+
+        {ciphertext,
+         [
+           ["t", @tag],
+           ["p", hex],
+           ["encryption", @enc_nip44]
+         ]}
+
+      :error ->
+        # Fall back to unencrypted so the frame still ships; peer_ref should have
+        # been normalized on save.
+        {Base.encode64(payload), [["t", @tag]]}
+    end
   end
 
   defp encode_content(_seckey, _peer, payload) do
@@ -88,27 +106,41 @@ defmodule Isthmus.Networks.Nostr.TunnelCarrier do
     content = event["content"] || ""
     tags = event["tags"] || []
 
-    encrypted? =
-      Enum.any?(tags, fn
-        ["encryption", "nip04" | _] -> true
-        _ -> false
-      end)
+    case encryption_scheme(tags) do
+      :nip44 -> decrypt_inner(content, event, :nip44)
+      :nip04 -> decrypt_inner(content, event, :nip04)
+      :none -> Base.decode64(content)
+    end
+  end
 
-    if encrypted? do
-      case Crypto.service_keypair() do
-        {:ok, seckey, _} ->
-          author = event["pubkey"]
+  defp encryption_scheme(tags) when is_list(tags) do
+    Enum.find_value(tags, :none, fn
+      ["encryption", @enc_nip44 | _] -> :nip44
+      ["encryption", @enc_nip04 | _] -> :nip04
+      _ -> nil
+    end)
+  end
 
-          case Crypto.nip04_decrypt(seckey, author, content) do
-            {:ok, b64} -> Base.decode64(b64)
-            other -> other
+  defp encryption_scheme(_), do: :none
+
+  defp decrypt_inner(content, event, scheme) do
+    case Crypto.service_keypair() do
+      {:ok, seckey, _} ->
+        author = event["pubkey"]
+
+        result =
+          case scheme do
+            :nip44 -> Crypto.nip44_decrypt(seckey, author, content)
+            :nip04 -> Crypto.nip04_decrypt(seckey, author, content)
           end
 
-        _ ->
-          {:error, :no_service_nsec}
-      end
-    else
-      Base.decode64(content)
+        case result do
+          {:ok, b64} -> Base.decode64(b64)
+          other -> other
+        end
+
+      _ ->
+        {:error, :no_service_nsec}
     end
   end
 
@@ -119,5 +151,12 @@ defmodule Isthmus.Networks.Nostr.TunnelCarrier do
       ["t", @tag | _] -> true
       _ -> false
     end)
+  end
+
+  defp peer_pubkey_hex(peer) do
+    case Isthmus.Networks.Nostr.parse_identity_ref(peer) do
+      {:ok, hex, _} -> {:ok, hex}
+      _ -> :error
+    end
   end
 end

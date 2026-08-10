@@ -268,6 +268,20 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
     :exit, _ -> nil
   end
 
+  # What the remote must enter as peer_ref for this carrier.
+  defp our_carrier_ref("nostr", _rns_dest), do: Isthmus.Nostr.Crypto.service_pubkey_hex()
+  defp our_carrier_ref("reticulum", dest) when is_binary(dest) and dest != "", do: dest
+  defp our_carrier_ref("reticulum", _), do: nil
+
+  defp our_carrier_ref(network, _) when network in ["meshcore", "meshtastic"] do
+    case LocalIdentity.for_network(network) do
+      %{status: :ok, refs: [ref | _]} -> ref
+      _ -> nil
+    end
+  end
+
+  defp our_carrier_ref(_, _), do: nil
+
   defp assign_local_identity(socket) do
     assign(socket, :local_identity, LocalIdentity.for_network(socket.assigns.carrier))
   end
@@ -435,7 +449,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
               <input
                 class="input input-bordered"
                 name="peer[peer_ref]"
-                placeholder="Remote's ref on the carrier network"
+                placeholder="Remote's ref (Nostr: npub or hex pubkey)"
                 required
               />
               <div class="md:col-span-2">
@@ -547,7 +561,11 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
               >
                 <h3 class="md:col-span-2 text-sm font-semibold">Edit tunnel peer</h3>
                 <.input field={@edit_form[:name]} label="Name" />
-                <.input field={@edit_form[:peer_ref]} label="Remote ref on carrier network" />
+                <.input
+                  field={@edit_form[:peer_ref]}
+                  label="Remote ref on carrier network"
+                  placeholder="Nostr: npub or 64-char hex"
+                />
                 <.input
                   field={@edit_form[:payload_network]}
                   type="select"
@@ -651,12 +669,14 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                     >
                       Their ref (peer_ref): {format_identity_ref(peer.carrier_network, peer.peer_ref)}
                     </p>
-                    <p :if={@local_tunnel_dest} class="font-mono opacity-60 break-all">
-                      Our tunnel dest: {@local_tunnel_dest}
-                      <span class="opacity-50">
-                        — they must use this as peer_ref on their side
-                      </span>
-                    </p>
+                    <%= if our_ref = our_carrier_ref(peer.carrier_network, @local_tunnel_dest) do %>
+                      <p class="font-mono opacity-60 break-all" title={our_ref}>
+                        Our ref: {format_identity_ref(peer.carrier_network, our_ref)}
+                        <span class="opacity-50">
+                          — they must use this as peer_ref on their side
+                        </span>
+                      </p>
+                    <% end %>
                     <ul class="mt-1 space-y-0.5 opacity-70">
                       <li>Outbound: {tunnel_outbound_label(health)}</li>
                       <li>Inbound: {tunnel_inbound_label(health)}</li>

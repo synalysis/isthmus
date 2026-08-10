@@ -184,48 +184,64 @@ defmodule Isthmus.Networks.Nostr.RelayPool do
   end
 
   def handle_call({:publish, event}, _from, state) do
-    case Governor.allow?(:nostr_metadata, :nostr, event["pubkey"] || "publish") do
+    # Tunnel frames (kind 21278) are high-frequency and already rate-limited by
+    # the Tunnel.Engine governor (tunnel_data / tunnel_control). Do NOT route
+    # them through :nostr_metadata — that class dedups on the service pubkey
+    # for 24h, which silently kills MeshCore/RNS-over-Nostr after the first
+    # publish.
+    case publish_allowed?(event) do
       {:drop, reason} ->
         {:reply, {:error, {:governor, reason}}, state}
 
       :ok ->
-        write_urls =
-          Relays.list_relays()
-          |> Enum.filter(&(&1.enabled and &1.write))
-          |> Enum.sort_by(& &1.priority)
-          |> Enum.map(& &1.url)
-          |> Enum.filter(&Map.has_key?(state.connections, &1))
+        {:reply, do_publish(event, state), state}
+    end
+  end
 
-        results =
-          Enum.map(write_urls, fn url ->
-            try do
-              case RelayConnection.publish(url, event) do
-                :ok -> {url, :ok}
-                other -> {url, other}
-              end
-            rescue
-              e -> {url, {:error, e}}
-            catch
-              :exit, reason -> {url, {:error, reason}}
-            end
-          end)
+  defp publish_allowed?(event) when is_map(event) do
+    kind = event["kind"] || event[:kind]
 
-        ok_count = Enum.count(results, fn {_u, r} -> r == :ok end)
+    if kind == Isthmus.Networks.Nostr.TunnelCarrier.kind() do
+      :ok
+    else
+      Governor.allow?(:nostr_metadata, :nostr, event["pubkey"] || "publish")
+    end
+  end
 
-        :telemetry.execute(
-          [:isthmus, :nostr, :publish],
-          %{ok: ok_count, total: length(results)},
-          %{}
-        )
+  defp do_publish(event, state) do
+    write_urls =
+      Relays.list_relays()
+      |> Enum.filter(&(&1.enabled and &1.write))
+      |> Enum.sort_by(& &1.priority)
+      |> Enum.map(& &1.url)
+      |> Enum.filter(&Map.has_key?(state.connections, &1))
 
-        reply =
-          cond do
-            write_urls == [] -> {:error, :no_write_relays}
-            ok_count > 0 -> {:ok, results}
-            true -> {:error, {:publish_failed, results}}
+    results =
+      Enum.map(write_urls, fn url ->
+        try do
+          case RelayConnection.publish(url, event) do
+            :ok -> {url, :ok}
+            other -> {url, other}
           end
+        rescue
+          e -> {url, {:error, e}}
+        catch
+          :exit, reason -> {url, {:error, reason}}
+        end
+      end)
 
-        {:reply, reply, state}
+    ok_count = Enum.count(results, fn {_u, r} -> r == :ok end)
+
+    :telemetry.execute(
+      [:isthmus, :nostr, :publish],
+      %{ok: ok_count, total: length(results)},
+      %{}
+    )
+
+    cond do
+      write_urls == [] -> {:error, :no_write_relays}
+      ok_count > 0 -> {:ok, results}
+      true -> {:error, {:publish_failed, results}}
     end
   end
 

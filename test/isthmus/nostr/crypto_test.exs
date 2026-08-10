@@ -12,6 +12,14 @@ defmodule Isthmus.Nostr.CryptoTest do
     assert {:ok, "hello isthmus"} = Crypto.nip04_decrypt(sk2, pk, ct)
   end
 
+  test "nip44 encrypt/decrypt round-trip via nostr_lib" do
+    {sk, pk} = Secp256k1.keypair(:xonly)
+    {sk2, pk2} = Secp256k1.keypair(:xonly)
+
+    ct = Crypto.nip44_encrypt(sk, pk2, "hello nip44")
+    assert {:ok, "hello nip44"} = Crypto.nip44_decrypt(sk2, pk, ct)
+  end
+
   test "nip04 works across odd-Y / even-Y keypairs after BIP340 normalize" do
     {sk_odd, sk_even} =
       Enum.reduce_while(1..200, {nil, nil}, fn _, {odd, even} ->
