@@ -203,6 +203,64 @@ defmodule Isthmus.Tunnel.EngineTest do
     assert result == {:error, :bridge_disabled}
   end
 
+  test "redundant MeshCore tunnels inject a packet only once" do
+    alias Isthmus.Networks.MeshCore.Packet
+
+    {:ok, nostr_peer} =
+      Tunnel.create_peer(%{
+        name: "Nostr MC",
+        peer_ref: "aa" <> String.duplicate("11", 31),
+        payload_network: "meshcore",
+        carrier_network: "meshtastic"
+      })
+
+    {:ok, rns_peer} =
+      Tunnel.create_peer(%{
+        name: "RNS MC",
+        peer_ref: "bb" <> String.duplicate("22", 31),
+        payload_network: "meshcore",
+        carrier_network: "meshtastic"
+      })
+
+    packet =
+      Packet.build(
+        Packet.route_flood(),
+        Packet.type_txt_msg(),
+        0,
+        <<>>,
+        :crypto.strong_rand_bytes(24)
+      )
+      |> Packet.encode()
+
+    deliver = fn peer ->
+      peer.tunnel_id
+      |> Frame.tunnel_id_from_string()
+      |> Frame.fragment(11, packet, 512)
+      |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1)))
+    end
+
+    deliver.(nostr_peer)
+    _ = :sys.get_state(Engine)
+
+    assert_receive {:tunnel_delivered,
+                    %{tunnel_id: tid1, payload_network: "meshcore", result: first}},
+                   1_000
+
+    assert tid1 == nostr_peer.tunnel_id
+    # First path attempts inject (bridge may be offline in tests).
+    assert first == {:error, :bridge_disabled}
+
+    deliver.(rns_peer)
+    _ = :sys.get_state(Engine)
+
+    assert_receive {:tunnel_delivered,
+                    %{tunnel_id: tid2, payload_network: "meshcore", result: second}},
+                   1_000
+
+    assert tid2 == rns_peer.tunnel_id
+    assert second == {:ok, :duplicate}
+  end
+
   test "MeshCore advert via tunnel is recorded with tunnel via" do
     alias Isthmus.Announce.Sightings
     alias Isthmus.Networks.MeshCore.{Advert, Crypto}

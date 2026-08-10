@@ -92,6 +92,7 @@ defmodule Isthmus.Tunnel.BridgeTest do
       |> Packet.encode()
 
     assert :ok = Bridge.mark_forwarded(injected)
+    assert :duplicate = Bridge.mark_forwarded(injected)
     assert :ok = Bridge.forward_packet("meshcore", echo, %{source: "bridge"})
 
     due = Outbox.due(50) |> Enum.filter(&(&1.channel == "tunnel:#{mc.tunnel_id}"))

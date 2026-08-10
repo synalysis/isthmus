@@ -474,63 +474,89 @@ defmodule Isthmus.Tunnel.Engine do
 
     case Repo.get_by(Peer, tunnel_id: tunnel_hex) do
       %Peer{} = peer ->
-        payload_net = network_atom(peer.payload_network)
-        adapter = Networks.adapter!(payload_net)
+        # MeshCore: collapse redundant-tunnel ingress (Nostr + Reticulum, etc.).
+        # First arrival marks + injects; later arrivals still get a carrier
+        # sighting and tunnel ACK (caller), but skip a second island inject.
+        if peer.payload_network == "meshcore" and Bridge.mark_forwarded(payload) == :duplicate do
+          result = {:ok, :duplicate}
 
-        # Record the injected packet as already-bridged BEFORE it hits the island,
-        # so the repeater's echo isn't re-forwarded back down the tunnel (loop).
-        if peer.payload_network == "meshcore" do
-          Bridge.mark_forwarded(payload)
+          Logger.debug("tunnel→meshcore skip duplicate inject via #{tunnel_hex} (#{peer.name})")
+
+          record_inbound_sighting(peer, tunnel_hex, result)
+
+          Phoenix.PubSub.broadcast(
+            Isthmus.PubSub,
+            "tunnel:events",
+            {:tunnel_delivered,
+             %{
+               tunnel_id: tunnel_hex,
+               payload_network: peer.payload_network,
+               bytes: byte_size(payload),
+               result: result
+             }}
+          )
+
+          result
+        else
           # Record advert identity here (true ingress), before any radio echo
           # would mis-attribute the same packet as a local bridge hear.
-          maybe_record_tunnel_meshcore_advert(peer, tunnel_hex, payload)
-        end
-
-        opts = %{
-          direction: :from_tunnel,
-          from_tunnel: true,
-          tunnel_id: tunnel_hex
-        }
-
-        # inject_raw/2 replays a foreign packet verbatim; send_raw/2 would
-        # re-originate it from our own identity, which is wrong for a payload.
-        result =
-          cond do
-            exports?(adapter, :inject_raw, 2) ->
-              apply(adapter, :inject_raw, [payload, opts])
-
-            exports?(adapter, :send_raw, 2) ->
-              adapter.send_raw(payload, opts)
-
-            true ->
-              Logger.warning(
-                "tunnel delivered #{byte_size(payload)} bytes for #{tunnel_hex} but #{payload_net} has no inject_raw/2 or send_raw/2"
-              )
-
-              {:error, :adapter_no_raw}
+          if peer.payload_network == "meshcore" do
+            maybe_record_tunnel_meshcore_advert(peer, tunnel_hex, payload)
           end
 
-        log_delivery(peer, tunnel_hex, byte_size(payload), result)
-        record_inbound_sighting(peer, tunnel_hex, result)
-
-        Phoenix.PubSub.broadcast(
-          Isthmus.PubSub,
-          "tunnel:events",
-          {:tunnel_delivered,
-           %{
-             tunnel_id: tunnel_hex,
-             payload_network: peer.payload_network,
-             bytes: byte_size(payload),
-             result: result
-           }}
-        )
-
-        result
+          inject_payload_to_island(peer, tunnel_hex, payload)
+        end
 
       nil ->
         Logger.debug("inbound frame for unknown tunnel #{tunnel_hex}")
         :ok
     end
+  end
+
+  defp inject_payload_to_island(%Peer{} = peer, tunnel_hex, payload) do
+    payload_net = network_atom(peer.payload_network)
+    adapter = Networks.adapter!(payload_net)
+
+    opts = %{
+      direction: :from_tunnel,
+      from_tunnel: true,
+      tunnel_id: tunnel_hex
+    }
+
+    # inject_raw/2 replays a foreign packet verbatim; send_raw/2 would
+    # re-originate it from our own identity, which is wrong for a payload.
+    result =
+      cond do
+        exports?(adapter, :inject_raw, 2) ->
+          apply(adapter, :inject_raw, [payload, opts])
+
+        exports?(adapter, :send_raw, 2) ->
+          adapter.send_raw(payload, opts)
+
+        true ->
+          Logger.warning(
+            "tunnel delivered #{byte_size(payload)} bytes for #{tunnel_hex} but #{payload_net} has no inject_raw/2 or send_raw/2"
+          )
+
+          {:error, :adapter_no_raw}
+      end
+
+    log_delivery(peer, tunnel_hex, byte_size(payload), result)
+    record_inbound_sighting(peer, tunnel_hex, result)
+
+    Phoenix.PubSub.broadcast(
+      Isthmus.PubSub,
+      "tunnel:events",
+      {:tunnel_delivered,
+       %{
+         tunnel_id: tunnel_hex,
+         payload_network: peer.payload_network,
+         bytes: byte_size(payload),
+         result: result
+       }}
+    )
+
+    result
   end
 
   defp log_delivery(peer, tunnel_hex, bytes, result) do

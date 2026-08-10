@@ -126,8 +126,9 @@ defmodule Isthmus.Networks.MeshCore.BridgeLink do
       when not is_nil(t) do
     case BridgeFrame.encode(packet) do
       {:ok, frame} ->
-        # Suppress the echo before it can reach us.
-        :ok = Tunnel.Bridge.mark_forwarded(packet)
+        # Suppress the echo before it can reach us. `:duplicate` means a tunnel
+        # (or earlier inject) already marked this packet — still safe to TX.
+        _ = Tunnel.Bridge.mark_forwarded(packet)
 
         case state.transport_mod.write(t, frame) do
           :ok ->

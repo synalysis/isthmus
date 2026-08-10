@@ -114,10 +114,13 @@ defmodule Isthmus.Tunnel.Bridge do
 
   Call this before injecting a tunnel-delivered packet back onto an island, so
   that if the island echoes it to us we don't send it back down the tunnel.
+
+  Returns `:ok` the first time a path-insensitive packet hash is seen, or
+  `:duplicate` if it was already marked (e.g. arrived earlier via another
+  redundant tunnel). Callers should skip a second island inject on `:duplicate`.
   """
   def mark_forwarded(packet) when is_binary(packet) and byte_size(packet) > 0 do
-    _ = recently_seen_packet?("meshcore", packet)
-    :ok
+    if recently_seen_packet?("meshcore", packet), do: :duplicate, else: :ok
   end
 
   def mark_forwarded(_), do: :ok
