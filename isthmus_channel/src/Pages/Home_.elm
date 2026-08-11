@@ -173,7 +173,7 @@ view _ =
                     ]
                 ]
                 [ teaser "How it works"
-                    "Tunnels carry opaque packets. The identity gateway mints proxies or fans out among real attachments."
+                    "Tunnels carry opaque packets. Registration and bridge groups translate identities across networks."
                     Route.Path.HowItWorks
                     "Read the model"
                     , teaser "Networks"
