@@ -15,7 +15,7 @@ email =
 
 npub : String
 npub =
-    "npub1sthmus7ltsyk9c6rdyuaga32jdr868u4qg2lmfjg3dl3g597ctdqa0uudg"
+    "npub1synaly7cg5mk02s3uapqday2a63s60t95wpunrfy8vp3l36ydtasdlmcuj"
 
 
 view : Html msg

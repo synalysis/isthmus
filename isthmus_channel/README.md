@@ -59,4 +59,4 @@ After the first deploy, attach the custom domain `isthmus.channel` in the Render
 ## Contact (shown on the site)
 
 - Email: `hello@isthmus.channel`
-- Nostr: `npub1sthmus7ltsyk9c6rdyuaga32jdr868u4qg2lmfjg3dl3g597ctdqa0uudg`
+- Nostr: `npub1synaly7cg5mk02s3uapqday2a63s60t95wpunrfy8vp3l36ydtasdlmcuj`
