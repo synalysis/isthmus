@@ -96,7 +96,7 @@ view _ =
                         [ Html.text "For MeshCore island bridges, whole packets are replayed: discovery, acknowledgements, and direct messages included. Nodes on the far island show up as ordinary mesh neighbours. The message contents stay encrypted between the radios that own them; Isthmus forwards sealed frames and does not need to open them."
                         ]
                     , Html.p []
-                        [ Html.text "Tunnels need the right firmware and setup on the radio side (bridge-capable MeshCore firmware, not a stock companion-only build). Do not install an internet tunnel where the MeshCore community does not want one."
+                        [ Html.text "Tunnels need repeater firmware from the Isthmus MeshCore fork (not a stock companion build). Do not install an internet tunnel where the MeshCore community does not want one."
                         ]
                     , Html.h2 [] [ Html.text "Identity gateway (registration)" ]
                     , Html.p []

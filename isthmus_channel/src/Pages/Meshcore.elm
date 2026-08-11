@@ -131,10 +131,12 @@ view _ =
                         [ Html.p [ classes [ Tw.m s0, Tw.mb s3 ] ]
                             [ Html.strong [ classes [ Tw.text_simple ink ] ] [ Html.text "Bridge firmware required. " ]
                             , Html.text "Each island needs a MeshCore "
-                            , Html.strong [] [ Html.text "repeater (or bridge-capable) device" ]
-                            , Html.text " flashed with firmware built for the RS232/USB packet bridge (e.g. "
-                            , Html.code [] [ Html.text "WITH_RS232_BRIDGE" ]
-                            , Html.text "). Upstream does not ship prebuilt bridge binaries for every board — you build and flash them. Isthmus then owns the packet CDC/serial port and tunnels frames between islands. Stock companion firmware is not enough for this path."
+                            , Html.strong [] [ Html.text "repeater" ]
+                            , Html.text " flashed from the Isthmus fork ("
+                            , Docs.meshcoreFork "synalysis/MeshCore"
+                            , Html.text ") — not stock companion firmware, and not upstream "
+                            , Html.code [] [ Html.text "meshcore-dev" ]
+                            , Html.text " binaries. USB dual-CDC builds (CLI on CDC 0, packets on CDC 1, one cable) are in the tree for Seeed Wio Tracker L1, RAK4631, and SenseCAP Solar. Other repeaters can use a UART/RS232 bridge with a USB-TTL adapter. Isthmus then owns the packet serial port and tunnels frames between islands."
                             ]
                         , Html.p [ classes [ Tw.m s0, Tw.mb s3 ] ]
                             [ Html.strong [ classes [ Tw.text_simple ink ] ] [ Html.text "E2E on tunnels. " ]

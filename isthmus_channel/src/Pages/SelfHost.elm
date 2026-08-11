@@ -192,9 +192,9 @@ docker compose up --build"""
                                 , Html.text " (BLE transport is not implemented yet)"
                                 ]
                             , Html.li []
-                                [ Html.text "Island bridges need repeater firmware built with "
-                                , Html.code [] [ Html.text "WITH_RS232_BRIDGE" ]
-                                , Html.text " — see the "
+                                [ Html.text "Island bridges: flash a USB-serial repeater from "
+                                , Docs.meshcoreFork "synalysis/MeshCore"
+                                , Html.text " (Wio Tracker L1, RAK4631, or SenseCAP Solar) — "
                                 , Docs.meshcoreBridgeFirmwareBuild "build and flash guide"
                                 ]
                             ]

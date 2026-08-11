@@ -1,5 +1,6 @@
 module Components.Docs exposing
     ( meshcoreBridgeFirmwareBuild
+    , meshcoreFork
     , meshcoreIslandBridge
     , registrationAndBridges
     , reticulum
@@ -18,6 +19,16 @@ link : String -> String -> Html msg
 link path label =
     Html.a
         [ Attr.href (githubBlob path)
+        , Attr.target "_blank"
+        , Attr.rel "noopener noreferrer"
+        ]
+        [ Html.text label ]
+
+
+meshcoreFork : String -> Html msg
+meshcoreFork label =
+    Html.a
+        [ Attr.href "https://github.com/synalysis/MeshCore"
         , Attr.target "_blank"
         , Attr.rel "noopener noreferrer"
         ]

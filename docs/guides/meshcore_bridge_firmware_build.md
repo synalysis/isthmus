@@ -11,36 +11,33 @@ For how the bridge fits into the wider system, see
 
 ## Source of truth
 
-The firmware lives in a **MeshCore fork** checked out at
-`~/projects/meshcore-isthmus` (branch `isthmus-bridge`). On top of upstream
-MeshCore `v1.16.0` it adds:
+Build from **[synalysis/MeshCore](https://github.com/synalysis/MeshCore)**
+(`main`). That fork is upstream MeshCore plus the Isthmus USB-serial island
+bridge (merged in
+[PR #1](https://github.com/synalysis/MeshCore/pull/1)):
 
-- **USB‑CDC bridge transport** (`feat: add USB CDC bridge transport support`)
-  and the Wio Tracker L1 bridge env (`Add Wio Tracker L1 USB serial bridge
-  repeater env`).
-- **Bridge framing, frame queue and tx pacing helpers** + the nRF52 RS232 baud
-  fix and the "queue instead of drop" fix.
-- **Bridge stats CLI**: `get bridge.rxstats`, `get bridge.txstats`, and a
-  top‑level `bridge.stats reset`.
-- A **custom repeater UI** for `examples/simple_repeater` — a 4‑screen,
-  joystick‑navigable display (see [below](#the-custom-repeater-ui)).
+- **USB‑CDC bridge transport** — second CDC for raw packets (CLI stays on CDC 0)
+- USB-serial repeater envs for **Wio Tracker L1**, **RAK4631**, and **SenseCAP Solar**
+- Framing / frame queue / tx pacing, nRF52 RS232 baud fix, CLI stats
+  (`get bridge.rxstats`, `get bridge.txstats`, `bridge.stats reset`)
 
-> **Important — some of this is uncommitted.** The transport/queue/stats work is
-> committed, but the custom UI (`examples/simple_repeater/UITask.{cpp,h}`,
-> `MyMesh.h`) and the `-D UI_HAS_JOYSTICK=1` line in the Wio env are currently
-> **working‑tree changes**, and `tools/dump_bridge_vectors.cpp` is untracked.
-> Commit them (and push to your own fork) before relying on this for the long
-> term or sharing with others — otherwise the joystick UI can be lost on a
-> `git checkout`/reset. See [Making it shareable](#making-it-shareable).
+Upstream [meshcore-dev/MeshCore](https://github.com/meshcore-dev/MeshCore) does
+**not** ship these USB-serial island-bridge builds.
+
+```bash
+git clone https://github.com/synalysis/MeshCore.git
+cd MeshCore
+```
 
 ## Versions pinned by this recipe
 
 | Component | Value |
 | --- | --- |
-| Upstream base | MeshCore `v1.16.0` |
-| Board | `seeed-wio-tracker-l1`, SoftDevice S140 7.3.0 |
+| Firmware repo | `synalysis/MeshCore` `main` |
+| Board (this recipe) | `seeed-wio-tracker-l1`, SoftDevice S140 7.3.0 |
 | PlatformIO Core | 6.1.19 |
 | PlatformIO env | `WioTrackerL1_repeater_bridge_usbserial` |
+| Other USB-serial envs | `RAK_4631_repeater_bridge_usbserial`, `SenseCap_Solar_repeater_bridge_usbserial` |
 
 ## 0. Prerequisites
 
@@ -76,7 +73,6 @@ build_flags =
   -D ADMIN_PASSWORD='"password"'
   -D MAX_NEIGHBOURS=50
   -D DISPLAY_CLASS=SH1106Display
-  -D UI_HAS_JOYSTICK=1
   -D WITH_RS232_BRIDGE=bridgeSerial
   -D WITH_USB_SERIAL_BRIDGE
   -D CFG_TUD_CDC=2
@@ -90,40 +86,15 @@ Notes:
 - `WITH_RS232_BRIDGE` names a `Stream` object (not a boolean); it points at the
   second USB‑CDC instance `bridgeSerial`, which is why `WITH_USB_SERIAL_BRIDGE`
   and `CFG_TUD_CDC=2` are set. That second CDC carries the raw packet stream.
-- `UI_HAS_JOYSTICK=1` enables the joystick navigation in the custom UI. Without
-  it the UI falls back to the single user button (which just wakes the OLED).
+- The published fork uses the **stock** repeater OLED UI. Bridge health is on
+  the CLI (`get bridge.rxstats` / `get bridge.txstats`).
 - `MomentaryButton.cpp` is compiled via `arduino_base`, so it doesn't need to be
   listed here.
 
-## 2. The custom repeater UI
-
-`examples/simple_repeater/UITask.{cpp,h}` replace the stock single‑screen UI
-with **four screens**, and `UITask.h` sets `#define UI_HAS_BRIDGE 1` so the
-bridge page is always present:
-
-| # | Screen | Shows |
-| --- | --- | --- |
-| 1/4 | **Home** | node name, FREQ, BW/SF, CR/TX power |
-| 2/4 | **Radio** | packets RX/TX, last RSSI/SNR |
-| 3/4 | **Bridge** | bridge state (running/stopped), `IN` delivered, `DUP` |
-| 4/4 | **Node** | uptime, battery mV, firmware version |
-
-Navigation (when `UI_HAS_JOYSTICK`):
-
-- **Joystick left / right** — previous / next screen (wraps around).
-- **User button (joystick press)** click — next screen; **long‑press** — turn the
-  OLED off.
-- **Back button** — jump to Home.
-- Any input first **wakes** the OLED if it auto‑off'd (30 s timeout); the header
-  shows the page indicator (`1/4` … `4/4`).
-
-The bridge page reads live counters via `MyMesh::getBridge()`; the same data is
-available over the CLI (next section).
-
-## 3. Build and create the UF2
+## 2. Build and create the UF2
 
 ```bash
-cd ~/projects/meshcore-isthmus
+cd MeshCore   # the synalysis/MeshCore clone
 ENV=WioTrackerL1_repeater_bridge_usbserial
 
 ~/.venvs/pio/bin/pio run -e "$ENV"
@@ -133,7 +104,7 @@ ENV=WioTrackerL1_repeater_bridge_usbserial
 cp .pio/build/$ENV/firmware.uf2 ~/Downloads/isthmus-bridge-WioTrackerL1.uf2
 ```
 
-## 4. Flash the UF2
+## 3. Flash the UF2
 
 The nRF52840 UF2 bootloader appears as a USB mass‑storage volume labelled
 **`TRACKER L1`**; dropping `firmware.uf2` on it flashes and reboots the board.
@@ -193,7 +164,7 @@ done
 # ttyACM1 -> ID_USB_INTERFACE_NUM=02   (raw packet bridge)
 ```
 
-## 5. Configure the device over the CLI
+## 4. Configure the device over the CLI
 
 Talk to **CDC 0** (interface `00`, usually `/dev/ttyACM0`) at 115200. Commands
 are newline‑terminated; replies come back as `  -> …`.
@@ -228,7 +199,7 @@ Run the two islands on **different frequencies** (e.g. A 906.875, B 910.5). At
 62.5 kHz bandwidth the companions physically cannot hear each other, so anything
 that arrives proves it came through the bridge.
 
-## 6. Hand off to Isthmus
+## 5. Hand off to Isthmus
 
 Plug the board into the Isthmus host. Isthmus auto‑detects roles on USB serial:
 the CLI CDC becomes `BridgeCLI` (radio config) and its sibling CDC becomes
@@ -243,51 +214,6 @@ attached:
 See [`meshcore_island_bridge.md`](./meshcore_island_bridge.md) for tunnel setup,
 carrier delivery (broadcast vs addressed), and staged bring‑up.
 
-## Making it shareable
-
-For "anyone can rebuild this," the fork's changes need to be committed and
-pushed somewhere clonable:
-
-```bash
-cd ~/projects/meshcore-isthmus
-git add examples/simple_repeater/UITask.cpp \
-        examples/simple_repeater/UITask.h \
-        examples/simple_repeater/MyMesh.h \
-        variants/wio-tracker-l1/platformio.ini \
-        tools/dump_bridge_vectors.cpp
-git commit -m "Isthmus bridge: 4-screen joystick repeater UI + Wio joystick env"
-
-# point origin at your own fork, then:
-git push -u <your-fork> isthmus-bridge
-```
-
-Then this whole guide reduces to: clone that fork/branch → §0 install PlatformIO
-→ §3 build → §4 flash → §5 configure.
-
-## Appendix: reconstructing the transport from upstream (no fork)
-
-If you only have upstream MeshCore and want the **bridge transport** (not the
-custom 4‑screen UI), you can assemble it from PRs:
-
-```bash
-git clone --filter=blob:none https://github.com/meshcore-dev/MeshCore.git
-cd MeshCore
-git fetch origin pull/2959/head:pr-2959            # 2nd USB-CDC bridge stream
-git checkout -b isthmus-bridge pr-2959
-git fetch origin pull/3018/head:pr-3018 pull/3038/head:pr-3038
-git cherry-pick 3d168838                            # nRF52 RS232 baud init (#3018)
-git cherry-pick beb91173                            # framing/queue/tx pacing (#3038)
-git cherry-pick 7babfaaa                            # queue instead of drop  (#3038)
-```
-
-Resolve the `beb91173` conflicts: in root `platformio.ini` keep the incoming
-`test_filter` lines, and `git rm -f variants/heltec_rc32/platformio.ini`. Then
-add `+<helpers/bridges/BridgeFrameQueue.cpp>` and
-`+<helpers/bridges/BridgeTxQueue.cpp>` to `[arduino_base] build_src_filter`, and
-add the env from §1. This yields a working bridge with the **stock** repeater UI
-(single screen, button wakes OLED) — the 4‑screen joystick UI only exists in the
-fork above.
-
 ## Troubleshooting
 
 - **Second CDC doesn't enumerate.** Fall back to a hardware UART: drop
@@ -298,6 +224,7 @@ fork above.
   `dialout` group for this session — prefix commands with `sg dialout -c '…'`
   or add yourself to the group and re‑login.
 - **`get bridge.rxstats` says `Unknown command`.** You're not running this fork
-  (stock firmware) — rebuild from `~/projects/meshcore-isthmus`.
+  (stock upstream firmware) — rebuild from
+  [synalysis/MeshCore](https://github.com/synalysis/MeshCore).
 - **1200 bps touch does nothing.** The current firmware may not support it; use
   the physical double‑tap reset instead.

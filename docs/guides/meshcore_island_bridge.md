@@ -40,58 +40,20 @@ The serial path is **not** encrypted. `BridgeCodec`'s XOR secret applies to the 
 
 ## Firmware
 
-> For a full, copy‑pasteable build‑and‑flash recipe (PlatformIO install, cherry‑picks, conflict resolution, UF2 flashing, and CLI config), see [`meshcore_bridge_firmware_build.md`](./meshcore_bridge_firmware_build.md). The summary below is the short version.
+> For a full, copy‑pasteable build‑and‑flash recipe (PlatformIO install, UF2 flashing, and CLI config), see [`meshcore_bridge_firmware_build.md`](./meshcore_bridge_firmware_build.md). The summary below is the short version.
 
-Repeater firmware built with `WITH_RS232_BRIDGE`. Upstream ships **no** prebuilt bridge binaries for any board, so a build is unavoidable.
+Repeater firmware from **[synalysis/MeshCore](https://github.com/synalysis/MeshCore)** (`main`). Upstream MeshCore does not ship USB-serial island-bridge binaries.
 
-Use MeshCore PR [#2959](https://github.com/meshcore-dev/MeshCore/pull/2959), which puts the bridge stream on a second USB CDC interface — CDC 0 stays the CLI, CDC 1 carries packets. One plain USB cable, no UART wiring, no USB-TTL adapter.
+USB dual-CDC (CDC 0 = CLI, CDC 1 = packets — one cable, no UART wiring):
 
 ```bash
-git clone https://github.com/meshcore-dev/MeshCore.git
+git clone https://github.com/synalysis/MeshCore.git
 cd MeshCore
-git fetch origin pull/2959/head:pr-2959 && git checkout -b isthmus-bridge pr-2959
-
-# Bridge fixes worth having; both touch code we depend on
-git cherry-pick 3d168838   # nRF52 RS232 bridge baud init (#3018)
-git cherry-pick beb91173   # bridge framing/queue helpers (#3038)
-git cherry-pick 7babfaaa   # queue RS232 frames instead of dropping them (#3038)
-```
-
-`beb91173` conflicts only in `platformio.ini` and an unrelated variant; keep its `test_filter` lines. It also adds two sources that the Arduino targets do not pick up on their own, so add them to `arduino_base.build_src_filter`:
-
-```ini
-  +<helpers/bridges/BridgeFrameQueue.cpp>
-  +<helpers/bridges/BridgeTxQueue.cpp>
-```
-
-Then add a Wio Tracker env. `WITH_RS232_BRIDGE` names a Stream object rather than being a boolean — `MyMesh.cpp` does `bridge(&_prefs, WITH_RS232_BRIDGE, ...)` — which is why it points at the PR's `bridgeSerial` CDC instance:
-
-```ini
-[env:WioTrackerL1_repeater_bridge_usbserial]
-extends = WioTrackerL1
-build_src_filter = ${WioTrackerL1.build_src_filter}
-  +<helpers/bridges/RS232Bridge.cpp>
-  +<../examples/simple_repeater>
-build_flags =
-  ${WioTrackerL1.build_flags}
-  -D ADVERT_NAME='"Isthmus Bridge"'
-  -D ADMIN_PASSWORD='"password"'
-  -D MAX_NEIGHBOURS=50
-  -D DISPLAY_CLASS=SH1106Display
-  -D WITH_RS232_BRIDGE=bridgeSerial
-  -D WITH_USB_SERIAL_BRIDGE
-  -D CFG_TUD_CDC=2
-  -UENV_INCLUDE_GPS
-lib_deps = ${WioTrackerL1.lib_deps}
-  adafruit/RTClib @ ^2.1.3
-```
-
-```bash
 pio run -e WioTrackerL1_repeater_bridge_usbserial
 pio run -e WioTrackerL1_repeater_bridge_usbserial -t create_uf2
 ```
 
-The Isthmus fork ships a **custom repeater UI** (`examples/simple_repeater/UITask.*`) with four joystick‑navigable screens — **Home / Radio / Bridge / Node** — enabled by `-D UI_HAS_JOYSTICK=1` in the env above. It also adds bridge stats CLI commands (`get bridge.rxstats`, `get bridge.txstats`, `bridge.stats reset`). See the [build guide](./meshcore_bridge_firmware_build.md) for the full env, the UI, and how to build/commit it.
+Other USB-serial repeater envs in the same repo: `RAK_4631_repeater_bridge_usbserial`, `SenseCap_Solar_repeater_bridge_usbserial`. CLI stats: `get bridge.rxstats`, `get bridge.txstats`, `bridge.stats reset`.
 
 Flash by double-tap reset and dragging `firmware.uf2` onto the mass-storage volume (or use the 1200 bps‑touch software trigger described in the build guide).
 
