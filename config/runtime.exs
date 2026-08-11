@@ -124,10 +124,19 @@ if config_env() == :prod do
   config :isthmus, vault_secret: vault_secret
   config :isthmus, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
 
+  # :force_ssl is compile-time (config/prod.exs). Do not set it here.
+  # FORCE_SSL=false only adjusts generated URLs for plain-HTTP Docker.
   force_ssl? = System.get_env("FORCE_SSL", "true") != "false"
 
-  endpoint_config = [
-    url: [host: host, port: 443, scheme: "https"],
+  url =
+    if force_ssl? do
+      [host: host, port: 443, scheme: "https"]
+    else
+      [host: host, port: port, scheme: "http"]
+    end
+
+  config :isthmus, IsthmusWeb.Endpoint,
+    url: url,
     http: [
       # Bind all interfaces (IPv6 dual-stack) for containers / Render.
       ip: {0, 0, 0, 0, 0, 0, 0, 0},
@@ -135,24 +144,4 @@ if config_env() == :prod do
     ],
     secret_key_base: secret_key_base,
     check_origin: check_origin
-  ]
-
-  endpoint_config =
-    if force_ssl? do
-      Keyword.put(endpoint_config, :force_ssl,
-        rewrite_on: [:x_forwarded_proto],
-        exclude: [
-          paths: ["/healthz", "/readyz", "/metrics"],
-          hosts: ["localhost", "127.0.0.1"]
-        ]
-      )
-    else
-      # Local Docker / plain HTTP without a TLS terminator.
-      Keyword.merge(endpoint_config,
-        url: [host: host, port: port, scheme: "http"],
-        force_ssl: false
-      )
-    end
-
-  config :isthmus, IsthmusWeb.Endpoint, endpoint_config
 end

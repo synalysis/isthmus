@@ -6,7 +6,9 @@ services:
     environment:
       PORT: "4000"
       PHX_HOST: ${PHX_HOST:-localhost}
+      HOME: /data
       DATABASE_PATH: /data/isthmus.db
+      ISTHMUS_RNS_CONFIGDIR: /data/reticulum
       SECRET_KEY_BASE: ${SECRET_KEY_BASE:?Set SECRET_KEY_BASE}
       ISTHMUS_VAULT_SECRET: ${ISTHMUS_VAULT_SECRET:?Set ISTHMUS_VAULT_SECRET}
       ISTHMUS_ADMIN_NPUBS: ${ISTHMUS_ADMIN_NPUBS:-}
@@ -21,7 +23,7 @@ services:
       test:
         [
           "CMD",
-          "sh",
+          "bash",
           "-c",
           "exec 3<>/dev/tcp/127.0.0.1/4000 && printf 'GET /healthz HTTP/1.0\\r\\n\\r\\n' >&3 && cat <&3 | grep -q ok"
         ]
