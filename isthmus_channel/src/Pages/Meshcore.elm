@@ -136,11 +136,15 @@ view _ =
                             , Html.code [] [ Html.text "WITH_RS232_BRIDGE" ]
                             , Html.text "). Upstream does not ship prebuilt bridge binaries for every board — you build and flash them. Isthmus then owns the packet CDC/serial port and tunnels frames between islands. Stock companion firmware is not enough for this path."
                             ]
-                        , Html.p [ classes [ Tw.m s0 ] ]
+                        , Html.p [ classes [ Tw.m s0, Tw.mb s3 ] ]
                             [ Html.strong [ classes [ Tw.text_simple ink ] ] [ Html.text "E2E on tunnels. " ]
                             , Html.text "Island-bridge tunnels forward opaque packets; message content stays end-to-end encrypted between MeshCore endpoints. That is unlike registration/bridge "
                             , Html.strong [] [ Html.text "groups" ]
                             , Html.text ", where Isthmus must decrypt and re-encrypt to translate — those gateways belong on machines you fully control, not a shared VPS."
+                            ]
+                        , Html.p [ classes [ Tw.m s0 ] ]
+                            [ Html.strong [ classes [ Tw.text_simple ink ] ] [ Html.text "Ask first. " ]
+                            , Html.text "Do not install an internet tunnel on a MeshCore mesh whose community does not want one. Many operators keep their island on RF only; bridging it over IP mixes regions and airtime they did not agree to share."
                             ]
                         ]
                     , Html.p []
