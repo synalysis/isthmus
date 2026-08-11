@@ -26,8 +26,19 @@ const extractorConfig = path.join(
   "extractor",
 )
 
+const localBinDir = path.join(root, "node_modules", ".bin")
+
+function withLocalBinEnv(env = process.env) {
+  const pathKey = Object.keys(env).find((k) => k.toUpperCase() === "PATH") || "PATH"
+  const current = env[pathKey] || ""
+  return {
+    ...env,
+    [pathKey]: `${localBinDir}${path.delimiter}${current}`,
+  }
+}
+
 function bin(name) {
-  const local = path.join(root, "node_modules", ".bin", name)
+  const local = path.join(localBinDir, name)
   if (fs.existsSync(local)) return local
   return name
 }
@@ -53,6 +64,7 @@ function extractClasses() {
         encoding: "utf8",
         maxBuffer: 20 * 1024 * 1024,
         stdio: ["ignore", "pipe", "pipe"],
+        env: withLocalBinEnv(),
       },
     )
     const result = JSON.parse(output)
@@ -67,9 +79,14 @@ function extractClasses() {
         // fall through
       }
     }
-    console.warn("[tailwind] class extraction failed; compiling with empty safelist")
-    if (error.stderr) console.warn(String(error.stderr).slice(0, 500))
-    return []
+    const detail = [error.stderr, error.stdout, error.message]
+      .filter(Boolean)
+      .map(String)
+      .join("\n")
+      .slice(0, 1500)
+    throw new Error(
+      `Tailwind class extraction failed (is the elm binary installed?).\n${detail}`,
+    )
   }
 }
 
