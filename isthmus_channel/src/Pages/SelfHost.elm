@@ -140,7 +140,7 @@ docker compose up --build"""
                         , codeBlock
                             """export ISTHMUS_ADMIN_NPUBS=npub1...
 ./bin/dev
-# open http://localhost:4000"""
+# open http://localhost:4567"""
                         , Html.h2 [] [ Html.text "5. Log in with AKA Profiles" ]
                         , Html.ol []
                             [ Html.li []

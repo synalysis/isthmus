@@ -17,7 +17,7 @@ export ISTHMUS_ADMIN_NPUBS=npub1youradminkeyhere
 ./bin/dev
 ```
 
-Visit [http://localhost:4000](http://localhost:4000) (override with `PORT=4005 ./bin/dev`).
+Visit [http://localhost:4567](http://localhost:4567) (override with `PORT=4005 ./bin/dev`).
 
 - `/login` — NIP-07 sign-in
 - `/register` / `/me` — self-service identity + QR handoff
@@ -60,7 +60,7 @@ The Blueprint is the public site only. Self-host the Phoenix gateway with Docker
 
 | Variable | Purpose |
 |---|---|
-| `PORT` | HTTP listen port (Render/Docker default 4000) |
+| `PORT` | HTTP listen port (local Mix default 4567; Docker often 4000) |
 | `PHX_HOST` | Public hostname (cookies, URLs, LiveView) |
 | `RENDER_EXTERNAL_HOSTNAME` | Used as `PHX_HOST` fallback on Render |
 | `DATABASE_PATH` | SQLite file path (use a persistent volume/disk) |
