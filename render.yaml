@@ -7,7 +7,7 @@ services:
     name: isthmus-channel
     runtime: static
     rootDir: isthmus_channel
-    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm run build
+    buildCommand: pnpm install --frozen-lockfile && pnpm run build
     staticPublishPath: isthmus_channel/dist
     buildFilter:
       paths:

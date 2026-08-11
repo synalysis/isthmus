@@ -50,7 +50,7 @@ The repo-root `render.yaml` defines a static site service `isthmus-channel`:
 | Setting | Value |
 |---|---|
 | Root directory | `isthmus_channel` |
-| Build command | `corepack enable && pnpm install --frozen-lockfile && pnpm run build` |
+| Build command | `pnpm install --frozen-lockfile && pnpm run build` |
 | Publish path | `isthmus_channel/dist` |
 | SPA rewrite | `/*` → `/index.html` |
 
