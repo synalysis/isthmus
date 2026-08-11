@@ -1,0 +1,22 @@
+{
+  "name": "isthmus_channel",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isthmus public site — built with Elm Land",
+  "packageManager": "pnpm@11.20.0",
+  "scripts": {
+    "gen:tailwind": "node scripts/tailwind.mjs",
+    "css:watch": "node scripts/tailwind.mjs --watch",
+    "dev": "pnpm gen:tailwind && concurrently -k -n css,elm -c teal,magenta \"pnpm css:watch\" \"PORT=${PORT:-4568} elm-land server\"",
+    "build": "pnpm gen:tailwind && elm-land build",
+    "start": "pnpm dev"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.2.2",
+    "concurrently": "^9.1.2",
+    "elm-land": "^0.20.1",
+    "elm-review": "^2.13.5",
+    "elm-tailwind-classes": "^0.6.4",
+    "tailwindcss": "^4.2.2"
+  }
+}

@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Start the isthmus.channel Elm Land site locally.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SITE="$ROOT/isthmus_channel"
+cd "$SITE"
+
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "error: pnpm not found. Install it from https://pnpm.io/installation" >&2
+  exit 1
+fi
+
+if [[ ! -d node_modules ]]; then
+  echo "==> First run: installing site deps"
+  pnpm install
+fi
+
+export PORT="${PORT:-4568}"
+
+echo "==> isthmus.channel listening on http://localhost:${PORT}"
+exec pnpm dev

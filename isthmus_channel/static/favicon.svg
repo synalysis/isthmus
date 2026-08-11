@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Isthmus">
+  <rect width="64" height="64" rx="12" fill="#0B3D4A"/>
+  <path d="M8 38c8-10 16-10 24 0s16 10 24 0" fill="none" stroke="#7EB8B2" stroke-width="3" stroke-linecap="round"/>
+  <path d="M8 26c8 10 16 10 24 0s16-10 24 0" fill="none" stroke="#D9783A" stroke-width="3" stroke-linecap="round"/>
+  <circle cx="32" cy="32" r="4.5" fill="#F4F7F5"/>
+</svg>

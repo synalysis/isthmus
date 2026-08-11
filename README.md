@@ -48,9 +48,13 @@ docker compose up --build
 
 Data persists in the `isthmus_data` volume at `/data/isthmus.db`.
 
+## Public site (isthmus.channel)
+
+The Elm Land marketing site lives in [`isthmus_channel/`](./isthmus_channel). It deploys as a Render static site from the same Blueprint (`isthmus-channel` in `render.yaml`).
+
 ## Render.com
 
-`render.yaml` defines a Docker web service with a 1 GB disk mounted at `/data`.
+`render.yaml` defines a Docker web service with a 1 GB disk mounted at `/data`, plus the static `isthmus-channel` site.
 
 1. Push this repo and create a Blueprint (or a Docker Web Service pointing at the Dockerfile).
 2. Set `ISTHMUS_ADMIN_NPUBS` in the Render dashboard.

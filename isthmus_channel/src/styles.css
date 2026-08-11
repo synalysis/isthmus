@@ -1,0 +1,193 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink: #0b3d4a;
+  --color-ink-soft: #1a5563;
+  --color-sea: #1f6f7c;
+  --color-sea-mist: #7eb8b2;
+  --color-foam: #f4f7f5;
+  --color-chart: #e4ece8;
+  --color-stone: #5a6a64;
+  --color-buoy: #d9783a;
+  --color-buoy-deep: #b85f28;
+
+  --font-display: "Fraunces", "Iowan Old Style", "Palatino Linotype", Palatino, serif;
+  --font-body: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    margin: 0;
+    min-height: 100vh;
+    font-family: var(--font-body);
+    color: var(--color-ink);
+    background:
+      radial-gradient(1200px 700px at 85% -10%, color-mix(in srgb, var(--color-sea-mist) 35%, transparent), transparent 60%),
+      radial-gradient(900px 500px at -10% 20%, color-mix(in srgb, var(--color-buoy) 12%, transparent), transparent 55%),
+      linear-gradient(180deg, var(--color-foam) 0%, var(--color-chart) 100%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a {
+    color: var(--color-sea);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 0.18em;
+  }
+
+  img,
+  svg {
+    display: block;
+    max-width: 100%;
+  }
+}
+
+.prose-isthmus h2 {
+  font-family: var(--font-display);
+  font-size: clamp(1.55rem, 3vw, 1.9rem);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 2.4rem 0 0.7rem;
+  color: var(--color-ink);
+}
+
+.prose-isthmus h2:first-child {
+  margin-top: 0;
+}
+
+.prose-isthmus p,
+.prose-isthmus li {
+  color: var(--color-ink-soft);
+}
+
+.prose-isthmus ul,
+.prose-isthmus ol {
+  padding-left: 1.15rem;
+}
+
+.prose-isthmus li + li {
+  margin-top: 0.4rem;
+}
+
+.prose-isthmus code {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+  background: color-mix(in srgb, var(--color-ink) 6%, transparent);
+  padding: 0.1em 0.35em;
+  border-radius: 0.25rem;
+}
+
+.prose-isthmus pre {
+  margin: 1.1rem 0;
+  padding: 1rem 1.1rem;
+  overflow-x: auto;
+  border-radius: 0.55rem;
+  background: var(--color-ink);
+  color: var(--color-foam);
+}
+
+.prose-isthmus pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: 0.88rem;
+}
+
+/* Hero canvas motion — kept outside utilities so SVG animations stay reliable. */
+.hero-canvas {
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    linear-gradient(
+      115deg,
+      color-mix(in srgb, var(--color-foam) 88%, transparent) 0%,
+      color-mix(in srgb, var(--color-foam) 35%, transparent) 42%,
+      transparent 68%
+    ),
+    linear-gradient(180deg, #d7ebe7 0%, #b9d5d3 42%, #8fb8b4 100%);
+}
+
+.hero-canvas svg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0.95;
+}
+
+.hero-drift {
+  animation: drift 22s cubic-bezier(0.22, 1, 0.36, 1) infinite alternate;
+  transform-origin: 60% 45%;
+}
+
+.hero-pulse {
+  animation: pulse-ring 4.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+  transform-origin: center;
+}
+
+@keyframes drift {
+  from {
+    transform: translate3d(-1.5%, 0.5%, 0) scale(1.02);
+  }
+  to {
+    transform: translate3d(1.5%, -1%, 0) scale(1.05);
+  }
+}
+
+@keyframes pulse-ring {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.08);
+  }
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rise-in {
+  animation: rise-in 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.rise-in-delay-1 {
+  animation-delay: 80ms;
+}
+
+.rise-in-delay-2 {
+  animation-delay: 140ms;
+}
+
+.rise-in-delay-3 {
+  animation-delay: 200ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  .hero-drift,
+  .hero-pulse,
+  .rise-in,
+  .rise-in-delay-1,
+  .rise-in-delay-2,
+  .rise-in-delay-3 {
+    animation: none !important;
+  }
+}

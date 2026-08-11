@@ -1,0 +1,10 @@
+/dist
+/.elm-land
+/.elm-tailwind
+/.env
+/elm-stuff
+/node_modules
+/src/generated.css
+package-lock.json
+.DS_Store
+*.pem

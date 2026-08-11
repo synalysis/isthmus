@@ -1,0 +1,47 @@
+{
+  "app": {
+    "elm": {
+      "development": { "debugger": true },
+      "production": { "debugger": false }
+    },
+    "env": [],
+    "html": {
+      "attributes": {
+        "html": { "lang": "en" },
+        "head": {}
+      },
+      "title": "Isthmus",
+      "meta": [
+        { "charset": "UTF-8" },
+        { "http-equiv": "X-UA-Compatible", "content": "IE=edge" },
+        { "name": "viewport", "content": "width=device-width, initial-scale=1.0" },
+        {
+          "name": "description",
+          "content": "Isthmus bridges MeshCore, Reticulum, and Nostr — tunnels, identity gateways, and self-hosted mesh connectivity."
+        },
+        { "name": "theme-color", "content": "#0B3D4A" },
+        { "property": "og:title", "content": "Isthmus — bridge the nets you already use" },
+        {
+          "property": "og:description",
+          "content": "A multi-network mesh gateway for MeshCore, Reticulum, and Nostr. Self-host a narrow passage between radio islands and online relays."
+        },
+        { "property": "og:type", "content": "website" },
+        { "property": "og:url", "content": "https://isthmus.channel" }
+      ],
+      "link": [
+        { "rel": "icon", "type": "image/svg+xml", "href": "/favicon.svg" },
+        { "rel": "preconnect", "href": "https://fonts.googleapis.com" },
+        { "rel": "preconnect", "href": "https://fonts.gstatic.com", "crossorigin": "" },
+        {
+          "rel": "stylesheet",
+          "href": "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+        }
+      ],
+      "script": []
+    },
+    "router": {
+      "useHashRouting": false
+    },
+    "proxy": null
+  }
+}

@@ -34,6 +34,12 @@ isthmus-*.tar
 # In case you use Node.js/npm, you want to ignore these.
 npm-debug.log
 /assets/node_modules/
+/isthmus_channel/node_modules/
+/isthmus_channel/dist/
+/isthmus_channel/elm-stuff/
+/isthmus_channel/.elm-land/
+/isthmus_channel/.elm-tailwind/
+/isthmus_channel/src/generated.css
 
 # Database files
 *.db

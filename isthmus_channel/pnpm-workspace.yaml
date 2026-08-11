@@ -1,0 +1,5 @@
+allowBuilds:
+  '@lydell/elm': true
+  '@parcel/watcher': true
+  elm: true
+  esbuild: true
