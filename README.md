@@ -50,18 +50,11 @@ Data persists in the `isthmus_data` volume at `/data/isthmus.db`.
 
 ## Public site (isthmus.channel)
 
-The Elm Land marketing site lives in [`isthmus_channel/`](./isthmus_channel). It deploys as a Render static site from the same Blueprint (`isthmus-channel` in `render.yaml`).
+The Elm Land public site lives in [`isthmus_channel/`](./isthmus_channel). `render.yaml` deploys it as the `isthmus-channel` static site.
 
 ## Render.com
 
-`render.yaml` defines a Docker web service with a 1 GB disk mounted at `/data`, plus the static `isthmus-channel` site.
-
-1. Push this repo and create a Blueprint (or a Docker Web Service pointing at the Dockerfile).
-2. Set `ISTHMUS_ADMIN_NPUBS` in the Render dashboard.
-3. Optionally set `PHX_HOST` to your custom domain; otherwise `RENDER_EXTERNAL_HOSTNAME` is used.
-4. Health check path: `/healthz`.
-
-**Note:** MeshCore USB/BLE needs hardware access. Render suits the web/ops + Nostr side; run Docker on a host with radios when attaching companions.
+The Blueprint is the public site only. Self-host the Phoenix gateway with Docker or Mix on a machine you control (USB companions need hardware access).
 
 ## Environment
 
