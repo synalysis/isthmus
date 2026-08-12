@@ -66,12 +66,12 @@ defmodule Isthmus.Tunnel.BridgeTest do
     refute Enum.any?(due, &(&1.payload == reflood))
   end
 
-  test "forward_packet skips MeshCore Public channel by default" do
+  test "forward_packet applies MeshCore channel_filter per peer" do
     alias Isthmus.Networks.MeshCore.Channel
 
     {:ok, mc} =
       Tunnel.create_peer(%{
-        name: "Public block peer",
+        name: "Channel filter peer",
         peer_ref: "11" <> String.duplicate("22", 31),
         payload_network: "meshcore",
         carrier_network: "meshtastic"
@@ -87,12 +87,42 @@ defmodule Isthmus.Tunnel.BridgeTest do
       )
       |> Packet.encode()
 
+    private =
+      Packet.build(
+        Packet.route_flood(),
+        Channel.type_grp_txt(),
+        0,
+        <<>>,
+        <<0x42, 0, 0>> <> :crypto.strong_rand_bytes(16)
+      )
+      |> Packet.encode()
+
+    # Default "public" — only well-known Public blocked
     assert :ok = Bridge.forward_packet("meshcore", public, %{source: "bridge"})
+    assert :ok = Bridge.forward_packet("meshcore", private, %{source: "bridge"})
     due = Outbox.due(50) |> Enum.filter(&(&1.channel == "tunnel:#{mc.tunnel_id}"))
     refute Enum.any?(due, &(&1.payload == public))
+    assert Enum.any?(due, &(&1.payload == private))
 
-    assert {:ok, _} = Tunnel.update_peer(mc, %{block_public_channel: false})
+    # "all" — both blocked
+    assert {:ok, _} = Tunnel.update_peer(mc, %{channel_filter: "all"})
 
+    private2 =
+      Packet.build(
+        Packet.route_flood(),
+        Channel.type_grp_txt(),
+        0,
+        <<>>,
+        <<0x43, 0, 0>> <> :crypto.strong_rand_bytes(16)
+      )
+      |> Packet.encode()
+
+    assert :ok = Bridge.forward_packet("meshcore", private2, %{source: "bridge"})
+    due = Outbox.due(50) |> Enum.filter(&(&1.channel == "tunnel:#{mc.tunnel_id}"))
+    refute Enum.any?(due, &(&1.payload == private2))
+
+    # "none" — Public allowed
+    assert {:ok, _} = Tunnel.update_peer(mc, %{channel_filter: "none"})
     assert :ok = Bridge.forward_packet("meshcore", public, %{source: "bridge"})
     due = Outbox.due(50) |> Enum.filter(&(&1.channel == "tunnel:#{mc.tunnel_id}"))
     assert Enum.any?(due, &(&1.payload == public))

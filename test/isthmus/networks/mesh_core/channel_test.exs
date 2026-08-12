@@ -7,7 +7,7 @@ defmodule Isthmus.Networks.MeshCore.ChannelTest do
     assert Channel.public_channel_hash() == 0x11
   end
 
-  test "detects GRP_TXT / GRP_DATA for Public by channel hash byte" do
+  test "detects any group packet and Public by channel hash" do
     public =
       Packet.build(
         Packet.route_flood(),
@@ -37,6 +37,10 @@ defmodule Isthmus.Networks.MeshCore.ChannelTest do
         :crypto.strong_rand_bytes(20)
       )
       |> Packet.encode()
+
+    assert Channel.group_packet?(public)
+    assert Channel.group_packet?(private)
+    refute Channel.group_packet?(advert)
 
     assert Channel.public_group_packet?(public)
     refute Channel.public_group_packet?(private)

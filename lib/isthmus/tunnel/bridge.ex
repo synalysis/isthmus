@@ -16,7 +16,6 @@ defmodule Isthmus.Tunnel.Bridge do
   alias Isthmus.Networks.MeshCore.Advert
   alias Isthmus.Networks.MeshCore.Channel
   alias Isthmus.Networks.MeshCore.Packet
-  alias Isthmus.Policy
   alias Isthmus.Tunnel
   alias Isthmus.Tunnel.{Frame, Peer}
   alias Isthmus.Repo
@@ -30,9 +29,9 @@ defmodule Isthmus.Tunnel.Bridge do
   Enqueue an opaque island packet onto matching tunnel peers.
 
   Skips when `opts[:from_tunnel]` is set (loop prevention), the packet was
-  recently forwarded (hash dedup), or (by default) MeshCore default Public
-  group traffic. MeshCore ADVERT packets are also recorded as announce
-  sightings so they appear on the Adverts page.
+  recently forwarded (hash dedup), or the peer's MeshCore channel filter drops
+  it. MeshCore ADVERT packets are also recorded as announce sightings so they
+  appear on the Adverts page.
   """
   def forward_packet(payload_network, packet, opts \\ %{})
 
@@ -47,13 +46,9 @@ defmodule Isthmus.Tunnel.Bridge do
       # need to show on Adverts even when we collapse a re-flood for the outbox.
       _ = maybe_record_meshcore_advert(payload_network, packet)
 
-      public? = Channel.public_group_packet?(packet)
-
       peers =
         peers_for_payload(payload_network)
-        |> Enum.reject(fn peer ->
-          public? and blocked_public_channel?(payload_network, packet, peer)
-        end)
+        |> Enum.reject(&blocked_channel_packet?(payload_network, packet, &1))
 
       cond do
         peers == [] ->
@@ -81,25 +76,24 @@ defmodule Isthmus.Tunnel.Bridge do
   def forward_packet(_, _, _), do: :ok
 
   @doc """
-  True when MeshCore default Public group traffic should not cross this tunnel.
+  True when MeshCore group-channel traffic should not cross this tunnel.
 
-  Per-peer `meta["block_public_channel"]` (default: policy / true).
+  See `Peer.channel_filter/1` (`all` | `public` | `none`).
   """
-  def blocked_public_channel?(payload_network, packet, peer \\ nil)
+  def blocked_channel_packet?(payload_network, packet, peer \\ nil)
 
-  def blocked_public_channel?(payload_network, packet, %Peer{} = peer)
+  def blocked_channel_packet?(payload_network, packet, %Peer{} = peer)
       when is_binary(payload_network) and is_binary(packet) do
-    payload_network == "meshcore" and Peer.block_public_channel?(peer) and
-      Channel.public_group_packet?(packet)
+    payload_network == "meshcore" and Peer.blocks_channel_packet?(peer, packet)
   end
 
-  def blocked_public_channel?(payload_network, packet, _)
+  def blocked_channel_packet?(payload_network, packet, _)
       when is_binary(payload_network) and is_binary(packet) do
-    payload_network == "meshcore" and Policy.tunnel_block_meshcore_public?() and
-      Channel.public_group_packet?(packet)
+    # No peer context: same default as Peer — block only well-known Public.
+    payload_network == "meshcore" and Channel.public_group_packet?(packet)
   end
 
-  def blocked_public_channel?(_, _, _), do: false
+  def blocked_channel_packet?(_, _, _), do: false
 
   @doc """
   Fan an announce/advert control message to tunnels for `payload_network`.

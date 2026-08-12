@@ -81,7 +81,7 @@ defmodule Isthmus.Tunnel do
 
   def change_peer(%Peer{} = peer, attrs \\ %{}) do
     peer
-    |> Map.put(:block_public_channel, Peer.block_public_channel?(peer))
+    |> Map.put(:channel_filter, Peer.channel_filter(peer))
     |> Peer.changeset(attrs)
   end
 

@@ -21,7 +21,7 @@ defmodule IsthmusWeb.Admin.TunnelsLiveTest do
     %{conn: conn}
   end
 
-  test "edit form shows Public channel block checkbox for meshcore payload", %{conn: conn} do
+  test "edit form shows MeshCore channel filter for meshcore payload", %{conn: conn} do
     {:ok, peer} =
       Tunnel.create_peer(%{
         name: "MC tunnel",
@@ -35,15 +35,17 @@ defmodule IsthmusWeb.Admin.TunnelsLiveTest do
     view |> element("#edit-#{peer.id}") |> render_click()
 
     assert has_element?(view, "#edit-peer-#{peer.id}")
-    assert has_element?(view, "#edit-peer-#{peer.id}", "Block MeshCore Public channel")
+    assert has_element?(view, "#edit-peer-#{peer.id}", "Block all channel messages")
+    assert has_element?(view, "#edit-peer-#{peer.id}", "Block only Public channel")
+    assert has_element?(view, "#edit-peer-#{peer.id}", "Allow all channel messages")
 
     view
-    |> form("#edit-peer-#{peer.id}", peer: %{block_public_channel: false})
+    |> form("#edit-peer-#{peer.id}", peer: %{channel_filter: "none"})
     |> render_submit()
 
     refreshed = Tunnel.get_peer!(peer.id)
-    assert refreshed.meta["block_public_channel"] == false
-    refute Isthmus.Tunnel.Peer.block_public_channel?(refreshed)
+    assert refreshed.meta["channel_filter"] == "none"
+    assert Isthmus.Tunnel.Peer.channel_filter(refreshed) == "none"
   end
 
   test "path details render for an enabled peer", %{conn: conn} do

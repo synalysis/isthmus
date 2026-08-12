@@ -203,7 +203,7 @@ defmodule Isthmus.Tunnel.EngineTest do
     assert result == {:error, :bridge_disabled}
   end
 
-  test "MeshCore Public channel is not injected from a tunnel by default" do
+  test "MeshCore channel packets are not injected from a tunnel by default" do
     alias Isthmus.Networks.MeshCore.{Channel, Packet}
 
     {:ok, peer} =
@@ -232,7 +232,7 @@ defmodule Isthmus.Tunnel.EngineTest do
     _ = :sys.get_state(Engine)
 
     assert_receive {:tunnel_delivered,
-                    %{payload_network: "meshcore", result: {:ok, :public_blocked}}},
+                    %{payload_network: "meshcore", result: {:ok, :channel_blocked}}},
                    1_000
   end
 

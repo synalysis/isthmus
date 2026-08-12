@@ -476,8 +476,8 @@ defmodule Isthmus.Tunnel.Engine do
       %Peer{} = peer ->
         cond do
           peer.payload_network == "meshcore" and
-              Bridge.blocked_public_channel?("meshcore", payload, peer) ->
-            finish_meshcore_skip(peer, tunnel_hex, payload, :public_blocked)
+              Bridge.blocked_channel_packet?("meshcore", payload, peer) ->
+            finish_meshcore_skip(peer, tunnel_hex, payload, :channel_blocked)
 
           peer.payload_network == "meshcore" and Bridge.mark_forwarded(payload) == :duplicate ->
             finish_meshcore_skip(peer, tunnel_hex, payload, :duplicate)

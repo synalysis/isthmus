@@ -481,20 +481,20 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
               </select>
 
               <div :if={@payload == "meshcore"} class="md:col-span-2">
-                <label class="label cursor-pointer justify-start gap-3">
-                  <input type="hidden" name="peer[block_public_channel]" value="false" />
-                  <input
-                    id="peer-block-public-channel"
-                    type="checkbox"
-                    name="peer[block_public_channel]"
-                    value="true"
-                    checked
-                    class="checkbox checkbox-sm"
-                  />
-                  <span class="label-text">Block MeshCore Public channel on this tunnel</span>
+                <label class="label" for="peer-channel-filter">
+                  <span class="label-text">MeshCore channel filter</span>
                 </label>
+                <select
+                  id="peer-channel-filter"
+                  name="peer[channel_filter]"
+                  class="select select-bordered w-full"
+                >
+                  <option value="public" selected>Block only Public channel</option>
+                  <option value="all">Block all channel messages</option>
+                  <option value="none">Allow all channel messages</option>
+                </select>
                 <p class="mt-1 text-xs opacity-60">
-                  Default Public stays local; private channels, DMs, and adverts still cross.
+                  Default keeps the open Public channel local; private groups, DMs, and adverts still cross.
                 </p>
               </div>
 
@@ -601,12 +601,17 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                   class="md:col-span-2"
                 >
                   <.input
-                    field={@edit_form[:block_public_channel]}
-                    type="checkbox"
-                    label="Block MeshCore Public channel on this tunnel"
+                    field={@edit_form[:channel_filter]}
+                    type="select"
+                    label="MeshCore channel filter"
+                    options={[
+                      {"Block only Public channel", "public"},
+                      {"Block all channel messages", "all"},
+                      {"Allow all channel messages", "none"}
+                    ]}
                   />
                   <p class="mt-1 text-xs opacity-60">
-                    Default Public (PSK hash 0x11) stays on the local island; private channels, DMs, and adverts still cross.
+                    Default blocks the open Public PSK only; private groups still cross. DMs and adverts always cross.
                   </p>
                 </div>
                 <div class="md:col-span-2">

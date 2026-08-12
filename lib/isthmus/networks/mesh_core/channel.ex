@@ -2,9 +2,10 @@ defmodule Isthmus.Networks.MeshCore.Channel do
   @moduledoc """
   MeshCore group-channel helpers for tunnel filtering.
 
-  Group text/data packets carry a 1-byte channel hash (first byte of
-  SHA-256 of the 16-byte channel PSK). The firmware default **Public**
-  channel uses a well-known PSK published in the MeshCore companion spec.
+  Group text/data packets (`GRP_TXT` / `GRP_DATA`) carry a 1-byte channel hash
+  (first byte of SHA-256 of the 16-byte channel PSK). The firmware default
+  **Public** channel uses a well-known PSK published in the MeshCore companion
+  spec.
   """
 
   alias Isthmus.Networks.MeshCore.Packet
@@ -28,6 +29,20 @@ defmodule Isthmus.Networks.MeshCore.Channel do
   def public_channel_hash do
     :crypto.hash(:sha256, public_psk()) |> :binary.first()
   end
+
+  @doc "True for any GRP_TXT / GRP_DATA packet (any channel hash)."
+  def group_packet?(packet) when is_binary(packet) do
+    case Packet.decode(packet) do
+      {:ok, decoded} -> group_packet?(decoded)
+      _ -> false
+    end
+  end
+
+  def group_packet?(%{payload_type: type, payload: <<_::binary-size(1), _::binary>>})
+      when type in [@type_grp_txt, @type_grp_data],
+      do: true
+
+  def group_packet?(_), do: false
 
   @doc """
   True when `packet` is GRP_TXT/GRP_DATA for the default Public channel.
