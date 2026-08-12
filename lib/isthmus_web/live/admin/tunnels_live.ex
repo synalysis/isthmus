@@ -480,6 +480,24 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                 <option value="nostr" selected={@carrier == "nostr"}>Carrier: nostr</option>
               </select>
 
+              <div :if={@payload == "meshcore"} class="md:col-span-2">
+                <label class="label cursor-pointer justify-start gap-3">
+                  <input type="hidden" name="peer[block_public_channel]" value="false" />
+                  <input
+                    id="peer-block-public-channel"
+                    type="checkbox"
+                    name="peer[block_public_channel]"
+                    value="true"
+                    checked
+                    class="checkbox checkbox-sm"
+                  />
+                  <span class="label-text">Block MeshCore Public channel on this tunnel</span>
+                </label>
+                <p class="mt-1 text-xs opacity-60">
+                  Default Public stays local; private channels, DMs, and adverts still cross.
+                </p>
+              </div>
+
               <div
                 id="local-identity"
                 class="md:col-span-2 rounded-box border border-base-300 bg-base-100 p-3 space-y-2"
@@ -578,6 +596,19 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
                   label="Carrier"
                   options={network_options(carrier_networks())}
                 />
+                <div
+                  :if={Ecto.Changeset.get_field(@edit_form.source, :payload_network) == "meshcore"}
+                  class="md:col-span-2"
+                >
+                  <.input
+                    field={@edit_form[:block_public_channel]}
+                    type="checkbox"
+                    label="Block MeshCore Public channel on this tunnel"
+                  />
+                  <p class="mt-1 text-xs opacity-60">
+                    Default Public (PSK hash 0x11) stays on the local island; private channels, DMs, and adverts still cross.
+                  </p>
+                </div>
                 <div class="md:col-span-2">
                   <input
                     class="input input-bordered w-full"

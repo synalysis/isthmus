@@ -79,7 +79,11 @@ defmodule Isthmus.Tunnel do
 
   def delete_peer(%Peer{} = peer), do: Repo.delete(peer)
 
-  def change_peer(%Peer{} = peer, attrs \\ %{}), do: Peer.changeset(peer, attrs)
+  def change_peer(%Peer{} = peer, attrs \\ %{}) do
+    peer
+    |> Map.put(:block_public_channel, Peer.block_public_channel?(peer))
+    |> Peer.changeset(attrs)
+  end
 
   def bump_seq(%Peer{} = peer) do
     peer

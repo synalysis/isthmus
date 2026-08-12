@@ -66,6 +66,38 @@ defmodule Isthmus.Tunnel.BridgeTest do
     refute Enum.any?(due, &(&1.payload == reflood))
   end
 
+  test "forward_packet skips MeshCore Public channel by default" do
+    alias Isthmus.Networks.MeshCore.Channel
+
+    {:ok, mc} =
+      Tunnel.create_peer(%{
+        name: "Public block peer",
+        peer_ref: "11" <> String.duplicate("22", 31),
+        payload_network: "meshcore",
+        carrier_network: "meshtastic"
+      })
+
+    public =
+      Packet.build(
+        Packet.route_flood(),
+        Channel.type_grp_txt(),
+        0,
+        <<>>,
+        <<Channel.public_channel_hash(), 0, 0>> <> :crypto.strong_rand_bytes(16)
+      )
+      |> Packet.encode()
+
+    assert :ok = Bridge.forward_packet("meshcore", public, %{source: "bridge"})
+    due = Outbox.due(50) |> Enum.filter(&(&1.channel == "tunnel:#{mc.tunnel_id}"))
+    refute Enum.any?(due, &(&1.payload == public))
+
+    assert {:ok, _} = Tunnel.update_peer(mc, %{block_public_channel: false})
+
+    assert :ok = Bridge.forward_packet("meshcore", public, %{source: "bridge"})
+    due = Outbox.due(50) |> Enum.filter(&(&1.channel == "tunnel:#{mc.tunnel_id}"))
+    assert Enum.any?(due, &(&1.payload == public))
+  end
+
   test "mark_forwarded suppresses the injected packet's echo across a bridge hop" do
     {:ok, mc} =
       Tunnel.create_peer(%{

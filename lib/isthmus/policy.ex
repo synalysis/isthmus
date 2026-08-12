@@ -11,8 +11,13 @@ defmodule Isthmus.Policy do
     "nostr_publish_budget_per_hour" => 60,
     # Empty list = all directions allowed. Otherwise "from>to" strings.
     "gateway_allow_directions" => [],
-    "gateway_deny_directions" => []
+    "gateway_deny_directions" => [],
+    # Drop MeshCore default Public (GRP_TXT/GRP_DATA) on tunnels unless opted in.
+    "tunnel_block_meshcore_public" => true
   }
+
+  @doc "When true (default), tunnels do not carry MeshCore default Public channel traffic."
+  def tunnel_block_meshcore_public?, do: get("tunnel_block_meshcore_public") != false
 
   def get(key) when is_binary(key) do
     case Repo.get_by(Setting, key: key) do

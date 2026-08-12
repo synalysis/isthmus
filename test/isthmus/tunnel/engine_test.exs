@@ -203,6 +203,39 @@ defmodule Isthmus.Tunnel.EngineTest do
     assert result == {:error, :bridge_disabled}
   end
 
+  test "MeshCore Public channel is not injected from a tunnel by default" do
+    alias Isthmus.Networks.MeshCore.{Channel, Packet}
+
+    {:ok, peer} =
+      Tunnel.create_peer(%{
+        name: "Public inject peer",
+        peer_ref: "33" <> String.duplicate("44", 31),
+        payload_network: "meshcore",
+        carrier_network: "meshtastic"
+      })
+
+    packet =
+      Packet.build(
+        Packet.route_flood(),
+        Channel.type_grp_txt(),
+        0,
+        <<>>,
+        <<Channel.public_channel_hash(), 0, 0>> <> :crypto.strong_rand_bytes(16)
+      )
+      |> Packet.encode()
+
+    peer.tunnel_id
+    |> Frame.tunnel_id_from_string()
+    |> Frame.fragment(13, packet, 512)
+    |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1)))
+
+    _ = :sys.get_state(Engine)
+
+    assert_receive {:tunnel_delivered,
+                    %{payload_network: "meshcore", result: {:ok, :public_blocked}}},
+                   1_000
+  end
+
   test "redundant MeshCore tunnels inject a packet only once" do
     alias Isthmus.Networks.MeshCore.Packet
 

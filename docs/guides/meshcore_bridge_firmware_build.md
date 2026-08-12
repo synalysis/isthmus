@@ -29,6 +29,10 @@ git clone https://github.com/synalysis/MeshCore.git
 cd MeshCore
 ```
 
+CI builds the three USB-serial bridge UF2s via **Actions → Build Bridge Firmwares**
+(`workflow_dispatch`, or push a `bridge-*` tag for a draft release). Locally:
+`sh build.sh build-bridge-firmwares` (set `FIRMWARE_VERSION=…` first).
+
 ## Versions pinned by this recipe
 
 | Component | Value |

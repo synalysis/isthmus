@@ -3,6 +3,7 @@ defmodule Isthmus.Tunnel.Peer do
   import Ecto.Changeset
 
   alias Isthmus.Networks.Nostr
+  alias Isthmus.Policy
 
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
@@ -17,6 +18,8 @@ defmodule Isthmus.Tunnel.Peer do
     field :epoch, :integer, default: 0
     field :next_seq, :integer, default: 1
     field :meta, :map, default: %{}
+    # Form-only; persisted under meta["block_public_channel"] (default: policy / true).
+    field :block_public_channel, :boolean, virtual: true
 
     timestamps(type: :utc_datetime)
   end
@@ -32,13 +35,52 @@ defmodule Isthmus.Tunnel.Peer do
       :enabled,
       :epoch,
       :next_seq,
-      :meta
+      :meta,
+      :block_public_channel
     ])
+    |> put_block_public_meta()
     |> normalize_peer_ref()
     |> validate_required([:name, :payload_network, :carrier_network, :peer_ref, :tunnel_id])
     |> validate_inclusion(:payload_network, ~w(reticulum meshcore nostr meshtastic))
     |> validate_inclusion(:carrier_network, ~w(reticulum meshcore nostr meshtastic))
     |> unique_constraint(:tunnel_id)
+  end
+
+  @doc """
+  Whether this peer should drop MeshCore default Public channel traffic.
+
+  Explicit `meta["block_public_channel"]` wins; otherwise the global policy
+  default (`tunnel_block_meshcore_public`, default true) applies.
+  """
+  def block_public_channel?(%__MODULE__{meta: meta}) when is_map(meta) do
+    explicit =
+      cond do
+        Map.has_key?(meta, "block_public_channel") -> meta["block_public_channel"]
+        Map.has_key?(meta, :block_public_channel) -> meta[:block_public_channel]
+        true -> :default
+      end
+
+    case explicit do
+      true -> true
+      false -> false
+      "true" -> true
+      "false" -> false
+      :default -> Policy.tunnel_block_meshcore_public?()
+      _ -> Policy.tunnel_block_meshcore_public?()
+    end
+  end
+
+  def block_public_channel?(_), do: Policy.tunnel_block_meshcore_public?()
+
+  defp put_block_public_meta(changeset) do
+    case get_change(changeset, :block_public_channel) do
+      nil ->
+        changeset
+
+      bool when is_boolean(bool) ->
+        meta = get_field(changeset, :meta) || %{}
+        put_change(changeset, :meta, Map.put(meta, "block_public_channel", bool))
+    end
   end
 
   @doc """

@@ -9,6 +9,8 @@ defmodule Isthmus.Networks.MeshCore.Packet do
   @type_txt_msg 0x02
   @type_ack 0x03
   @type_advert 0x04
+  @type_grp_txt 0x05
+  @type_grp_data 0x06
   @type_path 0x08
 
   @max_path 64
@@ -19,6 +21,8 @@ defmodule Isthmus.Networks.MeshCore.Packet do
   def type_txt_msg, do: @type_txt_msg
   def type_ack, do: @type_ack
   def type_advert, do: @type_advert
+  def type_grp_txt, do: @type_grp_txt
+  def type_grp_data, do: @type_grp_data
   def type_path, do: @type_path
 
   @type t :: %{

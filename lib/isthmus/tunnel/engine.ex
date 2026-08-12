@@ -474,43 +474,52 @@ defmodule Isthmus.Tunnel.Engine do
 
     case Repo.get_by(Peer, tunnel_id: tunnel_hex) do
       %Peer{} = peer ->
-        # MeshCore: collapse redundant-tunnel ingress (Nostr + Reticulum, etc.).
-        # First arrival marks + injects; later arrivals still get a carrier
-        # sighting and tunnel ACK (caller), but skip a second island inject.
-        if peer.payload_network == "meshcore" and Bridge.mark_forwarded(payload) == :duplicate do
-          result = {:ok, :duplicate}
+        cond do
+          peer.payload_network == "meshcore" and
+              Bridge.blocked_public_channel?("meshcore", payload, peer) ->
+            finish_meshcore_skip(peer, tunnel_hex, payload, :public_blocked)
 
-          Logger.debug("tunnel→meshcore skip duplicate inject via #{tunnel_hex} (#{peer.name})")
+          peer.payload_network == "meshcore" and Bridge.mark_forwarded(payload) == :duplicate ->
+            finish_meshcore_skip(peer, tunnel_hex, payload, :duplicate)
 
-          record_inbound_sighting(peer, tunnel_hex, result)
+          true ->
+            # Record advert identity here (true ingress), before any radio echo
+            # would mis-attribute the same packet as a local bridge hear.
+            if peer.payload_network == "meshcore" do
+              maybe_record_tunnel_meshcore_advert(peer, tunnel_hex, payload)
+            end
 
-          Phoenix.PubSub.broadcast(
-            Isthmus.PubSub,
-            "tunnel:events",
-            {:tunnel_delivered,
-             %{
-               tunnel_id: tunnel_hex,
-               payload_network: peer.payload_network,
-               bytes: byte_size(payload),
-               result: result
-             }}
-          )
-
-          result
-        else
-          # Record advert identity here (true ingress), before any radio echo
-          # would mis-attribute the same packet as a local bridge hear.
-          if peer.payload_network == "meshcore" do
-            maybe_record_tunnel_meshcore_advert(peer, tunnel_hex, payload)
-          end
-
-          inject_payload_to_island(peer, tunnel_hex, payload)
+            inject_payload_to_island(peer, tunnel_hex, payload)
         end
 
       nil ->
         Logger.debug("inbound frame for unknown tunnel #{tunnel_hex}")
         :ok
     end
+  end
+
+  defp finish_meshcore_skip(%Peer{} = peer, tunnel_hex, payload, reason) do
+    result = {:ok, reason}
+
+    Logger.debug(
+      "tunnel→meshcore skip #{reason} inject via #{tunnel_hex} (#{peer.name}, #{byte_size(payload)}B)"
+    )
+
+    record_inbound_sighting(peer, tunnel_hex, result)
+
+    Phoenix.PubSub.broadcast(
+      Isthmus.PubSub,
+      "tunnel:events",
+      {:tunnel_delivered,
+       %{
+         tunnel_id: tunnel_hex,
+         payload_network: peer.payload_network,
+         bytes: byte_size(payload),
+         result: result
+       }}
+    )
+
+    result
   end
 
   defp inject_payload_to_island(%Peer{} = peer, tunnel_hex, payload) do
