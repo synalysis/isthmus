@@ -69,6 +69,10 @@ config :isthmus, Isthmus.Networks.Agent,
   cwd: nil,
   prompt_timeout_ms: 120_000
 
+config :isthmus, Isthmus.MCP,
+  enabled: true,
+  token: nil
+
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
 import_config "#{config_env()}.exs"

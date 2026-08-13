@@ -21,6 +21,11 @@ defmodule IsthmusWeb.Router do
     plug :accepts, ["text", "json", "*/*"]
   end
 
+  pipeline :mcp do
+    plug :accepts, ["json"]
+    plug IsthmusWeb.Plugs.McpAuth
+  end
+
   scope "/", IsthmusWeb do
     pipe_through :health
 
@@ -33,6 +38,20 @@ defmodule IsthmusWeb.Router do
     pipe_through :metrics
 
     get "/metrics", MetricsController, :index
+  end
+
+  scope "/" do
+    pipe_through :mcp
+
+    forward "/mcp", ExMCP.HttpPlug,
+      handler: Isthmus.MCP.Server,
+      protocol_mode: :prefer_modern,
+      server_info: %{name: "isthmus", version: "0.1.0"},
+      instructions: Isthmus.MCP.Server.instructions(),
+      cors_enabled: true,
+      validate_origin: false,
+      allowed_origins: :any,
+      handler_call_timeout: 30_000
   end
 
   scope "/", IsthmusWeb do

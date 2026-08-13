@@ -90,6 +90,26 @@ if config_env() != :test do
   end
 end
 
+mcp_opts = []
+
+mcp_opts =
+  case System.get_env("ISTHMUS_MCP_ENABLED") do
+    val when val in ["0", "false", "FALSE"] -> Keyword.put(mcp_opts, :enabled, false)
+    val when val in ["1", "true", "TRUE"] -> Keyword.put(mcp_opts, :enabled, true)
+    _ -> mcp_opts
+  end
+
+mcp_opts =
+  case System.get_env("ISTHMUS_MCP_TOKEN") do
+    nil -> mcp_opts
+    "" -> mcp_opts
+    token -> Keyword.put(mcp_opts, :token, token)
+  end
+
+if mcp_opts != [] do
+  config :isthmus, Isthmus.MCP, mcp_opts
+end
+
 if config_env() == :prod do
   database_path =
     System.get_env("DATABASE_PATH") ||

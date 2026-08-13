@@ -52,6 +52,36 @@ Env:
 
 The agent identity is unique across groups (`cursor` can only be attached once). Tool calls from the agent are rejected — this path is for short mesh replies, not an IDE session. See [ex_mcp](https://hex.pm/packages/ex_mcp) and [Cursor ACP](https://cursor.com/docs/cli/acp).
 
+## MCP control plane
+
+Isthmus also runs an MCP **server** so an IDE or other MCP client can operate this instance (groups, members, inject, tunnels, relays, policy). This is not the ACP agent path above.
+
+1. Set a bearer token (treat it like an admin password):
+
+```bash
+export ISTHMUS_MCP_TOKEN=a-long-random-secret
+# ISTHMUS_MCP_ENABLED=false
+```
+
+2. Restart Isthmus. Streamable HTTP is at `http://127.0.0.1:4000/mcp` (`PORT` from `bin/dev`).
+
+3. Point Cursor (or any MCP client) at that URL with `Authorization: Bearer <token>`. Example `mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "isthmus": {
+      "url": "http://127.0.0.1:4000/mcp",
+      "headers": {
+        "Authorization": "Bearer a-long-random-secret"
+      }
+    }
+  }
+}
+```
+
+Without `ISTHMUS_MCP_TOKEN` the endpoint returns 401. Vault secrets, nsecs, channel PSKs, and relay auth secrets are never exposed. Groups can be identified by UUID or display name (e.g. `Lobby`).
+
 ## MeshCore companion constraint
 
 One USB/BLE companion = one RF inbox. Isthmus cannot receive as N minted MeshCore pubkeys on that radio.

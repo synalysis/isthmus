@@ -45,6 +45,8 @@ config :logger, level: :warning
 # Do not spawn an ACP subprocess during tests.
 config :isthmus, Isthmus.Networks.Agent, enabled: false, command: []
 
+config :isthmus, Isthmus.MCP, enabled: true, token: "test-mcp-token"
+
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 
