@@ -114,4 +114,46 @@ defmodule Isthmus.Networks.MeshCore.DevicesTest do
 
     assert devices == []
   end
+
+  test "inventory ignores every Meshtastic companion path" do
+    ports = [
+      %{
+        name: "ttyUSB0",
+        path: "/dev/ttyUSB0",
+        score: 1,
+        reasons: [],
+        description: "Meshtastic A",
+        serial_number: "MT1",
+        vendor_id: 0x10C4,
+        product_id: 0xEA60
+      },
+      %{
+        name: "ttyUSB1",
+        path: "/dev/ttyUSB1",
+        score: 1,
+        reasons: [],
+        description: "Meshtastic B",
+        serial_number: "MT2",
+        vendor_id: 0x10C4,
+        product_id: 0xEA60
+      }
+    ]
+
+    devices =
+      Devices.inventory(
+        ports: ports,
+        roles: %{
+          meshtastic: %{path: "/dev/ttyUSB0", detail: %{}},
+          meshtastic_ports: [
+            %{path: "/dev/ttyUSB0"},
+            %{path: "/dev/ttyUSB1"}
+          ]
+        },
+        companion: %{},
+        bridge_cli: %{},
+        bridge_link: %{}
+      )
+
+    assert devices == []
+  end
 end

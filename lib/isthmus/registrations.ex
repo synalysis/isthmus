@@ -342,6 +342,25 @@ defmodule Isthmus.Registrations do
   end
 
   @doc """
+  Provision a private MeshCore channel (slots 1–7) on an existing bridge group.
+  """
+  def provision_meshcore_channel(group, opts \\ [])
+
+  def provision_meshcore_channel(%RegistrationGroup{kind: "bridge"} = group, opts) do
+    name = Keyword.get(opts, :name) || group.display_name || "Channel"
+    requested = Keyword.get(opts, :idx)
+
+    with :ok <- companion_online(),
+         :ok <- ensure_group_meshcore_free(group),
+         {:ok, idx} <- pick_meshcore_slot(requested),
+         {:ok, channel} <- Companion.set_channel(idx, name, nil) do
+      link_meshcore_channel(group, idx, channel.secret_hex)
+    end
+  end
+
+  def provision_meshcore_channel(%RegistrationGroup{}, _), do: {:error, :not_a_bridge_group}
+
+  @doc """
   Decrypt channel credentials for inviting a second MeshCore device.
 
   Returns name + secret (for the app's "secret key" join) and a
@@ -439,11 +458,12 @@ defmodule Isthmus.Registrations do
       Keyword.get(opts, :name) || group.display_name || "Channel"
 
     requested = Keyword.get(opts, :idx)
+    port = Keyword.get(opts, :port)
 
-    with :ok <- meshtastic_companion_online(),
+    with :ok <- meshtastic_companion_online(port),
          :ok <- ensure_group_meshtastic_free(group),
-         {:ok, idx} <- pick_meshtastic_slot(requested),
-         {:ok, channel} <- MeshtasticCompanion.set_channel(idx, name, nil) do
+         {:ok, idx} <- pick_meshtastic_slot(requested, port),
+         {:ok, channel} <- MeshtasticCompanion.set_channel(idx, name, nil, port) do
       link_meshtastic_channel(group, idx, channel.psk_hex)
     end
   end
@@ -540,10 +560,11 @@ defmodule Isthmus.Registrations do
   """
   def create_bridge_with_meshtastic_channel(owner_hex, attrs \\ %{}) when is_binary(owner_hex) do
     name = Map.get(attrs, :display_name) || Map.get(attrs, "display_name") || "Bridge"
+    port = Map.get(attrs, :port) || Map.get(attrs, "port")
 
-    with :ok <- meshtastic_companion_online(),
-         {:ok, idx} <- first_empty_meshtastic_channel_slot(),
-         {:ok, channel} <- MeshtasticCompanion.set_channel(idx, name, nil),
+    with :ok <- meshtastic_companion_online(port),
+         {:ok, idx} <- first_empty_meshtastic_channel_slot(port),
+         {:ok, channel} <- MeshtasticCompanion.set_channel(idx, name, nil, port),
          {:ok, group} <-
            create_bridge_group(owner_hex, Map.merge(Map.new(attrs), %{display_name: name})),
          {:ok, group} <- link_meshtastic_channel(group, idx, channel.psk_hex),
@@ -728,8 +749,8 @@ defmodule Isthmus.Registrations do
     end
   end
 
-  defp meshtastic_companion_online do
-    case MeshtasticCompanion.health() do
+  defp meshtastic_companion_online(port) do
+    case MeshtasticCompanion.health(port) do
       %{status: :online} -> :ok
       _ -> {:error, :not_connected}
     end
@@ -1178,23 +1199,37 @@ defmodule Isthmus.Registrations do
     first_empty_slot(Companion.list_channels())
   end
 
-  defp first_empty_meshtastic_channel_slot do
-    first_empty_slot(MeshtasticCompanion.list_channels())
-  end
+  defp ensure_group_meshcore_free(%RegistrationGroup{meshcore_channel_idx: nil}), do: :ok
+  defp ensure_group_meshcore_free(_), do: {:error, :already_linked}
 
-  defp ensure_group_meshtastic_free(%RegistrationGroup{meshtastic_channel_idx: nil}), do: :ok
-  defp ensure_group_meshtastic_free(_), do: {:error, :already_linked}
+  defp pick_meshcore_slot(nil), do: first_empty_private_channel_slot()
 
-  defp pick_meshtastic_slot(nil), do: first_empty_meshtastic_channel_slot()
-
-  defp pick_meshtastic_slot(idx) when is_integer(idx) and idx in 1..7 do
-    case Enum.find(MeshtasticCompanion.list_channels(), &(&1.index == idx)) do
+  defp pick_meshcore_slot(idx) when is_integer(idx) and idx in 1..7 do
+    case Enum.find(Companion.list_channels(), &(&1.index == idx)) do
       %{empty?: false} -> {:error, :slot_occupied}
       _ -> {:ok, idx}
     end
   end
 
-  defp pick_meshtastic_slot(_), do: {:error, :invalid_slot}
+  defp pick_meshcore_slot(_), do: {:error, :invalid_slot}
+
+  defp first_empty_meshtastic_channel_slot(port) do
+    first_empty_slot(MeshtasticCompanion.list_channels(port))
+  end
+
+  defp ensure_group_meshtastic_free(%RegistrationGroup{meshtastic_channel_idx: nil}), do: :ok
+  defp ensure_group_meshtastic_free(_), do: {:error, :already_linked}
+
+  defp pick_meshtastic_slot(nil, port), do: first_empty_meshtastic_channel_slot(port)
+
+  defp pick_meshtastic_slot(idx, port) when is_integer(idx) and idx in 1..7 do
+    case Enum.find(MeshtasticCompanion.list_channels(port), &(&1.index == idx)) do
+      %{empty?: false} -> {:error, :slot_occupied}
+      _ -> {:ok, idx}
+    end
+  end
+
+  defp pick_meshtastic_slot(_, _), do: {:error, :invalid_slot}
 
   defp first_empty_slot(channels) do
     by_idx = Map.new(channels, &{&1.index, &1})

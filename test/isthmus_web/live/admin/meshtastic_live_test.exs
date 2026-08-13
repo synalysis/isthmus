@@ -20,15 +20,32 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
     %{conn: conn}
   end
 
-  test "renders companion and groups-channels sections", %{conn: conn} do
+  test "renders connected radios without a separate groups section", %{conn: conn} do
     {:ok, view, html} = live(conn, ~p"/admin/meshtastic")
 
-    assert has_element?(view, "#companion-status")
-    assert has_element?(view, "#groups-channels")
-    assert has_element?(view, "#companion-setup-card")
-    assert has_element?(view, "#reconnect-meshtastic-btn")
+    assert has_element?(view, "#connected-radios")
+    assert has_element?(view, "#devices-empty")
     assert has_element?(view, "#rescan-meshtastic-btn")
+    refute has_element?(view, "#groups-channels")
+    refute has_element?(view, "#companion-setup-card")
+    refute has_element?(view, "#channel-bridge-detail")
+    refute has_element?(view, "#companion-status")
+    refute has_element?(view, "#reconnect-meshtastic-btn")
+    refute has_element?(view, "#meshtastic-lora-modal")
     refute has_element?(view, "#meshtastic-lora-form")
-    assert html =~ "auto-detected"
+    refute has_element?(view, "#meshtastic-invite-modal")
+    refute has_element?(view, "#channel-bridge-form")
+    refute has_element?(view, "#create-channel-on-group-btn")
+    refute html =~ "New group + private channel"
+    refute html =~ "Groups and radio channels"
+    assert html =~ "Connected radios"
+    assert html =~ "companion radios"
+  end
+
+  test "rescan flashes a result", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
+
+    view |> element("#rescan-meshtastic-btn") |> render_click()
+    assert render(view) =~ "Rescanned"
   end
 end

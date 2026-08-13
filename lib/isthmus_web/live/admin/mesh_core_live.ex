@@ -23,13 +23,10 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
      |> assign(:page_title, "MeshCore")
      |> assign(:channel_syncing, false)
      |> assign(:channel_invite, nil)
-     |> assign(:selected_bridge_id, nil)
      |> assign(:radio_applying, false)
+     |> assign(:radio_modal, nil)
      |> assign(:synthetic_health, %{status: :unknown, identities: []})
-     |> assign(:channel_bridge_form, to_form(%{"display_name" => ""}))
-     |> assign(:channel_link_form, to_form(%{"group_id" => "", "channel_idx" => ""}))
-     |> assign(:companion_radio_form, to_form(RadioParams.empty_form_params()))
-     |> assign(:repeater_radio_form, to_form(RadioParams.empty_form_params()))
+     |> assign(:radio_form, to_form(RadioParams.empty_form_params(), as: :radio))
      |> refresh()}
   end
 
@@ -53,94 +50,39 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     end
   end
 
-  def handle_event("create_bridge_with_channel", %{"display_name" => name}, socket) do
-    owner = socket.assigns.current_user.pubkey_hex
+  def handle_event("reconnect_companion", _params, socket) do
+    Companion.reconnect()
 
-    result =
-      try do
-        Registrations.create_bridge_with_channel(owner, %{
-          display_name: String.trim(name),
-          created_by: "admin"
-        })
-      catch
-        :exit, {:timeout, _} -> {:error, :timeout}
-        :exit, reason -> {:error, {:exit, reason}}
-      end
-
-    case result do
-      {:ok, group} ->
-        {:noreply,
-         socket
-         |> put_flash(
-           :info,
-           "Group + private MeshCore channel created (slot #{group.meshcore_channel_idx})."
-         )
-         |> assign(:selected_bridge_id, group.id)
-         |> assign(:channel_bridge_form, to_form(%{"display_name" => ""}))
-         |> assign(:channel_invite, nil)
-         |> refresh()}
-
-      {:error, :not_connected} ->
-        {:noreply, put_flash(socket, :error, "MeshCore companion offline.")}
-
-      {:error, :no_empty_channel_slot} ->
-        {:noreply, put_flash(socket, :error, "No empty private channel slots (1–7).")}
-
-      {:error, :timeout} ->
-        {:noreply, put_flash(socket, :error, "Timed out talking to MeshCore companion.")}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Could not create: #{inspect(reason)}")}
-    end
-  end
-
-  def handle_event("select_bridge", %{"id" => id}, socket) do
     {:noreply,
      socket
-     |> assign(:selected_bridge_id, id)
-     |> assign(:channel_invite, nil)}
+     |> put_flash(:info, "Reconnecting MeshCore companion…")
+     |> refresh()}
   end
 
-  def handle_event("link_channel", params, socket) do
-    group = Registrations.get_group!(params["group_id"])
-    idx = String.to_integer(params["channel_idx"] || "0")
+  def handle_event("assign_slot_group", params, socket) do
+    idx = parse_slot(params["channel_idx"])
+    group_id = String.trim(to_string(params["group_id"] || ""))
+    current = linked_group(socket.assigns.groups, idx)
 
-    with %{secret_hex: secret} when is_binary(secret) <- Companion.get_channel(idx),
-         {:ok, _} <- Registrations.link_meshcore_channel(group, idx, secret) do
-      {:noreply,
-       socket
-       |> assign(:selected_bridge_id, group.id)
-       |> assign(:channel_invite, nil)
-       |> put_flash(:info, "Channel #{idx} linked.")
-       |> refresh()}
-    else
-      nil ->
-        {:noreply, put_flash(socket, :error, "Channel not in companion cache — sync first.")}
-
-      {:error, :channel_already_linked} ->
-        {:noreply, put_flash(socket, :error, "Channel already linked to another group.")}
-
-      {:error, :not_a_bridge_group} ->
-        {:noreply, put_flash(socket, :error, "Only bridge groups can link channels.")}
-
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Link failed: #{inspect(reason)}")}
-    end
-  end
-
-  def handle_event("unlink_channel", %{"id" => id}, socket) do
-    group = Registrations.get_group!(id)
-
-    case Registrations.unlink_meshcore_channel(group) do
-      {:ok, _} ->
+    cond do
+      idx not in 1..7 ->
         {:noreply,
-         socket
-         |> assign(:channel_invite, nil)
-         |> put_flash(:info, "Channel unlinked.")
-         |> refresh()}
+         put_flash(socket, :error, "Pick a private slot (1–7). Slot 0 is the public channel.")}
 
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Unlink failed: #{inspect(reason)}")}
+      group_id == "" and is_nil(current) ->
+        {:noreply, socket}
+
+      group_id == "" ->
+        unlink_slot(socket, current)
+
+      current && current.id == group_id ->
+        {:noreply, socket}
+
+      empty_channel?(socket.assigns.meshcore_channels, idx) ->
+        provision_channel(socket, Registrations.get_group!(group_id), idx: idx)
+
+      true ->
+        link_occupied_slot(socket, group_id, idx, current)
     end
   end
 
@@ -149,13 +91,10 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
     case Registrations.meshcore_channel_invite(group) do
       {:ok, invite} ->
-        {:noreply,
-         socket
-         |> assign(:selected_bridge_id, group.id)
-         |> assign(:channel_invite, invite)}
+        {:noreply, assign(socket, :channel_invite, invite)}
 
       {:error, :no_channel_linked} ->
-        {:noreply, put_flash(socket, :error, "No MeshCore channel linked to this bridge.")}
+        {:noreply, put_flash(socket, :error, "No MeshCore channel linked to this group.")}
 
       {:error, _} ->
         {:noreply, put_flash(socket, :error, "Could not decrypt channel invite.")}
@@ -179,16 +118,42 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     end
   end
 
-  def handle_event("validate_companion_radio", %{"radio" => params} = payload, socket) do
-    params = RadioParams.apply_form_change(params, payload["_target"])
+  def handle_event("open_radio_config", %{"device_id" => id}, socket) do
+    case Enum.find(socket.assigns.devices, &(&1.id == id)) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Unknown device — rescan USB and try again.")}
 
-    {:noreply, assign(socket, :companion_radio_form, to_form(params, as: :radio))}
+      device ->
+        case radio_config_kind(device) do
+          nil ->
+            {:noreply, put_flash(socket, :error, "This radio has no settings to edit.")}
+
+          kind ->
+            health =
+              if kind == :companion,
+                do: device.companion_health,
+                else: device.bridge_cli_health
+
+            {:noreply,
+             socket
+             |> assign(:radio_modal, %{
+               kind: kind,
+               device_id: device.id,
+               label: device.label
+             })
+             |> assign(:radio_form, to_form(radio_form_from_health(health), as: :radio))}
+        end
+    end
   end
 
-  def handle_event("validate_repeater_radio", %{"radio" => params} = payload, socket) do
+  def handle_event("close_radio_config", _params, socket) do
+    {:noreply, assign(socket, :radio_modal, nil)}
+  end
+
+  def handle_event("validate_radio", %{"radio" => params} = payload, socket) do
     params = RadioParams.apply_form_change(params, payload["_target"])
 
-    {:noreply, assign(socket, :repeater_radio_form, to_form(params, as: :radio))}
+    {:noreply, assign(socket, :radio_form, to_form(params, as: :radio))}
   end
 
   def handle_event("save_companion_radio", %{"radio" => params} = payload, socket) do
@@ -199,6 +164,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
          :ok <- Companion.set_tx_power(params["tx_power"] || params[:tx_power]) do
       {:noreply,
        socket
+       |> assign(:radio_modal, nil)
        |> put_flash(:info, "Companion radio updated on #{device_label(socket, device_id)}.")
        |> refresh()}
     else
@@ -222,6 +188,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
       {:noreply,
        socket
        |> assign(:radio_applying, false)
+       |> assign(:radio_modal, nil)
        |> put_flash(
          :info,
          "Repeater radio applied on #{device_label(socket, device_id)} — rebooting, bridge will reconnect shortly."
@@ -268,13 +235,6 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     groups = Registrations.list_all()
     bridges = Enum.filter(groups, &(&1.kind == "bridge" and &1.status == "active"))
 
-    selected_id = socket.assigns[:selected_bridge_id]
-
-    selected =
-      Enum.find(bridges, &(&1.id == selected_id)) ||
-        Enum.find(bridges, &(&1.meshcore_channel_idx != nil)) ||
-        List.first(bridges)
-
     companion = Companion.health()
     bridge_cli = BridgeCLI.health()
     bridge_link = BridgeLink.health()
@@ -291,8 +251,6 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     socket
     |> assign(:groups, groups)
     |> assign(:bridges, bridges)
-    |> assign(:selected_bridge, selected)
-    |> assign(:selected_bridge_id, selected && selected.id)
     |> assign(:meshcore_channels, Companion.list_channels())
     |> assign(:companion_health, companion)
     |> assign(:bridge_health, bridge_link)
@@ -300,8 +258,6 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     |> assign(:synthetic_health, SyntheticNode.health())
     |> assign(:discovered_roles, roles)
     |> assign(:devices, devices)
-    |> assign(:companion_radio_form, to_form(radio_form_from_health(companion), as: :radio))
-    |> assign(:repeater_radio_form, to_form(radio_form_from_health(bridge_cli), as: :radio))
     |> assign(:channel_syncing, socket.assigns[:channel_syncing] || false)
     |> assign(:radio_applying, socket.assigns[:radio_applying] || false)
   end
@@ -316,15 +272,39 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
   defp radio_form_from_health(_), do: RadioParams.empty_form_params()
 
+  defp radio_config_kind(device) do
+    cond do
+      device.companion? and is_map(device.companion_health) and
+          is_binary(device.companion_health[:port]) ->
+        :companion
+
+      device.bridge_cli? and is_map(device.bridge_cli_health) and
+        is_binary(device.bridge_cli_health[:port]) and
+          device.bridge_cli_health[:status] != :disabled ->
+        :repeater
+
+      true ->
+        nil
+    end
+  end
+
+  defp radio_config_active?(device, :companion), do: device.active_companion?
+  defp radio_config_active?(device, :repeater), do: device.active_bridge_cli?
+
   defp format_err(reason) when is_binary(reason), do: reason
   defp format_err(reason), do: inspect(reason)
 
-  defp format_roles_flash(roles) when map_size(roles) == 0, do: "no MeshCore devices found"
-
   defp format_roles_flash(roles) do
-    roles
-    |> Enum.map(fn {role, %{path: path}} -> "#{role} @ #{path}" end)
-    |> Enum.join(", ")
+    formatted =
+      Enum.flat_map(roles, fn
+        {role, %{path: path}} when role in [:companion, :bridge_cli, :bridge_packet] ->
+          ["#{role} @ #{path}"]
+
+        _ ->
+          []
+      end)
+
+    if formatted == [], do: "no MeshCore devices found", else: Enum.join(formatted, ", ")
   end
 
   defp ensure_device_role(socket, device_id, role) do
@@ -496,10 +476,169 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
   defp format_age(_), do: "never"
 
-  defp linked_group_name(groups, idx) do
-    case Enum.find(groups, &(&1.status == "active" and &1.meshcore_channel_idx == idx)) do
-      %{display_name: name} -> name
-      _ -> nil
+  defp slot_role(%{index: 0}), do: "public"
+  defp slot_role(%{empty?: true}), do: "empty"
+  defp slot_role(_), do: "private"
+
+  defp linked_group(groups, idx) do
+    Enum.find(groups, &(&1.status == "active" and &1.meshcore_channel_idx == idx))
+  end
+
+  defp assignable_groups(bridges, idx) do
+    Enum.filter(bridges, fn g ->
+      is_nil(g.meshcore_channel_idx) or g.meshcore_channel_idx == idx
+    end)
+  end
+
+  defp channel_rows(channels) do
+    by_idx = Map.new(channels || [], &{&1.index, &1})
+
+    Enum.map(0..7, fn i ->
+      Map.get(by_idx, i) || %{index: i, name: "", empty?: true}
+    end)
+  end
+
+  defp empty_channel?(channels, idx) do
+    case Enum.find(channels || [], &(&1.index == idx)) do
+      %{empty?: true} -> true
+      nil -> true
+      _ -> false
+    end
+  end
+
+  defp parse_slot(idx) when is_integer(idx), do: idx
+
+  defp parse_slot(idx) when is_binary(idx) do
+    case Integer.parse(idx) do
+      {n, ""} -> n
+      _ -> -1
+    end
+  end
+
+  defp parse_slot(_), do: -1
+
+  defp provision_channel(socket, group, opts) do
+    result =
+      try do
+        Registrations.provision_meshcore_channel(group, opts)
+      catch
+        :exit, {:timeout, _} -> {:error, :timeout}
+        :exit, reason -> {:error, {:exit, reason}}
+      end
+
+    case result do
+      {:ok, linked} ->
+        {:noreply,
+         socket
+         |> assign(:channel_invite, nil)
+         |> put_flash(
+           :info,
+           "Private MeshCore channel created on slot #{linked.meshcore_channel_idx}."
+         )
+         |> refresh()}
+
+      {:error, :not_connected} ->
+        {:noreply, put_flash(socket, :error, "MeshCore companion offline.")}
+
+      {:error, :no_empty_channel_slot} ->
+        {:noreply, put_flash(socket, :error, "No empty private channel slots (1–7).")}
+
+      {:error, :slot_occupied} ->
+        {:noreply, put_flash(socket, :error, "That slot is already configured on the radio.")}
+
+      {:error, :already_linked} ->
+        {:noreply, put_flash(socket, :error, "This group already has a MeshCore channel.")}
+
+      {:error, :timeout} ->
+        {:noreply, put_flash(socket, :error, "Timed out talking to MeshCore companion.")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Could not create channel: #{inspect(reason)}")}
+    end
+  end
+
+  defp unlink_slot(socket, group) do
+    idx = group.meshcore_channel_idx
+
+    case clear_radio_slot(idx) do
+      :ok ->
+        finish_unlink(socket, group, "Channel unlinked and slot #{idx} cleared on the radio.")
+
+      {:error, :not_connected} ->
+        finish_unlink(
+          socket,
+          group,
+          "Channel unlinked. Companion offline — the radio slot was not cleared."
+        )
+
+      {:error, reason} ->
+        {:noreply,
+         put_flash(socket, :error, "Could not clear radio slot #{idx}: #{format_err(reason)}")}
+    end
+  end
+
+  defp clear_radio_slot(idx) when is_integer(idx) and idx in 1..7 do
+    case Companion.clear_channel(idx) do
+      {:ok, _} -> :ok
+      {:error, _} = err -> err
+    end
+  end
+
+  defp clear_radio_slot(_), do: :ok
+
+  defp finish_unlink(socket, group, message) do
+    case Registrations.unlink_meshcore_channel(group) do
+      {:ok, _} ->
+        {:noreply,
+         socket
+         |> assign(:channel_invite, nil)
+         |> put_flash(:info, message)
+         |> refresh()}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Unlink failed: #{inspect(reason)}")}
+    end
+  end
+
+  defp link_occupied_slot(socket, group_id, idx, current) do
+    group = Registrations.get_group!(group_id)
+
+    with :ok <- maybe_unlink(current),
+         %{secret_hex: secret} when is_binary(secret) and secret != "" <-
+           Companion.get_channel(idx),
+         {:ok, _} <- Registrations.link_meshcore_channel(group, idx, secret) do
+      {:noreply,
+       socket
+       |> assign(:channel_invite, nil)
+       |> put_flash(:info, "Channel #{idx} linked to #{group.display_name}.")
+       |> refresh()}
+    else
+      {:error, :unlink_failed, reason} ->
+        {:noreply, put_flash(socket, :error, "Unlink failed: #{inspect(reason)}")}
+
+      nil ->
+        {:noreply, put_flash(socket, :error, "Channel not in companion cache — sync first.")}
+
+      %{secret_hex: _} ->
+        {:noreply, put_flash(socket, :error, "Channel has no secret — pick a private slot.")}
+
+      {:error, :channel_already_linked} ->
+        {:noreply, put_flash(socket, :error, "Channel already linked to another group.")}
+
+      {:error, :not_a_bridge_group} ->
+        {:noreply, put_flash(socket, :error, "Only bridge groups can link channels.")}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Link failed: #{inspect(reason)}")}
+    end
+  end
+
+  defp maybe_unlink(nil), do: :ok
+
+  defp maybe_unlink(group) do
+    case Registrations.unlink_meshcore_channel(group) do
+      {:ok, _} -> :ok
+      {:error, reason} -> {:error, :unlink_failed, reason}
     end
   end
 
@@ -518,8 +657,9 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
       <section class="space-y-10">
         <.admin_header current={:meshcore} title="MeshCore">
           Connect radios here. An <strong class="font-medium">island tunnel radio</strong>
-          carries mesh traffic for tunnels; a <strong class="font-medium">companion radio</strong>
-          links private channels to groups.
+          carries mesh traffic for tunnels. On a <strong class="font-medium">companion</strong>,
+          slot 0 is public; assign a group to slots 1–7. <strong class="font-medium">Invite</strong>
+          shows the secret / QR for another MeshCore device.
         </.admin_header>
 
         <%!-- 1. Connected radios --%>
@@ -529,6 +669,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
               <h2 class="text-lg font-medium">Connected radios</h2>
               <p class="text-xs opacity-70 mt-1">
                 What each USB radio is for. Controls stay on the radio they belong to.
+                Create groups on Groups, then assign them from a companion’s slot table.
               </p>
             </div>
             <div class="flex flex-wrap items-center gap-3">
@@ -540,7 +681,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                 Rescan USB
               </button>
               <.link navigate={~p"/admin/registrations"} class="link link-hover text-sm">
-                Manage group members →
+                Manage groups →
               </.link>
             </div>
           </div>
@@ -594,6 +735,39 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                     </p>
                   <% end %>
                 </div>
+                <div class="flex flex-wrap items-center gap-2">
+                  <button
+                    :if={device.companion?}
+                    class="btn btn-outline btn-sm"
+                    id={"reconnect-#{device_dom_id(device.id)}"}
+                    phx-click="reconnect_companion"
+                    type="button"
+                  >
+                    Reconnect
+                  </button>
+                  <button
+                    :if={device.companion?}
+                    class={["btn btn-outline btn-sm", @channel_syncing && "loading"]}
+                    phx-click="sync_meshcore_channels"
+                    id={"sync-channels-#{device_dom_id(device.id)}"}
+                    type="button"
+                    disabled={@channel_syncing or not device.active_companion?}
+                  >
+                    {if(@channel_syncing, do: "Syncing…", else: "Sync channels")}
+                  </button>
+                  <%= if kind = radio_config_kind(device) do %>
+                    <button
+                      class="btn btn-primary btn-sm"
+                      id={"open-radio-#{device_dom_id(device.id)}"}
+                      phx-click="open_radio_config"
+                      phx-value-device-id={device.id}
+                      type="button"
+                      disabled={not radio_config_active?(device, kind)}
+                    >
+                      Radio configuration
+                    </button>
+                  <% end %>
+                </div>
               </div>
 
               <div class="overflow-x-auto">
@@ -603,7 +777,6 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                       <th>Port role</th>
                       <th>Status</th>
                       <th>Used for</th>
-                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -622,22 +795,93 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                         <% end %>
                       </td>
                       <td class="text-sm opacity-80">{AdminCopy.role_used_for(port.role)}</td>
-                      <td class="text-right">
-                        <%= if port.role == :companion do %>
-                          <button
-                            class={["btn btn-outline btn-xs", @channel_syncing && "loading"]}
-                            phx-click="sync_meshcore_channels"
-                            phx-value-device-id={device.id}
-                            id={"sync-channels-btn-#{device_dom_id(device.id)}"}
-                            disabled={@channel_syncing or not device.active_companion?}
-                          >
-                            {if(@channel_syncing, do: "Syncing…", else: "Sync channels")}
-                          </button>
-                        <% end %>
-                      </td>
                     </tr>
                   </tbody>
                 </table>
+              </div>
+
+              <div :if={device.active_companion?} class="space-y-4">
+                <div class="overflow-x-auto">
+                  <table class="table table-sm" id={"channels-#{device_dom_id(device.id)}"}>
+                    <thead>
+                      <tr>
+                        <th>Slot</th>
+                        <th>Name</th>
+                        <th>Role</th>
+                        <th>Linked group</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr
+                        :for={ch <- channel_rows(@meshcore_channels)}
+                        id={"#{device_dom_id(device.id)}-ch-#{ch.index}"}
+                      >
+                        <td>{ch.index}</td>
+                        <td>{if ch.empty?, do: "—", else: ch.name}</td>
+                        <td>
+                          <span class={[
+                            "badge badge-sm",
+                            ch.empty? && "badge-ghost",
+                            not ch.empty? && ch.index == 0 && "badge-warning",
+                            not ch.empty? && ch.index != 0 && "badge-primary"
+                          ]}>
+                            {slot_role(ch)}
+                          </span>
+                        </td>
+                        <td>
+                          <%= if ch.index == 0 do %>
+                            <span class="opacity-60">—</span>
+                          <% else %>
+                            <% linked = linked_group(@groups, ch.index) %>
+                            <% choices = assignable_groups(@bridges, ch.index) %>
+                            <%= if @bridges == [] do %>
+                              <p class="text-xs opacity-70">
+                                <.link navigate={~p"/admin/registrations"} class="link">
+                                  Create a group
+                                </.link>
+                                first.
+                              </p>
+                            <% else %>
+                              <div class="flex flex-wrap items-center gap-2">
+                                <form
+                                  id={"slot-group-form-#{device_dom_id(device.id)}-#{ch.index}"}
+                                  phx-change="assign_slot_group"
+                                  class="min-w-0 grow"
+                                >
+                                  <input type="hidden" name="channel_idx" value={ch.index} />
+                                  <select
+                                    id={"slot-group-#{device_dom_id(device.id)}-#{ch.index}"}
+                                    name="group_id"
+                                    class="select select-bordered select-sm w-full max-w-xs"
+                                  >
+                                    <option value="" selected={is_nil(linked)}>—</option>
+                                    <option
+                                      :for={g <- choices}
+                                      value={g.id}
+                                      selected={linked && linked.id == g.id}
+                                    >
+                                      {g.display_name}
+                                    </option>
+                                  </select>
+                                </form>
+                                <button
+                                  :if={linked}
+                                  type="button"
+                                  class="btn btn-outline btn-xs shrink-0"
+                                  id={"show-invite-#{device_dom_id(device.id)}-#{ch.index}"}
+                                  phx-click="show_channel_invite"
+                                  phx-value-id={linked.id}
+                                >
+                                  Invite
+                                </button>
+                              </div>
+                            <% end %>
+                          <% end %>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
               </div>
 
               <details class="text-xs opacity-70" id={"#{device_dom_id(device.id)}-tech"}>
@@ -659,80 +903,6 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                   </div>
                 </dl>
               </details>
-
-              <%= if device.companion? and is_map(device.companion_health) and
-                       is_binary(device.companion_health[:port]) do %>
-                <div
-                  class="space-y-3 rounded-lg border border-base-300 bg-base-100/40 p-4"
-                  id={"#{device_dom_id(device.id)}-companion-radio"}
-                >
-                  <div>
-                    <h4 class="font-medium">Radio settings</h4>
-                    <p class="text-xs opacity-70">
-                      MeshCore app presets, or frequency and TX for this companion radio.
-                    </p>
-                  </div>
-                  <.form
-                    for={@companion_radio_form}
-                    id={"companion-radio-form-#{device_dom_id(device.id)}"}
-                    phx-change="validate_companion_radio"
-                    phx-submit="save_companion_radio"
-                    class="space-y-3"
-                  >
-                    <input type="hidden" name="device_id" value={device.id} />
-                    <.radio_fields
-                      form={@companion_radio_form}
-                      id_prefix={"companion-#{device_dom_id(device.id)}"}
-                    />
-                    <button
-                      class="btn btn-primary btn-sm"
-                      type="submit"
-                      id={"save-companion-radio-btn-#{device_dom_id(device.id)}"}
-                      disabled={not device.active_companion?}
-                    >
-                      Save
-                    </button>
-                  </.form>
-                </div>
-              <% end %>
-
-              <%= if device.bridge_cli? and is_map(device.bridge_cli_health) and
-                       is_binary(device.bridge_cli_health[:port]) and
-                       device.bridge_cli_health[:status] != :disabled do %>
-                <div
-                  class="space-y-3 rounded-lg border border-base-300 bg-base-100/40 p-4"
-                  id={"#{device_dom_id(device.id)}-repeater-radio"}
-                >
-                  <div>
-                    <h4 class="font-medium">Radio settings</h4>
-                    <p class="text-xs opacity-70">
-                      MeshCore app presets for this island tunnel radio. Apply reboots the radio —
-                      mesh traffic drops briefly.
-                    </p>
-                  </div>
-                  <.form
-                    for={@repeater_radio_form}
-                    id={"repeater-radio-form-#{device_dom_id(device.id)}"}
-                    phx-change="validate_repeater_radio"
-                    phx-submit="apply_repeater_radio"
-                    class="space-y-3"
-                  >
-                    <input type="hidden" name="device_id" value={device.id} />
-                    <.radio_fields
-                      form={@repeater_radio_form}
-                      id_prefix={"repeater-#{device_dom_id(device.id)}"}
-                    />
-                    <button
-                      class={["btn btn-primary btn-sm", @radio_applying && "loading"]}
-                      type="submit"
-                      id={"apply-repeater-radio-btn-#{device_dom_id(device.id)}"}
-                      disabled={not device.active_bridge_cli? or @radio_applying}
-                    >
-                      {if(@radio_applying, do: "Applying…", else: "Apply & reboot")}
-                    </button>
-                  </.form>
-                </div>
-              <% end %>
             </div>
           </div>
         </div>
@@ -815,8 +985,11 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
               <%= if (@synthetic_health[:identities] || []) == [] do %>
                 <p class="text-sm opacity-70">
-                  No mesh contacts loaded yet. Create a group with a private channel below, or mint
-                  one from /me.
+                  No mesh contacts loaded yet. Create groups on <.link
+                    navigate={~p"/admin/registrations"}
+                    class="link"
+                  >Groups</.link>,
+                  assign one on a companion slot, or mint a contact from /me.
                 </p>
               <% else %>
                 <div class="overflow-x-auto">
@@ -854,261 +1027,131 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
           </div>
         </div>
 
-        <%!-- 3. Groups and radio channels --%>
-        <div class="space-y-4" id="groups-channels">
-          <div>
-            <h2 class="text-lg font-medium">Groups and radio channels</h2>
-            <p class="text-xs opacity-70 mt-1">
-              Link a private MeshCore channel on a companion radio to an Isthmus
-              <strong class="font-medium">group</strong>
-              so members across networks share that channel.
+        <div
+          :if={@channel_invite}
+          class="modal modal-open"
+          role="dialog"
+          id="meshcore-invite-modal"
+        >
+          <div class="modal-box max-w-lg">
+            <h3 class="text-lg font-semibold">Channel invite</h3>
+            <p class="text-sm opacity-70 mt-1">
+              On another MeshCore device: join this private channel, then send a message —
+              Isthmus fans it out to attached group members.
             </p>
-          </div>
-
-          <%= if @companion_health.status != :online do %>
-            <div
-              class="rounded-lg border border-base-300 bg-base-200/50 p-4 space-y-2"
-              id="companion-setup-card"
-            >
-              <p class="text-sm">
-                To create or sync private channels, connect a
-                <strong class="font-medium">companion radio</strong>
-                (separate from the island tunnel radio).
-              </p>
-              <p class="text-sm opacity-70">
-                Membership for groups is managed on <.link
-                  navigate={~p"/admin/registrations"}
-                  class="link"
-                >Groups</.link>.
-              </p>
-            </div>
-          <% else %>
-            <div class="grid gap-6 lg:grid-cols-2" id="companion-channel-tools">
-              <div class="card bg-base-200 border border-base-300">
-                <div class="card-body space-y-3">
-                  <h3 class="card-title text-base">New group + private channel</h3>
-                  <p class="text-xs opacity-70">
-                    Creates a group and provisions a private channel (slots 1–7) on the companion.
-                  </p>
-                  <.form
-                    for={@channel_bridge_form}
-                    id="channel-bridge-form"
-                    phx-submit="create_bridge_with_channel"
-                    class="space-y-3"
-                  >
-                    <.input
-                      field={@channel_bridge_form[:display_name]}
-                      type="text"
-                      label="Group name"
-                      placeholder="Lobby"
-                    />
-                    <button class="btn btn-primary btn-sm" type="submit">Create</button>
-                  </.form>
-                </div>
-              </div>
-
-              <div class="card bg-base-200 border border-base-300">
-                <div class="card-body space-y-3">
-                  <h3 class="card-title text-base">Link channel to existing group</h3>
-                  <%= if @bridges == [] do %>
-                    <p class="text-sm opacity-70">
-                      Create a group on
-                      <.link navigate={~p"/admin/registrations"} class="link">Groups</.link>
-                      first, or use “New group + private channel”.
-                    </p>
-                  <% else %>
-                    <.form
-                      for={@channel_link_form}
-                      id="channel-link-form"
-                      phx-submit="link_channel"
-                      class="space-y-3"
-                    >
-                      <div>
-                        <label class="label" for="link-bridge">
-                          <span class="label-text">Group</span>
-                        </label>
-                        <select id="link-bridge" name="group_id" class="select select-bordered w-full">
-                          <option
-                            :for={g <- @bridges}
-                            value={g.id}
-                            selected={g.id == @selected_bridge_id}
-                          >
-                            {g.display_name}
-                          </option>
-                        </select>
-                      </div>
-                      <div>
-                        <label class="label" for="link-channel">
-                          <span class="label-text">Private channel slot</span>
-                        </label>
-                        <select
-                          id="link-channel"
-                          name="channel_idx"
-                          class="select select-bordered w-full"
-                        >
-                          <option
-                            :for={ch <- @meshcore_channels}
-                            :if={not ch.empty?}
-                            value={ch.index}
-                          >
-                            #{ch.index} — {ch.name || "unnamed"}
-                          </option>
-                        </select>
-                      </div>
-                      <button class="btn btn-primary btn-sm" type="submit">Link</button>
-                    </.form>
-                  <% end %>
-                </div>
-              </div>
-            </div>
-
-            <div class="overflow-x-auto">
-              <table class="table table-sm" id="meshcore-channels-table">
-                <thead>
-                  <tr>
-                    <th>Slot</th>
-                    <th>Name</th>
-                    <th>Status</th>
-                    <th>Linked group</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={ch <- @meshcore_channels} id={"channel-#{ch.index}"}>
-                    <td>{ch.index}</td>
-                    <td>{if ch.empty?, do: "—", else: ch.name}</td>
-                    <td>
-                      <span class={[
-                        "badge badge-sm",
-                        ch.empty? && "badge-ghost",
-                        not ch.empty? && "badge-primary"
-                      ]}>
-                        {if ch.empty?, do: "empty", else: "active"}
-                      </span>
-                    </td>
-                    <td>{linked_group_name(@groups, ch.index) || "—"}</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          <% end %>
-
-          <div
-            :if={@selected_bridge}
-            class="card bg-base-200 border border-base-300"
-            id="channel-bridge-detail"
-          >
-            <div class="card-body space-y-3">
-              <div class="flex flex-wrap items-center gap-2">
-                <h3 class="text-xl font-medium">{@selected_bridge.display_name}</h3>
-                <span class="badge badge-secondary badge-sm">group</span>
-                <select
-                  id="invite-bridge-select"
-                  class="select select-bordered select-sm"
-                  phx-change="select_bridge"
-                  name="id"
-                >
-                  <option :for={g <- @bridges} value={g.id} selected={g.id == @selected_bridge_id}>
-                    {g.display_name}
-                    <%= if g.meshcore_channel_idx != nil do %>
-                      (slot {g.meshcore_channel_idx})
-                    <% end %>
-                  </option>
-                </select>
-              </div>
-
-              <%= if @selected_bridge.meshcore_channel_idx != nil do %>
-                <div
-                  class="space-y-3 rounded-lg border border-base-300 bg-base-100/40 p-4"
-                  id="channel-invite-section"
-                >
-                  <div class="flex flex-wrap items-center gap-2">
-                    <p class="text-sm opacity-70 grow">
-                      Linked private MeshCore channel · slot {@selected_bridge.meshcore_channel_idx}
-                    </p>
-                    <%= if @channel_invite do %>
-                      <button
-                        type="button"
-                        class="btn btn-ghost btn-xs"
-                        id="hide-channel-invite-btn"
-                        phx-click="hide_channel_invite"
-                      >
-                        Hide invite
-                      </button>
-                    <% else %>
-                      <button
-                        type="button"
-                        class="btn btn-outline btn-xs"
-                        id="show-channel-invite-btn"
-                        phx-click="show_channel_invite"
-                        phx-value-id={@selected_bridge.id}
-                      >
-                        Show channel invite
-                      </button>
-                    <% end %>
-                    <button
-                      type="button"
-                      class="btn btn-ghost btn-xs text-error"
-                      phx-click="unlink_channel"
-                      phx-value-id={@selected_bridge.id}
-                    >
-                      Unlink
-                    </button>
-                  </div>
-
-                  <%= if @channel_invite do %>
-                    <p class="text-xs opacity-60">
-                      On another MeshCore device: join this private channel, then send a message —
-                      Isthmus fans it out to attached group members.
-                    </p>
-
-                    <div class="grid gap-4 md:grid-cols-2" id="channel-invite-panel">
-                      <div class="space-y-2" id="channel-invite-secret">
-                        <h4 class="text-sm font-medium">Secret key</h4>
-                        <p class="text-xs opacity-60">
-                          MeshCore app → join with secret key. Name + 32-char hex.
-                        </p>
-                        <dl class="space-y-2 text-sm">
-                          <div>
-                            <dt class="text-xs opacity-60">Name</dt>
-                            <dd class="font-mono select-all">{@channel_invite.name}</dd>
-                          </div>
-                          <div>
-                            <dt class="text-xs opacity-60">Secret</dt>
-                            <dd class="font-mono text-xs break-all select-all">
-                              {@channel_invite.secret_hex}
-                            </dd>
-                          </div>
-                          <div>
-                            <dt class="text-xs opacity-60">Gateway slot (local)</dt>
-                            <dd class="font-mono">{@channel_invite.slot}</dd>
-                          </div>
-                        </dl>
-                      </div>
-
-                      <div class="space-y-2" id="channel-invite-qr">
-                        <h4 class="text-sm font-medium">QR code</h4>
-                        <p class="text-xs opacity-60">
-                          MeshCore app → join with QR code (or paste the URI).
-                        </p>
-                        <%= if qr = QR.svg(@channel_invite.uri) do %>
-                          <div class="bg-white p-2 rounded-lg inline-block size-[236px]">
-                            {Phoenix.HTML.raw(qr)}
-                          </div>
-                        <% end %>
-                        <p class="font-mono text-xs break-all select-all opacity-80">
-                          {@channel_invite.uri}
-                        </p>
-                      </div>
-                    </div>
-                  <% end %>
-                </div>
-              <% else %>
-                <p class="text-sm opacity-70">
-                  This group has no private MeshCore channel linked yet.
+            <div class="mt-4 grid gap-4 md:grid-cols-2" id="channel-invite-panel">
+              <div class="space-y-2" id="channel-invite-secret">
+                <h4 class="text-sm font-medium">Secret key</h4>
+                <p class="text-xs opacity-60">
+                  MeshCore app → join with secret key. Name + 32-char hex.
                 </p>
-              <% end %>
+                <dl class="space-y-2 text-sm">
+                  <div>
+                    <dt class="text-xs opacity-60">Name</dt>
+                    <dd class="font-mono select-all">{@channel_invite.name}</dd>
+                  </div>
+                  <div>
+                    <dt class="text-xs opacity-60">Secret</dt>
+                    <dd class="font-mono text-xs break-all select-all">
+                      {@channel_invite.secret_hex}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt class="text-xs opacity-60">Gateway slot (local)</dt>
+                    <dd class="font-mono">{@channel_invite.slot}</dd>
+                  </div>
+                </dl>
+              </div>
+              <div class="space-y-2" id="channel-invite-qr">
+                <h4 class="text-sm font-medium">QR code</h4>
+                <p class="text-xs opacity-60">
+                  MeshCore app → join with QR code (or paste the URI).
+                </p>
+                <%= if qr = QR.svg(@channel_invite.uri) do %>
+                  <div class="bg-white p-2 rounded-lg inline-block size-[236px]">
+                    {Phoenix.HTML.raw(qr)}
+                  </div>
+                <% end %>
+                <p class="font-mono text-xs break-all select-all opacity-80">
+                  {@channel_invite.uri}
+                </p>
+              </div>
+            </div>
+            <div class="modal-action">
+              <button
+                class="btn btn-ghost btn-sm"
+                type="button"
+                id="hide-channel-invite-btn"
+                phx-click="hide_channel_invite"
+              >
+                Close
+              </button>
             </div>
           </div>
+          <div class="modal-backdrop" phx-click="hide_channel_invite"></div>
+        </div>
+
+        <div
+          :if={@radio_modal}
+          class="modal modal-open"
+          role="dialog"
+          id="meshcore-radio-modal"
+        >
+          <div class="modal-box max-w-lg">
+            <h3 class="text-lg font-semibold">Radio configuration</h3>
+            <p class="text-sm opacity-70 mt-1">
+              <%= if @radio_modal.kind == :companion do %>
+                MeshCore app presets, or frequency and TX for {@radio_modal.label}.
+              <% else %>
+                MeshCore app presets for {@radio_modal.label}. Apply reboots the radio —
+                mesh traffic drops briefly.
+              <% end %>
+            </p>
+            <.form
+              for={@radio_form}
+              id="meshcore-radio-form"
+              phx-change="validate_radio"
+              phx-submit={
+                if(@radio_modal.kind == :companion,
+                  do: "save_companion_radio",
+                  else: "apply_repeater_radio"
+                )
+              }
+              class="mt-4 space-y-3"
+            >
+              <input type="hidden" name="device_id" value={@radio_modal.device_id} />
+              <.radio_fields form={@radio_form} id_prefix="meshcore-radio" />
+              <div class="modal-action">
+                <button
+                  class="btn btn-ghost btn-sm"
+                  type="button"
+                  id="close-meshcore-radio-modal-btn"
+                  phx-click="close_radio_config"
+                >
+                  Cancel
+                </button>
+                <%= if @radio_modal.kind == :companion do %>
+                  <button
+                    class="btn btn-primary btn-sm"
+                    type="submit"
+                    id="save-companion-radio-btn"
+                  >
+                    Save
+                  </button>
+                <% else %>
+                  <button
+                    class={["btn btn-primary btn-sm", @radio_applying && "loading"]}
+                    type="submit"
+                    id="apply-repeater-radio-btn"
+                    disabled={@radio_applying}
+                  >
+                    {if(@radio_applying, do: "Applying…", else: "Apply & reboot")}
+                  </button>
+                <% end %>
+              </div>
+            </.form>
+          </div>
+          <div class="modal-backdrop" phx-click="close_radio_config"></div>
         </div>
       </section>
     </Layouts.app>

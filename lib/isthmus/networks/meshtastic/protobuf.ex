@@ -40,6 +40,11 @@ defmodule Isthmus.Networks.Meshtastic.Protobuf do
   def encode_bytes_field(_field, <<>>), do: <<>>
 
   def encode_bytes_field(field, value) when is_binary(value) do
+    encode_bytes_explicit(field, value)
+  end
+
+  @doc "Encode bytes even when empty (needed so a disabled channel clears name/PSK)."
+  def encode_bytes_explicit(field, value) when is_binary(value) do
     field_key(field, @wire_bytes) <> encode_varint(byte_size(value)) <> value
   end
 

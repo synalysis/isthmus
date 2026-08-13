@@ -25,20 +25,22 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
 
     assert has_element?(view, "#connected-radios")
     assert has_element?(view, "#island-mesh")
-    assert has_element?(view, "#groups-channels")
     assert has_element?(view, "#mesh-contacts")
     assert has_element?(view, "#rescan-devices-btn")
+    refute has_element?(view, "#groups-channels")
+    refute has_element?(view, "#companion-setup-card")
+    refute has_element?(view, "#channel-bridge-detail")
+    refute has_element?(view, "#channel-bridge-form")
+    refute has_element?(view, "#meshcore-invite-modal")
     refute has_element?(view, "#synthetic-identities-card")
     refute has_element?(view, "#companion-channels-alert")
+    refute has_element?(view, "#meshcore-radio-modal")
+    refute has_element?(view, "#meshcore-radio-form")
     refute html =~ "Unassigned"
+    refute html =~ "New group + private channel"
+    refute html =~ "Groups and radio channels"
     assert html =~ "Island mesh traffic"
     assert html =~ "Contacts on the mesh"
-  end
-
-  test "companion setup card when companion offline", %{conn: conn} do
-    {:ok, view, _html} = live(conn, ~p"/admin/meshcore")
-
-    assert has_element?(view, "#companion-setup-card")
   end
 
   test "rescan flashes a result", %{conn: conn} do

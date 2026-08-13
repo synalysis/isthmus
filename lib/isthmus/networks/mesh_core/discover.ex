@@ -92,6 +92,27 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     first_present([env.("ISTHMUS_MESHTASTIC_PORT"), role(:meshtastic, name)])
   end
 
+  @doc "All Meshtastic companion ports (env pin first, then every detected radio)."
+  def resolve_ports(:meshtastic, opts \\ []) do
+    env = Keyword.get(opts, :env, &System.get_env/1)
+    name = Keyword.get(opts, :discover, __MODULE__)
+    env_port = blank_to_nil(env.("ISTHMUS_MESHTASTIC_PORT"))
+    roles = roles(name)
+
+    detected =
+      (roles[:meshtastic_ports] || [])
+      |> Enum.map(fn
+        %{path: path} -> path
+        path when is_binary(path) -> path
+        _ -> nil
+      end)
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+
+    [env_port, role(:meshtastic, name) | detected]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
   @doc "Re-scan serial ports and notify link processes to reconnect."
   def refresh(name \\ __MODULE__) do
     case safe_call(name, :refresh, {:error, :not_started}, 15_000) do
@@ -132,19 +153,17 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     Logger.info("MeshCore discover: probing #{length(ports)} port(s)")
 
     {detected, claimed} =
-      Enum.reduce(ports, {%{}, MapSet.new()}, fn port, {acc, claimed} ->
+      Enum.reduce(ports, {%{meshtastic_ports: []}, MapSet.new()}, fn port, {acc, claimed} ->
         cond do
           MapSet.member?(claimed, port.path) ->
             {acc, claimed}
 
-          env_companion == port.path or env_cli == port.path or env_packet == port.path or
-              env_meshtastic == port.path ->
-            # Env-pinned ports are not actively probed; role comes from the env.
+          env_companion == port.path or env_cli == port.path or env_packet == port.path ->
             {acc, MapSet.put(claimed, port.path)}
 
-          Map.has_key?(acc, :companion) and Map.has_key?(acc, :bridge_cli) and
-              Map.has_key?(acc, :meshtastic) ->
-            {acc, claimed}
+          env_meshtastic == port.path ->
+            entry = %{path: port.path, source: :env, detail: port}
+            {add_meshtastic(acc, entry), MapSet.put(claimed, port.path)}
 
           true ->
             case probe.(port.path, port) do
@@ -162,9 +181,8 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
               :meshtastic ->
                 Logger.info("MeshCore discover: #{port.path} -> meshtastic")
-
-                {Map.put(acc, :meshtastic, %{path: port.path, source: :detected, detail: port}),
-                 MapSet.put(claimed, port.path)}
+                entry = %{path: port.path, source: :detected, detail: port}
+                {add_meshtastic(acc, entry), MapSet.put(claimed, port.path)}
 
               other ->
                 Logger.debug("MeshCore discover: #{port.path} -> #{inspect(other)}")
@@ -180,7 +198,11 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       |> put_role(:meshtastic, env_meshtastic, detected[:meshtastic], :env)
       |> maybe_packet(env_packet, detected[:bridge_cli], by_path, claimed)
 
-    roles
+    Map.put(
+      roles,
+      :meshtastic_ports,
+      merge_meshtastic_ports(detected[:meshtastic_ports], roles[:meshtastic])
+    )
   end
 
   @impl true
@@ -502,6 +524,15 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       end
     end
 
+    if Code.ensure_loaded?(Isthmus.Networks.Meshtastic.Supervisor) and
+         function_exported?(Isthmus.Networks.Meshtastic.Supervisor, :sync, 0) do
+      try do
+        Isthmus.Networks.Meshtastic.Supervisor.sync()
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
     :ok
   end
 
@@ -516,12 +547,45 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   defp blank_to_nil(""), do: nil
   defp blank_to_nil(v), do: v
 
-  defp format_roles(roles) when map_size(roles) == 0, do: "(none)"
-
   defp format_roles(roles) do
-    roles
-    |> Enum.map(fn {role, %{path: path, source: source}} -> "#{role}=#{path}(#{source})" end)
-    |> Enum.join(" ")
+    formatted =
+      roles
+      |> Enum.flat_map(fn
+        {:meshtastic_ports, list} when is_list(list) ->
+          Enum.map(list, fn
+            %{path: path, source: source} -> "meshtastic=#{path}(#{source})"
+            _ -> nil
+          end)
+          |> Enum.reject(&is_nil/1)
+
+        {role, %{path: path, source: source}} ->
+          ["#{role}=#{path}(#{source})"]
+
+        _ ->
+          []
+      end)
+
+    if formatted == [], do: "(none)", else: Enum.join(formatted, " ")
+  end
+
+  defp add_meshtastic(acc, entry) do
+    acc
+    |> Map.update(:meshtastic_ports, [entry], fn list ->
+      if Enum.any?(list, &(&1.path == entry.path)), do: list, else: list ++ [entry]
+    end)
+    |> Map.put_new(:meshtastic, entry)
+  end
+
+  defp merge_meshtastic_ports(detected, primary) do
+    list = detected || []
+
+    case primary do
+      %{path: path} = entry ->
+        if Enum.any?(list, &(&1.path == path)), do: list, else: [entry | list]
+
+      _ ->
+        list
+    end
   end
 
   defp safe_call(name, request, fallback, timeout \\ 2_000) do

@@ -194,10 +194,21 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
     psk = Map.get(ch, :psk) || psk_from_hex(Map.get(ch, :psk_hex) || Map.get(ch, :secret_hex))
     name = Map.get(ch, :name) || ""
     id = Map.get(ch, :channel_id) || :rand.uniform(0xFFFFFFFE) + 1
+    role = Map.get(ch, :role, @role_secondary)
 
-    Protobuf.encode_bytes_field(2, psk || <<>>) <>
-      Protobuf.encode_bytes_field(3, name) <>
-      Protobuf.encode_fixed32_field(4, id)
+    psk_bin = psk || <<>>
+
+    psk_field =
+      if role == @role_disabled,
+        do: Protobuf.encode_bytes_explicit(2, psk_bin),
+        else: Protobuf.encode_bytes_field(2, psk_bin)
+
+    name_field =
+      if role == @role_disabled,
+        do: Protobuf.encode_bytes_explicit(3, name),
+        else: Protobuf.encode_bytes_field(3, name)
+
+    psk_field <> name_field <> Protobuf.encode_fixed32_field(4, id)
   end
 
   @doc "ChannelSet protobuf used by `https://meshtastic.org/e/#…` invite URLs."

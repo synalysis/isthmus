@@ -22,10 +22,21 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
              })
   end
 
+  test "clear_channel fails when disconnected" do
+    assert {:error, :not_connected} = Companion.clear_channel(2)
+  end
+
   test "list_channels returns eight placeholder slots before a dump" do
     channels = Companion.list_channels()
     assert length(channels) == 8
     assert Enum.all?(channels, & &1.empty?)
+  end
+
+  test "list_health includes the primary companion" do
+    health = Companion.health()
+    listed = Companion.list_health()
+
+    assert Enum.any?(listed, fn h -> h.status == health.status end)
   end
 
   test "inject_inbound publishes channel messages" do

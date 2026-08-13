@@ -95,8 +95,10 @@ Interpretation:
 MeshCore companion radios support **channels** — shared-secret group chat slots (index 0 = public, 1–7 = private). Isthmus can:
 
 - **Sync** channel slots from the companion (`GET_CHANNEL`)
-- **Create** a channel on the radio and a matching bridge group (Admin → **MeshCore** → “Create channel + bridge”)
-- **Link** an existing radio channel to a bridge group (Admin → **MeshCore**)
+- **Assign** an existing group to a private slot (Admin → **MeshCore** → **Linked group** dropdown on the companion card)
+- **Provision** a private channel onto that group when the slot is empty (slots 1–7)
+- **Link** an already-configured radio channel to a group (same dropdown)
+- **Set radio config** — on a companion or island tunnel radio card, **Radio configuration** opens a modal
 
 When a bridge group has `meshcore_channel_idx` set:
 
@@ -109,10 +111,10 @@ Channel secrets are stored encrypted in the database. Isthmus auto-creates in sl
 
 Isthmus talks to **one** USB companion (the gateway radio). Other MeshCore devices join the same private channel via the MeshCore app — they do not need USB to Isthmus.
 
-1. Admin → **MeshCore** → select the bridge with a linked channel
-2. Click **Show channel invite**
+1. Admin → **MeshCore** → on a companion card, pick a group in a slot’s **Linked group** dropdown
+2. Click **Invite** on that row
 3. On the second device, MeshCore app → join private channel using either:
-   - **Secret key** — paste the channel name + 32-char hex secret from the panel
+   - **Secret key** — paste the channel name + 32-char hex secret from the modal
    - **QR code** — scan the QR (or paste the `meshcore://channel/add?…` URI)
 4. Send a message in that channel; Isthmus fans it out to attached members (e.g. Reticulum)
 
@@ -127,10 +129,10 @@ DM `@token` disambiguation still applies for direct messages; channels are separ
 Meshtastic companion radios expose **channels** over the serial API (index 0 = PRIMARY / frequency, 1–7 = secondary). Isthmus can:
 
 - **Sync** channel slots from the companion (`want_config`)
-- **Create** a secondary channel on the radio and a matching bridge group (Admin → **Meshtastic**)
-- **Provision** a private channel onto an **existing** group (empty slots 1–7)
-- **Link** an already-configured radio channel to a bridge group
-- **Set LoRa config** — region (country / band) and modem preset, or explicit BW / SF / CR
+- **Assign** an existing group to a secondary slot (Admin → **Meshtastic** → **Linked group** dropdown)
+- **Provision** a private channel onto that group when the slot is empty (slots 1–7)
+- **Link** an already-configured radio channel to a group (same dropdown)
+- **Set LoRa config** — on a companion card, **Radio configuration** opens a modal (region / modem preset, or explicit BW / SF / CR)
 
 When a bridge group has `meshtastic_channel_idx` set:
 
@@ -139,7 +141,7 @@ When a bridge group has `meshtastic_channel_idx` set:
 
 Channel PSKs are stored encrypted. Isthmus auto-creates in slots **1–7** only (never overwrites PRIMARY or occupied slots).
 
-USB ports are classified by handshake (MeshCore companion / repeater CLI first, then Meshtastic `want_config`). Pin only when you need to override:
+USB ports are classified by handshake (MeshCore companion / repeater CLI first, then Meshtastic `want_config`). Several Meshtastic USB companions can be connected at once; pin only to choose the **primary** radio (used for group fan-out):
 
 ```bash
 # ISTHMUS_MESHTASTIC_PORT=/dev/ttyUSB0
@@ -147,10 +149,10 @@ USB ports are classified by handshake (MeshCore companion / repeater CLI first, 
 
 ### Invite a second Meshtastic device
 
-Isthmus talks to **one** USB companion. Other Meshtastic devices join the same channel via the Meshtastic app.
+Isthmus talks to USB **companion** radios on Admin → **Meshtastic**. Other Meshtastic devices (phones, standalone nodes) join the same channel via the Meshtastic app.
 
-1. Admin → **Meshtastic** → select the group with a linked channel
-2. Click **Show channel invite**
+1. Admin → **Meshtastic** → on a companion card, pick a group in a slot’s **Linked group** dropdown
+2. Click **Invite** on that row
 3. On the second device, Meshtastic app → add channel using either:
    - **PSK** — paste the channel name + hex PSK
    - **QR / URL** — scan the QR (or open the `https://meshtastic.org/e/#…?add=true` link)

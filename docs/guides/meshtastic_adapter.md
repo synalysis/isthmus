@@ -1,6 +1,8 @@
 # Meshtastic adapter guide
 
-Isthmus treats each mesh stack as a pluggable `Isthmus.NetworkAdapter`. Meshtastic talks to **one USB companion** over the serial protobuf API (`Isthmus.Networks.Meshtastic.Companion`). Private channel slots on that radio can be linked to a bridge `RegistrationGroup`, the same way MeshCore companion channels are.
+Isthmus treats each mesh stack as a pluggable `Isthmus.NetworkAdapter`. Meshtastic talks to **USB companion radios** over the serial protobuf API (`Isthmus.Networks.Meshtastic.Companion`). Each plugged-in companion is its own radio: channel slots and LoRa config belong to that device. Private channel slots can be linked to a bridge `RegistrationGroup`, the same way MeshCore companion channels are.
+
+The **primary** companion (pinned with `ISTHMUS_MESHTASTIC_PORT`, or the first detected radio) is the named process used for group fan-out. Extra USB companions run as additional GenServers.
 
 Opaque tunnel frames still go through the in-memory `Meshtastic.Transport` until a radio-backed raw path exists.
 
@@ -12,17 +14,17 @@ Opaque tunnel frames still go through the in-memory `Meshtastic.Transport` until
 
 ## Companion radio
 
-USB serial is **auto-detected** at boot (and on Rescan). The probe talks MeshCore first (`<`/`>` companion frames, then repeater CLI), then Meshtastic (`0x94 0xC3` + `want_config`). A port is only claimed as Meshtastic when it answers with a parsed FromRadio frame (`my_info`, channel, or `config_complete`).
+USB serial is **auto-detected** at boot (and on Rescan). The probe talks MeshCore first (`<`/`>` companion frames, then repeater CLI), then Meshtastic (`0x94 0xC3` + `want_config`). Every port that answers with a parsed FromRadio frame (`my_info`, channel, or `config_complete`) is claimed as a Meshtastic companion.
 
-Pin only to override:
+Pin only to choose which radio is **primary** when several are attached:
 
 ```bash
 # ISTHMUS_MESHTASTIC_PORT=/dev/ttyUSB0
 ```
 
-Admin → **Meshtastic** → **Rescan USB**.
+Admin → **Meshtastic** → **Rescan USB**. Each companion is a card under **Connected radios**. **Radio configuration** (LoRa region / modem) opens a modal on that card.
 
-The companion:
+Each companion:
 
 - Opens 115200 8N1 and sends `want_config` (channel table, LoRa `Config`, `MyNodeInfo`, node DB)
 - Records NodeInfo as 24h Adverts sightings (`FromRadio.node_info` during config dump, plus live `NODEINFO_APP` packets). Identity is the 8-hex node id; Via is **Node DB** or **NodeInfo**.
@@ -42,9 +44,9 @@ Same model as MeshCore:
 | MeshCore slots 1–7 | `meshcore_channel_idx` + encrypted secret | `meshcore://channel/add?…` |
 | Meshtastic slots 1–7 | `meshtastic_channel_idx` + encrypted PSK | `https://meshtastic.org/e/#…?add=true` |
 
-Slot **0** is PRIMARY (sets the radio frequency). Isthmus creates private channels in empty **secondary** slots 1–7 only — including on an **existing** group (Admin → Meshtastic → create on an empty slot, or **Create private channel on this group**). Slot numbers are local to each radio; other devices join by **name + PSK**.
+Slot **0** is PRIMARY (sets the radio frequency). Isthmus creates private channels in empty **secondary** slots 1–7 only. Create groups on Admin → **Groups**, then assign a group from the **Linked group** dropdown on a companion’s slot table. Slot numbers are local to each radio; other devices join by **name + PSK**.
 
-LoRa **region** (country / band) and **modem preset** (Long Fast, Medium Fast, …) are set on the same admin page. Switch Modem to **Custom** for explicit bandwidth / spreading factor / coding rate and an optional override frequency. Apply reboots the companion.
+LoRa **region** (country / band) and **modem preset** (Long Fast, Medium Fast, …) are per companion: open **Radio configuration** on that radio’s card. Switch Modem to **Custom** for explicit bandwidth / spreading factor / coding rate and an optional override frequency. Apply writes LoRa config and reboots that companion.
 
 When a group has `meshtastic_channel_idx` set:
 
@@ -61,7 +63,8 @@ When a group has `meshtastic_channel_idx` set:
 - [x] Channel ↔ group link + translator fan-out
 - [x] Admin page `/admin/meshtastic`
 - [x] Provision secondary slots onto existing groups
-- [x] LoRa region / modem preset / custom radio config
+- [x] LoRa region / modem preset / custom radio config (per-radio modal)
+- [x] Multiple USB companions (primary + extras)
 - [x] NodeInfo → Admin Adverts (no MeshCore-style flood advert)
 - [ ] MQTT / TCP client (optional second transport)
 - [ ] Attach Meshtastic node ids as group member legs (DM path)

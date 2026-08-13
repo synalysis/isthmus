@@ -134,8 +134,44 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
 
     assert roles.meshtastic.path == "/dev/ttyUSB0"
     assert roles.meshtastic.source == :detected
+    assert Enum.map(roles.meshtastic_ports, & &1.path) == ["/dev/ttyUSB0"]
     assert roles.companion.path == "/dev/ttyACM2"
     assert roles.bridge_packet.path == "/dev/ttyACM1"
+  end
+
+  test "classifies every Meshtastic companion, not just the first" do
+    probe = fn
+      "/dev/ttyUSB0", _ -> :meshtastic
+      "/dev/ttyUSB1", _ -> :meshtastic
+      _, _ -> :unknown
+    end
+
+    ports = %{
+      "ttyUSB0" => %{
+        description: "Meshtastic A",
+        manufacturer: "Silicon Labs",
+        serial_number: "MT1",
+        vendor_id: 0x10C4,
+        product_id: 0xEA60
+      },
+      "ttyUSB1" => %{
+        description: "Meshtastic B",
+        manufacturer: "Silicon Labs",
+        serial_number: "MT2",
+        vendor_id: 0x10C4,
+        product_id: 0xEA60
+      }
+    }
+
+    roles =
+      Discover.scan(
+        enumerate: fn -> ports end,
+        probe: probe,
+        env: fn _ -> nil end
+      )
+
+    assert roles.meshtastic.path == "/dev/ttyUSB0"
+    assert Enum.map(roles.meshtastic_ports, & &1.path) == ["/dev/ttyUSB0", "/dev/ttyUSB1"]
   end
 
   test "env ISTHMUS_MESHTASTIC_PORT is not stolen as a MeshCore packet sibling" do
@@ -184,6 +220,38 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
                _ -> nil
              end
            ) == "/dev/forced_mt"
+
+    assert Discover.resolve_ports(:meshtastic, discover: name, env: fn _ -> nil end) ==
+             ["/dev/ttyACM2"]
+  end
+
+  test "resolve_ports :meshtastic lists env pin then every detected radio" do
+    name = :"discover_mt_ports_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Discover,
+       name: name,
+       enumerate: fn ->
+         %{
+           "ttyUSB0" => %{description: "Meshtastic A"},
+           "ttyUSB1" => %{description: "Meshtastic B"}
+         }
+       end,
+       probe: fn
+         "/dev/ttyUSB0", _ -> :meshtastic
+         "/dev/ttyUSB1", _ -> :meshtastic
+         _, _ -> :unknown
+       end,
+       env: fn _ -> nil end}
+    )
+
+    assert Discover.resolve_ports(:meshtastic,
+             discover: name,
+             env: fn
+               "ISTHMUS_MESHTASTIC_PORT" -> "/dev/forced_mt"
+               _ -> nil
+             end
+           ) == ["/dev/forced_mt", "/dev/ttyUSB0", "/dev/ttyUSB1"]
   end
 
   test "falls back to next ACM sibling when serial numbers missing" do

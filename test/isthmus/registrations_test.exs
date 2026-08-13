@@ -230,6 +230,13 @@ defmodule Isthmus.RegistrationsTest do
     assert {:error, :not_connected} = Registrations.provision_meshtastic_channel(group)
   end
 
+  test "provision_meshcore_channel requires a live companion" do
+    owner = owner_hex()
+    assert {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "Lobby"})
+
+    assert {:error, :not_connected} = Registrations.provision_meshcore_channel(group)
+  end
+
   test "ensure_reticulum_ready remints stub seed_hex legs when sidecar is live" do
     {_seckey, pubkey} = Secp256k1.keypair(:xonly)
     hex = Base.encode16(pubkey, case: :lower)

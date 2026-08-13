@@ -42,6 +42,10 @@ defmodule IsthmusWeb.Admin.Copy do
     {"Companion radio", "Channels, DMs, and contact sync"}
   end
 
+  def device_purpose(%{kind: :meshtastic}) do
+    {"Companion radio", "Private channels and LoRa configuration"}
+  end
+
   def device_purpose(%{kind: :bridge_repeater}) do
     {"Island tunnel radio", "Carries MeshCore mesh traffic for tunnels"}
   end
@@ -51,6 +55,11 @@ defmodule IsthmusWeb.Admin.Copy do
   end
 
   @doc "Overall device status chip."
+  def device_status(%{kind: :meshtastic, health: health}) when is_map(health) do
+    status = health[:status] || :unknown
+    {status, status_plain(status)}
+  end
+
   def device_status(device) when is_map(device) do
     cond do
       device[:active_companion?] or device[:active_bridge_cli?] or device[:active_bridge_link?] ->
@@ -65,11 +74,13 @@ defmodule IsthmusWeb.Admin.Copy do
   end
 
   def role_plain(:companion), do: "Companion port"
+  def role_plain(:meshtastic), do: "Companion port"
   def role_plain(:bridge_cli), do: "Config port"
   def role_plain(:bridge_packet), do: "Mesh traffic port"
   def role_plain(_), do: "Not identified yet"
 
   def role_used_for(:companion), do: "Channels, DMs, contact sync"
+  def role_used_for(:meshtastic), do: "Channels, DMs, LoRa config"
   def role_used_for(:bridge_cli), do: "Radio frequency and TX settings"
   def role_used_for(:bridge_packet), do: "Mesh traffic for tunnels and group contacts"
   def role_used_for(_), do: "Waiting for Rescan to identify this port"

@@ -2,12 +2,11 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   @moduledoc """
   Meshtastic companion client over the serial protobuf API.
 
-  Meshtastic companion client over the serial protobuf API.
-
-  Port comes from auto-detect (`Discover`) or `ISTHMUS_MESHTASTIC_PORT`.
-  Baud 115200. MeshCore companions are classified first (framed `<`/`>`), so a
-  Meshtastic radio is only claimed when it answers `want_config` with `0x94 0xC3`
-  FromRadio frames.
+  The named process owns the primary port (`ISTHMUS_MESHTASTIC_PORT` or the first
+  detected radio). Extra USB companions are started via `Meshtastic.Supervisor`
+  and addressed by port. Baud 115200. MeshCore companions are classified first
+  (framed `<`/`>`), so a Meshtastic radio is only claimed when it answers
+  `want_config` with `0x94 0xC3` FromRadio frames.
 
   Channel slots 0–7 on the radio can be linked to Isthmus bridge groups.
   Inbound TEXT_MESSAGE_APP broadcasts publish on `"meshtastic:inbound"`.
@@ -23,6 +22,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   @channels_table :isthmus_meshtastic_channels
   @status_table :isthmus_meshtastic_status
+  @registry Isthmus.Networks.Meshtastic.Registry
   @max_channel_slots 8
   @heartbeat_ms 30_000
   @reconnect_ms 5_000
@@ -30,20 +30,44 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   @baud 115_200
 
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    name = Keyword.get(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: name)
   end
 
-  def health do
-    case :ets.lookup(@status_table, :health) do
-      [{:health, health}] -> health
-      _ -> safe_call(:health, %{status: :unknown, last_error: "companion not ready"}, 500)
+  def via(port) when is_binary(port) do
+    {:via, Registry, {@registry, port}}
+  end
+
+  def health(port \\ nil) do
+    key = ets_port_key(port)
+
+    case :ets.lookup(@status_table, {:health, key}) do
+      [{_, health}] ->
+        health
+
+      _ ->
+        safe_call(port, :health, %{status: :unknown, last_error: "companion not ready"}, 500)
     end
   end
 
+  @doc "Health maps for every companion process (primary + extras)."
+  def list_health do
+    @status_table
+    |> :ets.match({{:health, :_}, :"$1"})
+    |> List.flatten()
+    |> Enum.filter(&is_map/1)
+    |> Enum.sort_by(&{if(&1[:primary?], do: 0, else: 1), &1[:port] || ""})
+  rescue
+    _ ->
+      [health()]
+  end
+
   @doc "Non-blocking read of cached channel slots (ETS)."
-  def list_channels do
-    case :ets.lookup(@channels_table, :all) do
-      [{:all, channels}] when is_list(channels) and channels != [] ->
+  def list_channels(port \\ nil) do
+    key = ets_port_key(port)
+
+    case :ets.lookup(@channels_table, {:all, key}) do
+      [{_, channels}] when is_list(channels) and channels != [] ->
         channels
 
       _ ->
@@ -51,66 +75,93 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     end
   end
 
-  def get_channel(idx) when is_integer(idx) do
-    case :ets.lookup(@channels_table, idx) do
-      [{^idx, channel}] -> channel
+  def get_channel(idx, port \\ nil) when is_integer(idx) do
+    case :ets.lookup(@channels_table, {idx, ets_port_key(port)}) do
+      [{_, channel}] -> channel
       _ -> nil
     end
   end
 
   @doc "Cached LoRa config from the last want_config dump."
-  def lora_config do
-    case :ets.lookup(@status_table, :lora) do
-      [{:lora, config}] when is_map(config) -> config
+  def lora_config(port \\ nil) do
+    key = ets_port_key(port)
+
+    case :ets.lookup(@status_table, {:lora, key}) do
+      [{_, config}] when is_map(config) -> config
       _ -> RadioConfig.empty()
     end
   end
 
-  def sync_channels, do: GenServer.cast(__MODULE__, :sync_channels)
-  def sync_channels_async, do: GenServer.cast(__MODULE__, :sync_channels)
+  def sync_channels(port \\ nil), do: GenServer.cast(target(port), :sync_channels)
+  def sync_channels_async(port \\ nil), do: GenServer.cast(target(port), :sync_channels)
 
-  def set_channel(idx, name, psk \\ nil) when is_integer(idx) and is_binary(name) do
-    safe_call({:set_channel, idx, name, psk}, {:error, :timeout}, 8_000)
+  def set_channel(idx, name, psk \\ nil, port \\ nil)
+      when is_integer(idx) and is_binary(name) do
+    safe_call(port, {:set_channel, idx, name, psk}, {:error, :timeout}, 8_000)
   end
 
-  def set_lora_config(params) when is_map(params) do
-    safe_call({:set_lora_config, params}, {:error, :timeout}, 8_000)
+  @doc "Disable a secondary slot on the radio (empty name / PSK, role DISABLED)."
+  def clear_channel(idx, port \\ nil) when is_integer(idx) and idx in 1..7 do
+    safe_call(port, {:clear_channel, idx}, {:error, :timeout}, 8_000)
   end
 
-  def send_channel_text(idx, text) when is_integer(idx) and is_binary(text) do
-    safe_call({:send_channel_text, idx, text}, {:error, :timeout}, 3_000)
+  def set_lora_config(params, port \\ nil) when is_map(params) do
+    safe_call(port, {:set_lora_config, params}, {:error, :timeout}, 8_000)
   end
 
-  def send_text(node_ref, text) when is_binary(node_ref) and is_binary(text) do
-    safe_call({:send_text, node_ref, text}, {:error, :timeout}, 3_000)
+  def send_channel_text(idx, text, port \\ nil)
+      when is_integer(idx) and is_binary(text) do
+    safe_call(port, {:send_channel_text, idx, text}, {:error, :timeout}, 3_000)
   end
 
-  def reconnect, do: GenServer.cast(__MODULE__, :reconnect)
+  def send_text(node_ref, text, port \\ nil)
+      when is_binary(node_ref) and is_binary(text) do
+    safe_call(port, {:send_text, node_ref, text}, {:error, :timeout}, 3_000)
+  end
+
+  def reconnect(port \\ nil), do: GenServer.cast(target(port), :reconnect)
 
   @doc "Inject a decoded inbound event (tests / future radio client)."
   def inject_inbound(kind, attrs) when kind in [:channel, :dm, :nodeinfo] and is_map(attrs) do
     GenServer.cast(__MODULE__, {:inject, kind, attrs})
   end
 
-  defp safe_call(request, fallback, timeout) do
-    GenServer.call(__MODULE__, request, timeout)
+  defp target(nil), do: __MODULE__
+  defp target(:primary), do: __MODULE__
+
+  defp target(port) when is_binary(port) do
+    primary = Discover.resolve_port(:meshtastic)
+    if port == primary, do: __MODULE__, else: via(port)
+  end
+
+  defp ets_port_key(nil), do: Discover.resolve_port(:meshtastic) || :none
+  defp ets_port_key(:primary), do: Discover.resolve_port(:meshtastic) || :none
+  defp ets_port_key(port) when is_binary(port) and port != "", do: port
+  defp ets_port_key(_), do: :none
+
+  defp safe_call(port, request, fallback, timeout) do
+    GenServer.call(target(port), request, timeout)
   catch
     :exit, _ -> fallback
   end
 
   @impl true
   def init(opts) do
+    Process.flag(:trap_exit, true)
     ensure_ets(@channels_table)
     ensure_ets(@status_table)
-    :ets.insert(@channels_table, {:all, []})
-    :ets.insert(@status_table, {:lora, RadioConfig.empty()})
 
-    port =
-      Keyword.get(opts, :port) || Discover.resolve_port(:meshtastic)
+    port = Keyword.get(opts, :port) || Discover.resolve_port(:meshtastic)
+    fixed_port? = Keyword.get(opts, :fixed_port, false)
+    key = if is_binary(port) and port != "", do: port, else: :none
+
+    :ets.insert(@channels_table, {{:all, key}, []})
+    :ets.insert(@status_table, {{:lora, key}, RadioConfig.empty()})
 
     state = %{
       uart: nil,
       port: port,
+      fixed_port: fixed_port?,
       buffer: <<>>,
       status: :disconnected,
       last_error: nil,
@@ -169,47 +220,14 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     {:reply, {:error, :not_connected}, state}
   end
 
-  def handle_call({:set_channel, idx, name, psk}, from, %{status: :online, uart: uart} = state)
-      when not is_nil(uart) do
-    cond do
-      is_map(state.admin) ->
-        {:reply, {:error, :busy}, state}
-
-      true ->
-        case state.my_info do
-          %{my_node_num: num} when is_integer(num) and num > 0 ->
-            psk_bin = normalize_psk(psk)
-            channel = %{index: idx, name: name, psk: psk_bin, role: Protocol.role_secondary()}
-            frame = Protocol.get_channel_admin_frame(num, idx)
-            timer = Process.send_after(self(), :admin_timeout, @admin_timeout_ms)
-
-            case Circuits.UART.write(uart, frame) do
-              :ok ->
-                {:noreply,
-                 %{
-                   state
-                   | admin: %{
-                       kind: :set_channel,
-                       from: from,
-                       timer: timer,
-                       channel: channel,
-                       node_num: num
-                     }
-                 }}
-
-              {:error, reason} ->
-                Process.cancel_timer(timer)
-                {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
-            end
-
-          _ ->
-            {:reply, {:error, :not_ready}, state}
-        end
-    end
+  def handle_call({:set_channel, idx, name, psk}, from, state) do
+    psk_bin = normalize_psk(psk)
+    channel = %{index: idx, name: name, psk: psk_bin, role: Protocol.role_secondary()}
+    begin_channel_write(from, state, channel)
   end
 
-  def handle_call({:set_channel, _, _, _}, _from, state) do
-    {:reply, {:error, :not_connected}, state}
+  def handle_call({:clear_channel, idx}, from, state) when idx in 1..7 do
+    begin_channel_write(from, state, empty_channel(idx))
   end
 
   def handle_call({:set_lora_config, params}, from, %{status: :online, uart: uart} = state)
@@ -264,7 +282,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   def handle_cast(:sync_channels, state), do: {:noreply, state}
 
   def handle_cast(:reconnect, state) do
-    {:noreply, reconnect(state)}
+    {:noreply, reconnect_state(state)}
   end
 
   def handle_cast({:inject, :channel, attrs}, state) do
@@ -301,7 +319,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   def handle_info(:heartbeat, state), do: {:noreply, state}
 
   def handle_info(:reconnect, state) do
-    {:noreply, reconnect(state)}
+    {:noreply, reconnect_state(state)}
   end
 
   def handle_info(:admin_timeout, %{admin: %{from: from, timer: _}} = state) do
@@ -312,6 +330,13 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   def handle_info(:admin_timeout, state), do: {:noreply, state}
 
   def handle_info(_msg, state), do: {:noreply, state}
+
+  @impl true
+  def terminate(_reason, state) do
+    drop_ets(state)
+    close_uart(state)
+    :ok
+  end
 
   defp consume(state, data) do
     {frames, buffer} = Protocol.decode_stream(state.buffer <> data)
@@ -419,6 +444,47 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   defp handle_packet(state, _), do: state
 
+  defp begin_channel_write(_from, %{admin: admin} = state, _channel) when is_map(admin) do
+    {:reply, {:error, :busy}, state}
+  end
+
+  defp begin_channel_write(from, %{status: :online, uart: uart} = state, channel)
+       when not is_nil(uart) do
+    idx = channel[:index]
+
+    case state.my_info do
+      %{my_node_num: num} when is_integer(num) and num > 0 and is_integer(idx) ->
+        frame = Protocol.get_channel_admin_frame(num, idx)
+        timer = Process.send_after(self(), :admin_timeout, @admin_timeout_ms)
+
+        case Circuits.UART.write(uart, frame) do
+          :ok ->
+            {:noreply,
+             %{
+               state
+               | admin: %{
+                   kind: :set_channel,
+                   from: from,
+                   timer: timer,
+                   channel: channel,
+                   node_num: num
+                 }
+             }}
+
+          {:error, reason} ->
+            Process.cancel_timer(timer)
+            {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
+        end
+
+      _ ->
+        {:reply, {:error, :not_ready}, state}
+    end
+  end
+
+  defp begin_channel_write(_from, state, _channel) do
+    {:reply, {:error, :not_connected}, state}
+  end
+
   defp maybe_handle_admin(%{admin: %{kind: :set_channel} = admin} = state, pkt) do
     case Protocol.parse_admin_payload(pkt.payload) do
       {:get_channel_response, _ch, passkey} ->
@@ -472,19 +538,20 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   defp put_channel(state, %{index: idx} = channel) when is_integer(idx) do
     channel = channel_map(channel)
-    :ets.insert(@channels_table, {idx, channel})
+    key = state_ets_key(state)
+    :ets.insert(@channels_table, {{idx, key}, channel})
     %{state | channels: Map.put(state.channels, idx, channel)}
   end
 
   defp persist_channels(state) do
     list = cached_channel_list(state)
-    :ets.insert(@channels_table, {:all, list})
+    :ets.insert(@channels_table, {{:all, state_ets_key(state)}, list})
     state
   end
 
   defp persist_lora(state) do
     lora = state.lora || RadioConfig.empty()
-    :ets.insert(@status_table, {:lora, lora})
+    :ets.insert(@status_table, {{:lora, state_ets_key(state)}, lora})
     state
   end
 
@@ -492,7 +559,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     Phoenix.PubSub.broadcast(
       Isthmus.PubSub,
       "meshtastic:lora",
-      {:meshtastic_lora, state.lora || RadioConfig.empty()}
+      {:meshtastic_lora, state.lora || RadioConfig.empty(), state.port}
     )
 
     state
@@ -593,7 +660,22 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     })
   end
 
-  defp reconnect(state) do
+  defp reconnect_state(%{fixed_port: true} = state) do
+    close_uart(state)
+
+    %{
+      state
+      | uart: nil,
+        buffer: <<>>,
+        admin: nil,
+        my_info: nil,
+        channels: %{},
+        lora: RadioConfig.empty()
+    }
+    |> maybe_connect()
+  end
+
+  defp reconnect_state(state) do
     close_uart(state)
     port = Discover.resolve_port(:meshtastic) || state.port
 
@@ -666,16 +748,21 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     Phoenix.PubSub.broadcast(
       Isthmus.PubSub,
       "meshtastic:channels",
-      {:meshtastic_channels, cached_channel_list(state)}
+      {:meshtastic_channels, cached_channel_list(state), state.port}
     )
+
+    state
   end
 
   defp health_map(state) do
     lora = state.lora || RadioConfig.empty()
+    port = state.port
 
     %{
       status: state.status,
-      port: state.port,
+      port: port,
+      id: port || "none",
+      primary?: state[:fixed_port] != true,
       transport: :usb,
       detail: "Meshtastic serial companion",
       last_error: state.last_error,
@@ -695,8 +782,21 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   end
 
   defp publish_status(state) do
-    :ets.insert(@status_table, {:health, health_map(state)})
+    :ets.insert(@status_table, {{:health, state_ets_key(state)}, health_map(state)})
     state
+  end
+
+  defp state_ets_key(%{port: port}) when is_binary(port) and port != "", do: port
+  defp state_ets_key(_), do: :none
+
+  defp drop_ets(state) do
+    key = state_ets_key(state)
+    :ets.delete(@status_table, {:health, key})
+    :ets.delete(@status_table, {:lora, key})
+    :ets.delete(@channels_table, {:all, key})
+    :ok
+  rescue
+    _ -> :ok
   end
 
   defp record_node_sighting(info, source, state \\ %{}) do

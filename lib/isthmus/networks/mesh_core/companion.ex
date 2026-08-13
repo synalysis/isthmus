@@ -73,6 +73,11 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     safe_call({:set_channel, idx, name, secret}, {:error, :timeout}, 3_000)
   end
 
+  @doc "Empty a private slot on the companion (blank name, zero secret)."
+  def clear_channel(idx) when is_integer(idx) and idx in 1..7 do
+    set_channel(idx, "", <<0::128>>)
+  end
+
   def send_channel_text(idx, text) when is_integer(idx) and is_binary(text) do
     safe_call({:send_channel_text, idx, text}, {:error, :timeout}, 3_000)
   end

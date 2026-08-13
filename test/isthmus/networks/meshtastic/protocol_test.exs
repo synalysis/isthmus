@@ -16,6 +16,22 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     assert rest == <<0x94, 0xC3, 0x00>>
   end
 
+  test "disabled channel encodes as empty" do
+    encoded =
+      Protocol.encode_channel(%{
+        index: 2,
+        name: "",
+        psk: <<>>,
+        role: Protocol.role_disabled()
+      })
+
+    parsed = Protocol.parse_channel(encoded)
+    assert parsed.index == 2
+    assert parsed.role == Protocol.role_disabled()
+    assert parsed.empty?
+    assert parsed.name == ""
+  end
+
   test "channel encode/decode roundtrip" do
     psk = :crypto.strong_rand_bytes(16)
 
