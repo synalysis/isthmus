@@ -183,6 +183,7 @@ defmodule Isthmus.Networks.MeshCore.Protocol do
       ) do
     path_len = if out_path_len < 0, do: 0, else: min(out_path_len, 64)
     path = binary_part(out_path, 0, path_len)
+    hops = if out_path_len < 0, do: nil, else: path_len
 
     {:contact,
      %{
@@ -192,6 +193,7 @@ defmodule Isthmus.Networks.MeshCore.Protocol do
        out_path_len: path_len,
        out_path: path,
        out_path_hex: Base.encode16(path, case: :lower),
+       hops: hops,
        name: null_term_string(adv_name),
        last_advert: last_advert,
        adv_lat: adv_lat,

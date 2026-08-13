@@ -361,7 +361,7 @@ defmodule Isthmus.Networks.MeshCore.SyntheticNode do
                     network: "meshcore",
                     direction: "out",
                     identity_ref: ref,
-                    hops: nil,
+                    hops: 0,
                     meta: %{
                       source: "synthetic_advert",
                       flood: true,

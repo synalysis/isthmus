@@ -96,6 +96,15 @@ defmodule Isthmus.Announce.InboundTest do
     assert %{hops: 3} = Sightings.best_for("reticulum", ref)
   end
 
+  test "upgrades hops on a recent meshcore advert when contact path is learned" do
+    ref = String.duplicate("55", 32)
+    assert :ok = Inbound.record("meshcore", ref, nil, "push_advert")
+    assert %{hops: nil} = Sightings.best_for("meshcore", ref)
+
+    assert :ok = Inbound.record("meshcore", ref, "Camp Node", "contact", %{hops: 2})
+    assert %{hops: 2, meta: %{"name" => "Camp Node"}} = Sightings.best_for("meshcore", ref)
+  end
+
   test "handle_reticulum ignores isthmus.tunnel announces without names" do
     ref = String.duplicate("22", 16)
 

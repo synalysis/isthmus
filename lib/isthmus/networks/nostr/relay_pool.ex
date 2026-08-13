@@ -15,6 +15,9 @@ defmodule Isthmus.Networks.Nostr.RelayPool do
   alias Isthmus.Registrations
   alias Isthmus.Relays
 
+  @seen_event_limit 2_000
+  @gateway_kinds [4, 14, 1059]
+
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
@@ -35,6 +38,7 @@ defmodule Isthmus.Networks.Nostr.RelayPool do
       statuses: %{},
       meta: %{},
       last_events: 0,
+      seen_event_ids: %{},
       status: :starting
     }
 
@@ -48,16 +52,15 @@ defmodule Isthmus.Networks.Nostr.RelayPool do
   end
 
   def handle_info({:nostr_event, url, event}, state) do
-    _ = Isthmus.Networks.Nostr.TunnelCarrier.handle_inbound_event(event)
+    # Relays fan the same EVENT to every connection, and REQ subscriptions echo
+    # our own publishes. Dedup by event id here — do NOT use Governor, which
+    # keys :gateway_message on author pubkey and would drop distinct DMs/tunnel
+    # frames from the same key for 10s while filling the audit log.
+    {state, unique?} = remember_inbound_event(state, event)
 
-    pubkey = event["pubkey"]
-
-    case Governor.allow?(:gateway_message, :nostr, pubkey || "unknown") do
-      :ok ->
-        Phoenix.PubSub.broadcast(Isthmus.PubSub, "nostr:inbound", {:event, url, event})
-
-      {:drop, reason} ->
-        Logger.debug("governor dropped nostr event: #{reason}")
+    if unique? do
+      _ = Isthmus.Networks.Nostr.TunnelCarrier.handle_inbound_event(event)
+      maybe_broadcast_gateway_event(url, event)
     end
 
     {:noreply, update_in(state.last_events, &(&1 + 1))}
@@ -319,6 +322,45 @@ defmodule Isthmus.Networks.Nostr.RelayPool do
 
   defp format_exit({:error, %_{} = err}), do: Exception.message(err)
   defp format_exit(reason), do: inspect(reason)
+
+  defp remember_inbound_event(state, event) when is_map(event) do
+    id = event["id"] || event[:id]
+
+    cond do
+      not is_binary(id) or id == "" ->
+        {state, true}
+
+      Map.has_key?(state.seen_event_ids, id) ->
+        {state, false}
+
+      true ->
+        seen =
+          state.seen_event_ids
+          |> Map.put(id, System.system_time(:second))
+          |> trim_seen_events()
+
+        {%{state | seen_event_ids: seen}, true}
+    end
+  end
+
+  defp remember_inbound_event(state, _), do: {state, true}
+
+  defp trim_seen_events(seen) when map_size(seen) <= @seen_event_limit, do: seen
+
+  defp trim_seen_events(seen) do
+    seen
+    |> Enum.sort_by(fn {_id, ts} -> ts end, :desc)
+    |> Enum.take(@seen_event_limit)
+    |> Map.new()
+  end
+
+  defp maybe_broadcast_gateway_event(url, event) when is_map(event) do
+    kind = event["kind"] || event[:kind]
+
+    if kind in @gateway_kinds do
+      Phoenix.PubSub.broadcast(Isthmus.PubSub, "nostr:inbound", {:event, url, event})
+    end
+  end
 
   defp build_filters do
     try do

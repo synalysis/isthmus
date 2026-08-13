@@ -111,12 +111,29 @@ defmodule Isthmus.Networks.MeshCore.Companion.Frames do
         _ -> nil
       end
 
-    Inbound.record_meshcore(pubkey_hex, name, "push_advert")
+    extra =
+      case Map.get(contacts, String.downcase(pubkey_hex)) do
+        %{hops: n} when is_integer(n) and n >= 0 -> %{hops: n}
+        _ -> %{}
+      end
+
+    Inbound.record_meshcore(pubkey_hex, name, "push_advert", extra)
   end
 
-  defp record_contact_sighting(%{public_key: ref, name: name})
-       when is_binary(ref) and is_binary(name) and name != "" do
-    Inbound.record_meshcore(ref, name, "contact")
+  defp record_contact_sighting(%{public_key: ref} = contact) when is_binary(ref) do
+    extra =
+      case contact[:hops] do
+        n when is_integer(n) and n >= 0 -> %{hops: n}
+        _ -> %{}
+      end
+
+    name = contact[:name]
+
+    if (is_binary(name) and name != "") or extra != %{} do
+      Inbound.record_meshcore(ref, name, "contact", extra)
+    else
+      :ok
+    end
   end
 
   defp record_contact_sighting(_), do: :ok

@@ -176,10 +176,17 @@ defmodule Isthmus.Networks.MeshCore.Packet do
   defp take_path_payload(_), do: {:error, :truncated}
 
   def path_byte_len(path_len) do
-    hash_count = Bitwise.band(path_len, 63)
+    hash_count = hop_count(path_len)
     hash_size = Bitwise.bsr(path_len, 6) + 1
     hash_count * hash_size
   end
+
+  @doc "Hop count stored in the RF `path_len` byte (low 6 bits)."
+  def hop_count(path_len) when is_integer(path_len) and path_len >= 0 do
+    Bitwise.band(path_len, 63)
+  end
+
+  def hop_count(_), do: 0
 
   def encode_path_len(hop_count, hash_size \\ 1)
       when hop_count in 0..63 and hash_size in 1..3 do

@@ -192,7 +192,7 @@ defmodule Isthmus.Networks.MeshCore do
                   network: "meshcore",
                   direction: "out",
                   identity_ref: ref,
-                  hops: if(flood?, do: nil, else: 0),
+                  hops: 0,
                   meta: %{source: "self_advert", flood: flood?, from_tunnel: from_tunnel?}
                 })
 

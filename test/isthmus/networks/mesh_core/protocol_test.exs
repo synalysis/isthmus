@@ -117,4 +117,34 @@ defmodule Isthmus.Networks.MeshCore.ProtocolTest do
     # SELF_INFO is the APP_START reply, not DEVICE_QUERY
     refute Protocol.companion_probe_reply?(<<5, 1, 2>>)
   end
+
+  test "parse_frame contact exposes hops from out_path_len" do
+    pubkey = :binary.copy(<<0x11>>, 32)
+    path = <<0xAA, 0xBB, 0xCC>> <> :binary.copy(<<0>>, 61)
+    name = String.pad_trailing("Camp", 32, <<0>>)
+
+    frame =
+      <<0x03, pubkey::binary, 1, 0, 3::signed-8, path::binary, name::binary, 0::little-32,
+        0::signed-little-32, 0::signed-little-32, 0::little-32>>
+
+    assert {:contact, c} = Protocol.parse_frame(frame)
+    assert c.hops == 3
+    assert c.out_path_len == 3
+    assert c.out_path == <<0xAA, 0xBB, 0xCC>>
+    assert c.name == "Camp"
+  end
+
+  test "parse_frame contact with unknown path has nil hops" do
+    pubkey = :binary.copy(<<0x22>>, 32)
+    path = :binary.copy(<<0>>, 64)
+    name = String.pad_trailing("Lost", 32, <<0>>)
+
+    frame =
+      <<0x03, pubkey::binary, 1, 0, -1::signed-8, path::binary, name::binary, 0::little-32,
+        0::signed-little-32, 0::signed-little-32, 0::little-32>>
+
+    assert {:contact, c} = Protocol.parse_frame(frame)
+    assert is_nil(c.hops)
+    assert c.out_path_len == 0
+  end
 end

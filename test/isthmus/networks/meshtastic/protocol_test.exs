@@ -288,6 +288,20 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     assert_in_delta info.snr, 8.5, 0.01
     assert info.last_heard == 1_700_000_001
     assert info.position_time == 1_700_000_002
+    assert info.hops == 0
+  end
+
+  test "parse_frame reads FromRadio.node_info hops_away" do
+    user = Protobuf.encode_bytes_field(2, "Trail Node")
+
+    inner =
+      Protobuf.encode_varint_field(1, 0xAABBCCDD) <>
+        Protobuf.encode_message_field(2, user) <>
+        Protobuf.encode_varint_field(9, 4)
+
+    payload = Protobuf.encode_message_field(4, inner)
+    assert {:node_info, info} = Protocol.parse_frame(payload)
+    assert info.hops == 4
   end
 
   test "parse_user prefers long_name then short_name" do

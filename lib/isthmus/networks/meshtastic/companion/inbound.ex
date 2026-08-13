@@ -190,7 +190,10 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
       true ->
         extra =
           %{}
-          |> maybe_put_extra(:hops, info[:hops] || info["hops"])
+          |> maybe_put_extra(
+            :hops,
+            info[:hops] || info["hops"] || info[:hops_away] || info["hops_away"]
+          )
           |> maybe_put_extra(:snr, info[:snr] || info["snr"])
 
         Sightings.record_meshtastic(node_id, info[:name] || info["name"], source, extra)

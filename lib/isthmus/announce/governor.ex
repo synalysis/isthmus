@@ -5,6 +5,9 @@ defmodule Isthmus.Announce.Governor do
   `tunnel_data` is budget-only: packet/outbox dedup already collapses repeats in
   `Tunnel.Bridge` / `Tunnel.Outbox`. A per-tunnel TTL would block distinct chat
   messages after an advert (or any prior DATA) for the whole window.
+
+  `gateway_message` rate-limits **outbound** bridge delivers per destination.
+  Inbound Nostr relay fan-in is deduped by event id in `RelayPool`, not here.
   """
   use GenServer
 

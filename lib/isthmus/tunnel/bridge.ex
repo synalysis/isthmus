@@ -185,7 +185,8 @@ defmodule Isthmus.Tunnel.Bridge do
          true <- decoded.payload_type == Packet.type_advert(),
          {:ok, %{public_key: pub, name: name}} <- Advert.parse_payload(decoded.payload) do
       hex = Base.encode16(pub, case: :lower)
-      Inbound.record("meshcore", hex, name, "bridge_advert")
+      hops = Packet.hop_count(decoded.path_len)
+      Inbound.record("meshcore", hex, name, "bridge_advert", %{hops: hops})
     else
       _ -> :ok
     end

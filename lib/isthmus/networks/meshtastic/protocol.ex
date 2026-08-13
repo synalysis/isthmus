@@ -453,7 +453,8 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
       user: user,
       snr: Protobuf.as_float32(Protobuf.field(fields, 4) || 0),
       last_heard: protobuf_unix(Protobuf.field(fields, 5)),
-      position_time: protobuf_unix(Protobuf.field(position, 4))
+      position_time: protobuf_unix(Protobuf.field(position, 4)),
+      hops: Protobuf.varint(fields, 9, 0)
     }
   end
 

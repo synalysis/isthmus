@@ -197,6 +197,34 @@ defmodule Isthmus.Tunnel.BridgeTest do
     assert sighting
     assert sighting.meta["source"] == "bridge_advert"
     assert sighting.meta["name"] == "Phone Node"
+    assert sighting.hops == 0
+  end
+
+  test "MeshCore flood advert records hop count from the packet path" do
+    alias Isthmus.Announce.Sightings
+    alias Isthmus.Networks.MeshCore.{Advert, Crypto, Packet}
+
+    {:ok, _mc} =
+      Tunnel.create_peer(%{
+        name: "Advert hops peer",
+        peer_ref: "33" <> String.duplicate("44", 31),
+        payload_network: "meshcore",
+        carrier_network: "meshtastic"
+      })
+
+    {pub, seed} = Crypto.generate_keypair()
+    hex = Base.encode16(pub, case: :lower)
+    {:ok, decoded} = Packet.decode(Advert.build_flood(seed, pub, "Relay Node"))
+
+    packet =
+      Packet.encode(%{
+        decoded
+        | path_len: Packet.encode_path_len(3),
+          path: <<0x01, 0x02, 0x03>>
+      })
+
+    assert :ok = Bridge.forward_packet("meshcore", packet, %{source: "bridge"})
+    assert %{hops: 3, meta: %{"name" => "Relay Node"}} = Sightings.best_for("meshcore", hex)
   end
 
   test "bridge echo does not re-label a tunnel advert via" do

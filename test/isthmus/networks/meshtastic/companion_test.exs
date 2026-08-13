@@ -86,4 +86,17 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
     assert meta["name"] == "Trail Node"
     assert meta["source"] == "nodeinfo"
   end
+
+  test "inject_inbound records node_db hops_away as hops" do
+    Phoenix.PubSub.subscribe(Isthmus.PubSub, "announce:sightings")
+
+    Companion.inject_inbound(:nodeinfo, %{
+      node_id: "!ccddeeff",
+      name: "Ridge",
+      hops_away: 3
+    })
+
+    assert_receive {:sighting, _}, 1_000
+    assert %{hops: 3} = Isthmus.Announce.Sightings.best_for("meshtastic", "ccddeeff")
+  end
 end
