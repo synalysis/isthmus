@@ -85,6 +85,32 @@ defmodule Isthmus.Gateway.TranslatorRoutingTest do
     assert Enum.any?(Gateway.list_forward_log(20), &(&1.registration_group_id == group.id))
   end
 
+  test "meshtastic channel ingress resolves linked bridge group" do
+    owner = owner_hex()
+
+    assert {:ok, group} =
+             Registrations.create_bridge_group(owner, %{display_name: "Meshtastic Channel"})
+
+    psk = String.duplicate("ab", 16)
+    assert {:ok, group} = Registrations.link_meshtastic_channel(group, 2, psk)
+
+    {_sk, pk} = Secp256k1.keypair(:xonly)
+    nostr = Base.encode16(pk, case: :lower)
+    assert {:ok, _} = Registrations.attach_member(group, "nostr", nostr)
+
+    Translator.ingest(%Message{
+      from_network: :meshtastic,
+      from_ref: "deadbeef",
+      body: "channel broadcast",
+      external_id: "mt-ch-#{System.unique_integer([:positive])}",
+      meta: %{"meshtastic_channel" => 2}
+    })
+
+    _ = :sys.get_state(Translator)
+
+    assert Enum.any?(Gateway.list_forward_log(20), &(&1.registration_group_id == group.id))
+  end
+
   test "nostr subject in meta resolves bridge group over author alone" do
     owner = owner_hex()
 

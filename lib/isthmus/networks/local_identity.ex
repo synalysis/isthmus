@@ -11,10 +11,10 @@ defmodule Isthmus.Networks.LocalIdentity do
     * `meshcore` — the companion radio's own public key, learned on connect
     * `reticulum` — no node-level identity exists; the closest thing is the set
       of LXMF destinations we announce (see `t:status/0` `:partial`)
-    * `meshtastic` — the transport is an in-memory stub with no radio identity
+    * `meshtastic` — the companion radio's node id, learned on connect
   """
 
-  alias Isthmus.Networks.{MeshCore, Reticulum}
+  alias Isthmus.Networks.{MeshCore, Meshtastic, Reticulum}
   alias Isthmus.Nostr.Crypto
 
   @type status :: :ok | :partial | :pending | :unavailable
@@ -90,9 +90,25 @@ defmodule Isthmus.Networks.LocalIdentity do
   end
 
   def for_network("meshtastic") do
-    unavailable("meshtastic", "The Meshtastic transport is an in-memory stub.",
-      hint: "No radio client is bound yet, so there is no node id to share."
-    )
+    case meshtastic_self_ref() do
+      nil ->
+        %{
+          network: "meshtastic",
+          status: :pending,
+          refs: [],
+          note: "The companion reports its node id when it connects.",
+          hint: "Connect the Meshtastic companion, then reload."
+        }
+
+      ref ->
+        %{
+          network: "meshtastic",
+          status: :ok,
+          refs: [ref],
+          note: "Node id of the attached Meshtastic companion radio.",
+          hint: nil
+        }
+    end
   end
 
   def for_network(other) when is_binary(other) do
@@ -111,6 +127,14 @@ defmodule Isthmus.Networks.LocalIdentity do
 
   defp meshcore_self_ref do
     case safe(fn -> MeshCore.health() end) do
+      %{self_ref: ref} when is_binary(ref) and ref != "" -> ref
+      _ -> nil
+    end
+  end
+
+  defp meshtastic_self_ref do
+    case safe(fn -> Meshtastic.health() end) do
+      %{node_id: ref} when is_binary(ref) and ref != "" -> ref
       %{self_ref: ref} when is_binary(ref) and ref != "" -> ref
       _ -> nil
     end

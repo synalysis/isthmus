@@ -12,6 +12,8 @@ defmodule IsthmusWeb.CoreComponentsIdentityTest do
     assert CoreComponents.format_identity_ref("nostr", hex) == npub
     assert CoreComponents.format_identity_ref("nostr", npub) == npub
     assert CoreComponents.format_identity_ref("meshcore", hex) == hex
+    assert CoreComponents.format_identity_ref("meshtastic", "aabbccdd") == "!aabbccdd"
+    assert CoreComponents.format_identity_ref("meshtastic", "!aabbccdd") == "!aabbccdd"
   end
 
   test "short_identity_ref keeps npub prefix recognizable" do

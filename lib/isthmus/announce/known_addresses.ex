@@ -7,6 +7,7 @@ defmodule Isthmus.Announce.KnownAddresses do
   * MeshCore — companion contact table (`adv_name` + `last_advert`), merged with
     named 24h sightings.
   * Reticulum — 24h announce sightings (name from meta when present).
+  * Meshtastic — 24h NodeInfo / node-DB sightings (long name when present).
   """
 
   alias Isthmus.Announce.Sightings
@@ -22,6 +23,7 @@ defmodule Isthmus.Announce.KnownAddresses do
   def for_network(network) when is_atom(network), do: for_network(Atom.to_string(network))
   def for_network("meshcore"), do: meshcore()
   def for_network("reticulum"), do: reticulum()
+  def for_network("meshtastic"), do: meshtastic()
   def for_network(_other), do: []
 
   @doc """
@@ -98,6 +100,17 @@ defmodule Isthmus.Announce.KnownAddresses do
 
   defp reticulum do
     Sightings.recent_for_network("reticulum", 200)
+    |> Enum.map(fn s ->
+      %{ref: to_string(s.identity_ref), name: sighting_name(s), seen_at: s.seen_at}
+    end)
+    |> prefer_named()
+    |> dedup_and_cap()
+  rescue
+    _ -> []
+  end
+
+  defp meshtastic do
+    Sightings.recent_for_network("meshtastic", 200)
     |> Enum.map(fn s ->
       %{ref: to_string(s.identity_ref), name: sighting_name(s), seen_at: s.seen_at}
     end)

@@ -4,7 +4,7 @@ defmodule IsthmusWeb.Admin.AdvertsLive do
   alias Isthmus.Announce.KnownAddresses
   alias Isthmus.Announce.Sightings
 
-  @networks ~w(meshcore reticulum nostr)
+  @networks ~w(meshcore reticulum nostr meshtastic)
 
   @impl true
   def mount(_params, _session, socket) do
@@ -174,6 +174,8 @@ defmodule IsthmusWeb.Admin.AdvertsLive do
       "self_advert" -> "Self"
       "contact" -> "Contact"
       "announce" -> "RNS"
+      "node_db" -> "Node DB"
+      "nodeinfo" -> "NodeInfo"
       other when is_binary(other) and other != "" -> other
       _ -> "—"
     end
@@ -184,11 +186,13 @@ defmodule IsthmusWeb.Admin.AdvertsLive do
   defp network_badge("meshcore"), do: "badge-secondary"
   defp network_badge("reticulum"), do: "badge-info"
   defp network_badge("nostr"), do: "badge-accent"
+  defp network_badge("meshtastic"), do: "badge-warning"
   defp network_badge(_), do: "badge-ghost"
 
   defp network_label("meshcore"), do: "MeshCore"
   defp network_label("reticulum"), do: "Reticulum"
   defp network_label("nostr"), do: "Nostr"
+  defp network_label("meshtastic"), do: "Meshtastic"
   defp network_label(other), do: other
 
   @impl true
@@ -202,11 +206,10 @@ defmodule IsthmusWeb.Admin.AdvertsLive do
           <div>
             <h1 class="text-3xl font-semibold">Adverts</h1>
             <p class="mt-1 text-sm text-base-content/70">
-              Announces / adverts heard in the last 24 hours. These power the
-              address suggestions when attaching members on <.link
-                navigate={~p"/admin/registrations"}
-                class="link"
-              >Groups</.link>.
+              Heard identities from the last 24 hours: MeshCore flood-adverts,
+              Reticulum LXMF announces, Nostr, and Meshtastic NodeInfo (Meshtastic
+              has no flood advert). These power address suggestions when attaching
+              members on <.link navigate={~p"/admin/registrations"} class="link">Groups</.link>.
             </p>
           </div>
           <.admin_nav current={:adverts} />
@@ -332,5 +335,6 @@ defmodule IsthmusWeb.Admin.AdvertsLive do
   defp network_filter_active_class("meshcore"), do: "btn-secondary"
   defp network_filter_active_class("reticulum"), do: "btn-info"
   defp network_filter_active_class("nostr"), do: "btn-accent"
+  defp network_filter_active_class("meshtastic"), do: "btn-warning"
   defp network_filter_active_class(_), do: "btn-neutral"
 end

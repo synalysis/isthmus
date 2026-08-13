@@ -482,8 +482,22 @@ defmodule IsthmusWeb.CoreComponents do
   def format_identity_ref(network, ref)
   def format_identity_ref("nostr", ref), do: format_npub(ref)
   def format_identity_ref(:nostr, ref), do: format_npub(ref)
+  def format_identity_ref("meshtastic", ref), do: format_meshtastic_node(ref)
+  def format_identity_ref(:meshtastic, ref), do: format_meshtastic_node(ref)
   def format_identity_ref(_network, ref) when is_binary(ref) and ref != "", do: ref
   def format_identity_ref(_, _), do: "—"
+
+  defp format_meshtastic_node(ref) when is_binary(ref) and ref != "" do
+    trimmed = String.trim(ref)
+
+    if String.starts_with?(trimmed, "!") do
+      trimmed
+    else
+      "!" <> trimmed
+    end
+  end
+
+  defp format_meshtastic_node(_), do: "—"
 
   @doc "Encode a 32-byte hex pubkey (or pass-through npub) for display."
   def format_npub(nil), do: "—"

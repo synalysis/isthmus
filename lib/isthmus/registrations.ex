@@ -9,6 +9,8 @@ defmodule Isthmus.Registrations do
   import Ecto.Query
   alias Isthmus.Networks
   alias Isthmus.Networks.MeshCore.Companion
+  alias Isthmus.Networks.Meshtastic.Companion, as: MeshtasticCompanion
+  alias Isthmus.Networks.Meshtastic.Protocol, as: MeshtasticProtocol
   alias Isthmus.Nostr.Bech32
   alias Isthmus.Policy
   alias Isthmus.Registrations.{IdentityLeg, RegistrationGroup}
@@ -384,8 +386,131 @@ defmodule Isthmus.Registrations do
 
   def meshcore_channel_invite(%RegistrationGroup{}), do: {:error, :no_channel_linked}
 
+  @doc "Find active group linked to a Meshtastic channel index."
+  def find_by_meshtastic_channel(idx) when is_integer(idx) do
+    from(g in RegistrationGroup,
+      where: g.status == "active" and g.meshtastic_channel_idx == ^idx,
+      preload: [:legs],
+      limit: 1
+    )
+    |> Repo.one()
+  end
+
+  @doc "Link a Meshtastic channel slot to a bridge group (stores encrypted PSK)."
+  def link_meshtastic_channel(%RegistrationGroup{kind: "bridge"} = group, idx, psk_hex)
+      when is_integer(idx) and idx in 0..7 and is_binary(psk_hex) do
+    with :ok <- ensure_meshtastic_channel_idx_free(idx),
+         {:ok, enc} <- Vault.encrypt(%{"psk_hex" => String.downcase(psk_hex)}) do
+      group
+      |> RegistrationGroup.changeset(%{
+        meshtastic_channel_idx: idx,
+        meshtastic_channel_psk_enc: enc
+      })
+      |> Repo.update()
+      |> case do
+        {:ok, _} -> {:ok, get_group!(group.id)}
+        err -> err
+      end
+    end
+  end
+
+  def link_meshtastic_channel(%RegistrationGroup{}, _, _), do: {:error, :not_a_bridge_group}
+
+  def unlink_meshtastic_channel(%RegistrationGroup{} = group) do
+    group
+    |> RegistrationGroup.changeset(%{
+      meshtastic_channel_idx: nil,
+      meshtastic_channel_psk_enc: nil
+    })
+    |> Repo.update()
+    |> case do
+      {:ok, _} -> {:ok, get_group!(group.id)}
+      err -> err
+    end
+  end
+
+  @doc """
+  Provision a private Meshtastic secondary channel (slots 1–7) on an existing bridge group.
+  """
+  def provision_meshtastic_channel(group, opts \\ [])
+
+  def provision_meshtastic_channel(%RegistrationGroup{kind: "bridge"} = group, opts) do
+    name =
+      Keyword.get(opts, :name) || group.display_name || "Channel"
+
+    requested = Keyword.get(opts, :idx)
+
+    with :ok <- meshtastic_companion_online(),
+         :ok <- ensure_group_meshtastic_free(group),
+         {:ok, idx} <- pick_meshtastic_slot(requested),
+         {:ok, channel} <- MeshtasticCompanion.set_channel(idx, name, nil) do
+      link_meshtastic_channel(group, idx, channel.psk_hex)
+    end
+  end
+
+  def provision_meshtastic_channel(%RegistrationGroup{}, _), do: {:error, :not_a_bridge_group}
+
+  @doc """
+  Decrypt Meshtastic channel credentials for inviting a second device.
+
+  Returns name + PSK and a `https://meshtastic.org/e/#…?add=true` URI.
+  """
+  def meshtastic_channel_invite(
+        %RegistrationGroup{
+          kind: "bridge",
+          status: "active",
+          meshtastic_channel_idx: idx,
+          meshtastic_channel_psk_enc: enc
+        } = group
+      )
+      when is_integer(idx) and is_binary(enc) do
+    case Vault.decrypt(enc) do
+      {:ok, material} when is_map(material) ->
+        psk_hex =
+          case Map.get(material, "psk_hex") || Map.get(material, :psk_hex) do
+            s when is_binary(s) and s != "" -> String.downcase(s)
+            _ -> nil
+          end
+
+        if psk_hex do
+          name = meshtastic_channel_invite_name(group, idx)
+          cached = MeshtasticCompanion.get_channel(idx)
+
+          ch = %{
+            index: idx,
+            name: name,
+            psk_hex: psk_hex,
+            channel_id: cached && cached[:channel_id]
+          }
+
+          {:ok,
+           %{
+             slot: idx,
+             name: name,
+             psk_hex: psk_hex,
+             secret_hex: psk_hex,
+             uri: MeshtasticProtocol.channel_invite_uri(ch)
+           }}
+        else
+          {:error, :invite_unavailable}
+        end
+
+      _ ->
+        {:error, :invite_unavailable}
+    end
+  end
+
+  def meshtastic_channel_invite(%RegistrationGroup{}), do: {:error, :no_channel_linked}
+
   defp channel_invite_name(group, idx) do
     case Companion.get_channel(idx) do
+      %{name: name} when is_binary(name) and name != "" -> name
+      _ -> group.display_name || "Channel"
+    end
+  end
+
+  defp meshtastic_channel_invite_name(group, idx) do
+    case MeshtasticCompanion.get_channel(idx) do
       %{name: name} when is_binary(name) and name != "" -> name
       _ -> group.display_name || "Channel"
     end
@@ -403,6 +528,25 @@ defmodule Isthmus.Registrations do
          {:ok, group} <-
            create_bridge_group(owner_hex, Map.merge(Map.new(attrs), %{display_name: name})),
          {:ok, group} <- link_meshcore_channel(group, idx, channel.secret_hex),
+         {:ok, group} <- ensure_bridge_rns_proxy(group),
+         {:ok, group} <- ensure_nostr_proxy(group),
+         {:ok, group} <- ensure_meshcore_proxy(group) do
+      {:ok, group}
+    end
+  end
+
+  @doc """
+  Create a bridge group and provision a private Meshtastic secondary channel (slots 1–7).
+  """
+  def create_bridge_with_meshtastic_channel(owner_hex, attrs \\ %{}) when is_binary(owner_hex) do
+    name = Map.get(attrs, :display_name) || Map.get(attrs, "display_name") || "Bridge"
+
+    with :ok <- meshtastic_companion_online(),
+         {:ok, idx} <- first_empty_meshtastic_channel_slot(),
+         {:ok, channel} <- MeshtasticCompanion.set_channel(idx, name, nil),
+         {:ok, group} <-
+           create_bridge_group(owner_hex, Map.merge(Map.new(attrs), %{display_name: name})),
+         {:ok, group} <- link_meshtastic_channel(group, idx, channel.psk_hex),
          {:ok, group} <- ensure_bridge_rns_proxy(group),
          {:ok, group} <- ensure_nostr_proxy(group),
          {:ok, group} <- ensure_meshcore_proxy(group) do
@@ -584,6 +728,13 @@ defmodule Isthmus.Registrations do
     end
   end
 
+  defp meshtastic_companion_online do
+    case MeshtasticCompanion.health() do
+      %{status: :online} -> :ok
+      _ -> {:error, :not_connected}
+    end
+  end
+
   def revoke(%RegistrationGroup{} = group) do
     # Legs keep a global unique index on (network, identity_ref). Free them on
     # revoke so identities can be attached or registered again.
@@ -593,7 +744,9 @@ defmodule Isthmus.Registrations do
       RegistrationGroup.changeset(group, %{
         status: "revoked",
         meshcore_channel_idx: nil,
-        meshcore_channel_secret_enc: nil
+        meshcore_channel_secret_enc: nil,
+        meshtastic_channel_idx: nil,
+        meshtastic_channel_psk_enc: nil
       })
     )
     |> Ecto.Multi.delete_all(
@@ -1014,8 +1167,36 @@ defmodule Isthmus.Registrations do
     end
   end
 
+  defp ensure_meshtastic_channel_idx_free(idx) do
+    case find_by_meshtastic_channel(idx) do
+      nil -> :ok
+      _ -> {:error, :channel_already_linked}
+    end
+  end
+
   defp first_empty_private_channel_slot do
-    channels = Companion.list_channels()
+    first_empty_slot(Companion.list_channels())
+  end
+
+  defp first_empty_meshtastic_channel_slot do
+    first_empty_slot(MeshtasticCompanion.list_channels())
+  end
+
+  defp ensure_group_meshtastic_free(%RegistrationGroup{meshtastic_channel_idx: nil}), do: :ok
+  defp ensure_group_meshtastic_free(_), do: {:error, :already_linked}
+
+  defp pick_meshtastic_slot(nil), do: first_empty_meshtastic_channel_slot()
+
+  defp pick_meshtastic_slot(idx) when is_integer(idx) and idx in 1..7 do
+    case Enum.find(MeshtasticCompanion.list_channels(), &(&1.index == idx)) do
+      %{empty?: false} -> {:error, :slot_occupied}
+      _ -> {:ok, idx}
+    end
+  end
+
+  defp pick_meshtastic_slot(_), do: {:error, :invalid_slot}
+
+  defp first_empty_slot(channels) do
     by_idx = Map.new(channels, &{&1.index, &1})
 
     case Enum.find(1..7, fn i ->

@@ -55,6 +55,7 @@ defmodule IsthmusWeb.Router do
       live "/admin", Admin.HomeLive
       live "/admin/reticulum", Admin.ReticulumLive
       live "/admin/meshcore", Admin.MeshCoreLive
+      live "/admin/meshtastic", Admin.MeshtasticLive
       live "/admin/nostr", Admin.NostrLive
       # Legacy bookmark; same LiveView as /admin/nostr
       live "/admin/relays", Admin.NostrLive

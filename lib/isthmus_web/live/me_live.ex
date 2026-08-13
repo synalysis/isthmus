@@ -322,6 +322,11 @@ defmodule IsthmusWeb.MeLive do
                   MeshCore channel slot <span class="font-mono">{group.meshcore_channel_idx}</span>
                   — group chat on the radio bridges to attached members.
                 </p>
+                <p :if={group.meshtastic_channel_idx != nil} class="text-sm opacity-70 mt-1">
+                  Meshtastic channel slot
+                  <span class="font-mono">{group.meshtastic_channel_idx}</span>
+                  — group chat on the radio bridges to attached members.
+                </p>
               </div>
               <div class="flex flex-wrap gap-2">
                 <button

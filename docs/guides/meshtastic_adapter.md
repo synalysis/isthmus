@@ -1,59 +1,73 @@
 # Meshtastic adapter guide
 
-Isthmus treats each mesh stack as a pluggable `Isthmus.NetworkAdapter`. Meshtastic is registered as a **stub** (`Isthmus.Networks.Meshtastic`) so the identity registry, QR UX, and health surfaces can grow without rewriting the gateway core.
+Isthmus treats each mesh stack as a pluggable `Isthmus.NetworkAdapter`. Meshtastic talks to **one USB companion** over the serial protobuf API (`Isthmus.Networks.Meshtastic.Companion`). Private channel slots on that radio can be linked to a bridge `RegistrationGroup`, the same way MeshCore companion channels are.
+
+Opaque tunnel frames still go through the in-memory `Meshtastic.Transport` until a radio-backed raw path exists.
 
 ## Goals
 
-1. Mint / bind a Meshtastic node id as an identity leg on a registration group.
-2. Bridge DMs between Meshtastic and Nostr / MeshCore / RNS via the existing `Gateway.Translator`.
-3. Optionally carry opaque tunnel frames (`send_raw/2`) when a Meshtastic channel is used as a transport island.
+1. Bridge Meshtastic **channel** traffic into an Isthmus group (Nostr / MeshCore / RNS legs).
+2. Optionally bind a Meshtastic node id as an identity leg later.
+3. Carry opaque tunnel frames (`send_raw/2`) when Meshtastic is a transport island.
 
-## Suggested implementation steps
+## Companion radio
 
-### 1. Transport client
+USB serial is **auto-detected** at boot (and on Rescan). The probe talks MeshCore first (`<`/`>` companion frames, then repeater CLI), then Meshtastic (`0x94 0xC3` + `want_config`). A port is only claimed as Meshtastic when it answers with a parsed FromRadio frame (`my_info`, channel, or `config_complete`).
 
-Choose one host API and wrap it in a GenServer similar to `Isthmus.Networks.MeshCore.Companion`:
+Pin only to override:
 
-- Serial / TCP to a Meshtastic device running serial API
-- Or MQTT / protobuf over TCP if you already run a Meshtastic gateway
+```bash
+# ISTHMUS_MESHTASTIC_PORT=/dev/ttyUSB0
+```
 
-Expose:
+Admin → **Meshtastic** → **Rescan USB**.
 
-- `health/0`
-- `send_text(node_id, body)`
-- inbound PubSub topic `"meshtastic:inbound"` with `{:meshtastic_dm, attrs}`
+The companion:
 
-### 2. Complete the adapter
+- Opens 115200 8N1 and sends `want_config` (channel table, LoRa `Config`, `MyNodeInfo`, node DB)
+- Records NodeInfo as 24h Adverts sightings (`FromRadio.node_info` during config dump, plus live `NODEINFO_APP` packets). Identity is the 8-hex node id; Via is **Node DB** or **NodeInfo**.
+- Publishes inbound TEXT_MESSAGE_APP broadcasts on `"meshtastic:inbound"` as `{:meshtastic_channel, attrs}`
+- Sends group traffic with `send_channel_text/2` (broadcast on that slot)
+- Provisions secondary slots 1–7 via AdminMessage (`get_channel` then `set_channel` with session passkey)
+- Writes LoRa config (region / modem preset, or BW / SF / CR) via `get_config` then `set_config`, then reboots
 
-In `lib/isthmus/networks/meshtastic.ex`:
+Admin: `/admin/meshtastic`.
 
-- Replace stub `generate_proxy_identity/1` with radio-backed node ids when available
-- Implement `send_message/3` → companion send
-- Subscribe translator to `"meshtastic:inbound"` (mirror MeshCore / Reticulum handlers)
+## Channel ↔ group
 
-### 3. Registration policy
+Same model as MeshCore:
 
-Decide whether self-service Nostr registration also mints a Meshtastic proxy by default, or only when an admin enables it. Keep private keys out of QR payloads.
+| Radio | Group field | Invite |
+|---|---|---|
+| MeshCore slots 1–7 | `meshcore_channel_idx` + encrypted secret | `meshcore://channel/add?…` |
+| Meshtastic slots 1–7 | `meshtastic_channel_idx` + encrypted PSK | `https://meshtastic.org/e/#…?add=true` |
 
-### 4. Governor
+Slot **0** is PRIMARY (sets the radio frequency). Isthmus creates private channels in empty **secondary** slots 1–7 only — including on an **existing** group (Admin → Meshtastic → create on an empty slot, or **Create private channel on this group**). Slot numbers are local to each radio; other devices join by **name + PSK**.
 
-Reuse `Announce.Governor` budgets for `:meshtastic` airtime. Prefer delta / allowlisted node announcements — never flood the mesh.
+LoRa **region** (country / band) and **modem preset** (Long Fast, Medium Fast, …) are set on the same admin page. Switch Modem to **Custom** for explicit bandwidth / spreading factor / coding rate and an optional override frequency. Apply reboots the companion.
 
-### 5. QR / handoff
+When a group has `meshtastic_channel_idx` set:
 
-Prefer official Meshtastic deep links or `!xxxxxxxx` node ids. Keep `identity_presentations/2` as the single UI contract so `/me` stays unchanged.
+- Inbound channel texts fan out to attached Nostr / RNS / MeshCore members
+- Traffic into the group is posted back onto that Meshtastic channel (`[via Isthmus/…]`)
+- Echoes from our own node id are dropped so we do not loop
 
-## Non-goals (for the stub)
-
-- Full Meshtastic admin UI inside Phoenix
-- Replacing native Meshtastic clients for chat
-- Cross-signing Meshtastic crypto with Nostr keys
-
-## Status checklist
+## Suggested next steps
 
 - [x] Adapter module + registry entry (`:meshtastic`)
 - [x] Placeholder identity / QR presentation
 - [x] Opaque tunnel `send_raw/2` via in-memory `Meshtastic.Transport`
-- [ ] Live radio/MQTT transport
-- [ ] Gateway translator inbound/outbound
-- [ ] Admin health card + chaos tests against airtime budgets
+- [x] Live serial companion (`ISTHMUS_MESHTASTIC_PORT`)
+- [x] Channel ↔ group link + translator fan-out
+- [x] Admin page `/admin/meshtastic`
+- [x] Provision secondary slots onto existing groups
+- [x] LoRa region / modem preset / custom radio config
+- [x] NodeInfo → Admin Adverts (no MeshCore-style flood advert)
+- [ ] MQTT / TCP client (optional second transport)
+- [ ] Attach Meshtastic node ids as group member legs (DM path)
+
+## Non-goals
+
+- Full Meshtastic device admin (Bluetooth, MQTT module, canned messages, …)
+- Replacing native Meshtastic clients for chat
+- Cross-signing Meshtastic crypto with Nostr keys

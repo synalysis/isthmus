@@ -179,6 +179,18 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     end
   end
 
+  def handle_event("validate_companion_radio", %{"radio" => params} = payload, socket) do
+    params = RadioParams.apply_form_change(params, payload["_target"])
+
+    {:noreply, assign(socket, :companion_radio_form, to_form(params, as: :radio))}
+  end
+
+  def handle_event("validate_repeater_radio", %{"radio" => params} = payload, socket) do
+    params = RadioParams.apply_form_change(params, payload["_target"])
+
+    {:noreply, assign(socket, :repeater_radio_form, to_form(params, as: :radio))}
+  end
+
   def handle_event("save_companion_radio", %{"radio" => params} = payload, socket) do
     device_id = payload["device_id"]
 
@@ -433,24 +445,36 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
   defp radio_fields(assigns) do
     ~H"""
-    <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+    <div class="space-y-3">
       <.input
-        field={@form[:freq_mhz]}
-        type="text"
-        label="Freq (MHz)"
-        id={"#{@id_prefix}-freq"}
+        field={@form[:preset]}
+        type="select"
+        label="Preset"
+        options={RadioParams.preset_options()}
+        id={"#{@id_prefix}-preset"}
       />
-      <.input field={@form[:bw_khz]} type="text" label="BW (kHz)" id={"#{@id_prefix}-bw"} />
-      <.input field={@form[:sf]} type="number" label="SF" min="5" max="12" id={"#{@id_prefix}-sf"} />
-      <.input field={@form[:cr]} type="number" label="CR" min="5" max="8" id={"#{@id_prefix}-cr"} />
-      <.input
-        field={@form[:tx_power]}
-        type="number"
-        label="TX (dBm)"
-        min="0"
-        max="22"
-        id={"#{@id_prefix}-tx"}
-      />
+      <p class="text-xs opacity-70 -mt-1">
+        Same community presets as the MeshCore app. Custom keeps the fields below.
+      </p>
+      <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+        <.input
+          field={@form[:freq_mhz]}
+          type="text"
+          label="Freq (MHz)"
+          id={"#{@id_prefix}-freq"}
+        />
+        <.input field={@form[:bw_khz]} type="text" label="BW (kHz)" id={"#{@id_prefix}-bw"} />
+        <.input field={@form[:sf]} type="number" label="SF" min="5" max="12" id={"#{@id_prefix}-sf"} />
+        <.input field={@form[:cr]} type="number" label="CR" min="5" max="8" id={"#{@id_prefix}-cr"} />
+        <.input
+          field={@form[:tx_power]}
+          type="number"
+          label="TX (dBm)"
+          min="0"
+          max="22"
+          id={"#{@id_prefix}-tx"}
+        />
+      </div>
     </div>
     """
   end
@@ -650,11 +674,14 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                 >
                   <div>
                     <h4 class="font-medium">Radio settings</h4>
-                    <p class="text-xs opacity-70">Frequency and TX for this companion radio.</p>
+                    <p class="text-xs opacity-70">
+                      MeshCore app presets, or frequency and TX for this companion radio.
+                    </p>
                   </div>
                   <.form
                     for={@companion_radio_form}
                     id={"companion-radio-form-#{device_dom_id(device.id)}"}
+                    phx-change="validate_companion_radio"
                     phx-submit="save_companion_radio"
                     class="space-y-3"
                   >
@@ -685,13 +712,14 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                   <div>
                     <h4 class="font-medium">Radio settings</h4>
                     <p class="text-xs opacity-70">
-                      Permanent settings for this island tunnel radio. Apply reboots the radio —
+                      MeshCore app presets for this island tunnel radio. Apply reboots the radio —
                       mesh traffic drops briefly.
                     </p>
                   </div>
                   <.form
                     for={@repeater_radio_form}
                     id={"repeater-radio-form-#{device_dom_id(device.id)}"}
+                    phx-change="validate_repeater_radio"
                     phx-submit="apply_repeater_radio"
                     class="space-y-3"
                   >

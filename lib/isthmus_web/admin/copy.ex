@@ -11,6 +11,7 @@ defmodule IsthmusWeb.Admin.Copy do
   5. **Stable glossary**
      * **Group** — Isthmus fan-out membership (DB may still say `kind: "bridge"`)
      * **Private MeshCore channel** — companion radio slot linked to a group
+     * **Private Meshtastic channel** — companion radio slot linked to a group
      * **Island tunnel radio** — dual-CDC bridge-firmware repeater
      * **Companion radio** — channels / DMs / contacts
      * **Tunnel** — Isthmus peer carrying payload over a carrier

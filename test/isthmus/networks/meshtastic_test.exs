@@ -1,5 +1,5 @@
 defmodule Isthmus.Networks.MeshtasticTest do
-  use ExUnit.Case, async: true
+  use ExUnit.Case, async: false
 
   alias Isthmus.Networks.Meshtastic
 
@@ -16,6 +16,8 @@ defmodule Isthmus.Networks.MeshtasticTest do
 
   test "registered in Networks" do
     assert :meshtastic in Isthmus.Networks.list_adapters()
-    assert %{status: :stub} = Isthmus.Networks.adapter!(:meshtastic).health()
+    health = Isthmus.Networks.adapter!(:meshtastic).health()
+    assert health.status in [:disabled, :disconnected, :error, :online]
+    assert health.network == :meshtastic
   end
 end

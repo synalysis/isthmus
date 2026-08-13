@@ -19,6 +19,7 @@ defmodule Isthmus.Networks.Supervisor do
       Isthmus.Networks.MeshCore.BridgeCLI,
       Isthmus.Networks.MeshCore.BridgeLink,
       Isthmus.Networks.MeshCore.SyntheticNode,
+      Isthmus.Networks.Meshtastic.Companion,
       Isthmus.Networks.Meshtastic.Transport,
       Isthmus.Networks.Reticulum.Sidecar,
       Isthmus.Networks.Nostr.RelayPool,

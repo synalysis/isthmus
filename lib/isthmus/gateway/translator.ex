@@ -23,6 +23,7 @@ defmodule Isthmus.Gateway.Translator do
   alias Isthmus.Networks.MeshCore
   alias Isthmus.Networks.MeshCore.Companion
   alias Isthmus.Networks.MeshCore.SyntheticNode
+  alias Isthmus.Networks.Meshtastic.Companion, as: MeshtasticCompanion
   alias Isthmus.Networks.Nostr.RelayPool
   alias Isthmus.Networks.Nostr.ServiceInbox
   alias Isthmus.Networks.Reticulum.Sidecar
@@ -46,6 +47,7 @@ defmodule Isthmus.Gateway.Translator do
   def init(_opts) do
     Phoenix.PubSub.subscribe(Isthmus.PubSub, "nostr:inbound")
     Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshcore:inbound")
+    Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshtastic:inbound")
     Phoenix.PubSub.subscribe(Isthmus.PubSub, "reticulum:inbound")
     {:ok, %{processed: 0, seen_ids: %{}}}
   end
@@ -92,6 +94,36 @@ defmodule Isthmus.Gateway.Translator do
       body: attrs[:body] || attrs["body"] || "",
       external_id:
         attrs[:external_id] || "mc-ch-#{channel_idx}-#{System.unique_integer([:positive])}",
+      meta: meta
+    })
+
+    {:noreply, state}
+  end
+
+  def handle_info({:meshtastic_dm, attrs}, state) when is_map(attrs) do
+    ingest(%Message{
+      from_network: :meshtastic,
+      from_ref: attrs[:from_ref] || attrs["from_ref"],
+      to_ref: attrs[:to_ref] || attrs["to_ref"],
+      body: attrs[:body] || attrs["body"] || "",
+      external_id: attrs[:external_id],
+      meta: attrs[:meta] || %{}
+    })
+
+    {:noreply, state}
+  end
+
+  def handle_info({:meshtastic_channel, attrs}, state) when is_map(attrs) do
+    channel_idx = attrs[:channel_idx] || attrs["channel_idx"]
+    meta = Map.merge(attrs[:meta] || attrs["meta"] || %{}, %{"meshtastic_channel" => channel_idx})
+
+    ingest(%Message{
+      from_network: :meshtastic,
+      from_ref: attrs[:from_ref] || attrs["from_ref"],
+      to_ref: nil,
+      body: attrs[:body] || attrs["body"] || "",
+      external_id:
+        attrs[:external_id] || "mt-ch-#{channel_idx}-#{System.unique_integer([:positive])}",
       meta: meta
     })
 
@@ -215,6 +247,7 @@ defmodule Isthmus.Gateway.Translator do
         end)
 
         maybe_deliver_meshcore_channel(group, msg)
+        maybe_deliver_meshtastic_channel(group, msg)
     end
   end
 
@@ -246,6 +279,10 @@ defmodule Isthmus.Gateway.Translator do
   defp resolve_group(%Message{from_network: :meshcore} = msg) do
     {group, msg} = resolve_meshcore_group(msg)
     {group, msg}
+  end
+
+  defp resolve_group(%Message{from_network: :meshtastic} = msg) do
+    resolve_meshtastic_group(msg)
   end
 
   defp resolve_group(%Message{from_network: net, to_ref: to} = msg)
@@ -315,6 +352,39 @@ defmodule Isthmus.Gateway.Translator do
 
   defp meshcore_channel_idx(_), do: nil
 
+  defp resolve_meshtastic_group(%Message{} = msg) do
+    channel_idx = meshtastic_channel_idx(msg)
+
+    cond do
+      not is_nil(channel_idx) ->
+        {Registrations.find_by_meshtastic_channel(channel_idx), msg}
+
+      is_binary(msg.from_ref) ->
+        {Registrations.find_by_leg(:meshtastic, msg.from_ref) || single_active_group(), msg}
+
+      true ->
+        {nil, msg}
+    end
+  end
+
+  defp meshtastic_channel_idx(%Message{meta: meta}) when is_map(meta) do
+    case meta["meshtastic_channel"] || meta[:meshtastic_channel] do
+      idx when is_integer(idx) ->
+        idx
+
+      idx when is_binary(idx) ->
+        case Integer.parse(idx) do
+          {n, ""} -> n
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp meshtastic_channel_idx(_), do: nil
+
   # Leading "@name" or "@deadbeef" used to disambiguate MeshCore ingress.
   defp extract_address_token(body) when is_binary(body) do
     case Regex.run(~r/^\s*@([A-Za-z0-9_-]{2,64})\b/, body) do
@@ -367,6 +437,7 @@ defmodule Isthmus.Gateway.Translator do
             result =
               case network do
                 "meshcore" -> send_meshcore(group, leg, msg)
+                "meshtastic" -> MeshtasticCompanion.send_text(leg.identity_ref, prefix_body(msg))
                 "reticulum" -> send_reticulum(group, leg, msg)
                 "nostr" -> send_nostr(group, leg, msg)
                 _ -> {:error, :unknown_network}
@@ -668,6 +739,59 @@ defmodule Isthmus.Gateway.Translator do
   end
 
   defp maybe_deliver_meshcore_channel(_, _), do: :ok
+
+  defp maybe_deliver_meshtastic_channel(%{meshtastic_channel_idx: idx} = group, msg)
+       when not is_nil(idx) do
+    ingress = meshtastic_channel_idx(msg)
+
+    if ingress == idx do
+      :ok
+    else
+      deliver_meshtastic_channel(group, msg, idx)
+    end
+  end
+
+  defp maybe_deliver_meshtastic_channel(_, _), do: :ok
+
+  defp deliver_meshtastic_channel(group, msg, idx) do
+    case Policy.allow_gateway_direction?(msg.from_network, "meshtastic") do
+      {:drop, reason} ->
+        Gateway.log(
+          log_attrs(msg, "meshtastic", "dropped", "policy:#{reason}",
+            to_ref: "channel:#{idx}",
+            registration_group_id: group.id
+          )
+        )
+
+      :ok ->
+        case Governor.allow?(:gateway_message, "meshtastic", "channel:#{idx}") do
+          {:drop, reason} ->
+            Gateway.log(
+              log_attrs(msg, "meshtastic", "dropped", "governor:#{reason}",
+                to_ref: "channel:#{idx}",
+                registration_group_id: group.id
+              )
+            )
+
+          :ok ->
+            result = MeshtasticCompanion.send_channel_text(idx, prefix_body(msg))
+
+            {status, error} =
+              case result do
+                :ok -> {"delivered", nil}
+                {:ok, _} -> {"delivered", nil}
+                {:error, reason} -> {"failed", inspect(reason)}
+              end
+
+            Gateway.log(
+              log_attrs(msg, "meshtastic", status, error,
+                to_ref: "channel:#{idx}",
+                registration_group_id: group.id
+              )
+            )
+        end
+    end
+  end
 
   defp deliver_meshcore_channel(group, msg, idx) do
     case Policy.allow_gateway_direction?(msg.from_network, "meshcore") do

@@ -2,13 +2,13 @@ defmodule Isthmus.Networks.Meshtastic do
   @moduledoc """
   Meshtastic adapter.
 
-  Identity/QR surfaces are live; radio DM bridging awaits a serial/MQTT client
-  (see `docs/guides/meshtastic_adapter.md`). Opaque tunnel frames are supported
-  via the in-memory `Meshtastic.Transport` so Meshtastic can be a carrier or
-  payload network in tunnel peers today.
+  Companion serial API (`Isthmus.Networks.Meshtastic.Companion`) bridges
+  channel text into registration groups. Opaque tunnel frames still go through
+  the in-memory `Meshtastic.Transport` until a radio-backed raw path exists.
   """
   @behaviour Isthmus.NetworkAdapter
 
+  alias Isthmus.Networks.Meshtastic.Companion
   alias Isthmus.Networks.Meshtastic.Transport
 
   @impl true
@@ -38,14 +38,18 @@ defmodule Isthmus.Networks.Meshtastic do
   @impl true
   def generate_proxy_identity(opts) do
     name = Map.get(opts, :name, "Isthmus Meshtastic Proxy")
-    # Placeholder 32-bit node id until a real radio-backed identity is minted.
-    node_id = Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+
+    node_id =
+      case Companion.health() do
+        %{node_id: id} when is_binary(id) and id != "" -> id
+        _ -> Base.encode16(:crypto.strong_rand_bytes(4), case: :lower)
+      end
 
     {:ok,
      %{
        identity_ref: node_id,
        public_material: %{node_id: node_id, name: name},
-       private_material: %{note: "meshtastic proxy stub — bind to radio later"},
+       private_material: %{note: "meshtastic companion node — DMs use the attached radio"},
        presentations: identity_presentations(node_id, %{node_id: node_id, name: name})
      }}
   end
@@ -69,6 +73,13 @@ defmodule Isthmus.Networks.Meshtastic do
 
   @impl true
   def health do
+    companion =
+      try do
+        Companion.health()
+      catch
+        :exit, _ -> %{status: :not_started}
+      end
+
     transport =
       try do
         Transport.health()
@@ -79,9 +90,10 @@ defmodule Isthmus.Networks.Meshtastic do
     Map.merge(
       %{
         network: :meshtastic,
-        detail: "Meshtastic adapter — tunnel send_raw via Transport stub"
+        detail: companion[:detail] || "Meshtastic companion",
+        tunnel_transport: transport[:status]
       },
-      transport
+      companion
     )
   end
 
@@ -92,7 +104,9 @@ defmodule Isthmus.Networks.Meshtastic do
   def estimated_bitrate(_opts), do: 50
 
   @impl true
-  def send_message(_ref, _body, _opts), do: {:error, :not_implemented}
+  def send_message(ref, body, _opts) when is_binary(ref) and is_binary(body) do
+    Companion.send_text(ref, body)
+  end
 
   @impl true
   def send_raw(payload, opts) when is_binary(payload) do

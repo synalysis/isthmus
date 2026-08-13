@@ -121,3 +121,40 @@ Bridge membership (attach RNS / Nostr / MeshCore identities) stays under Admin �
 Slot index is local to each radio and does not need to match. Name + secret are what matter.
 
 DM `@token` disambiguation still applies for direct messages; channels are separate from DM legs.
+
+## Meshtastic channels (group chat)
+
+Meshtastic companion radios expose **channels** over the serial API (index 0 = PRIMARY / frequency, 1–7 = secondary). Isthmus can:
+
+- **Sync** channel slots from the companion (`want_config`)
+- **Create** a secondary channel on the radio and a matching bridge group (Admin → **Meshtastic**)
+- **Provision** a private channel onto an **existing** group (empty slots 1–7)
+- **Link** an already-configured radio channel to a bridge group
+- **Set LoRa config** — region (country / band) and modem preset, or explicit BW / SF / CR
+
+When a bridge group has `meshtastic_channel_idx` set:
+
+- Inbound channel messages fan out to all attached Nostr / RNS / MeshCore members
+- Inbound traffic from other networks is also posted to that Meshtastic channel
+
+Channel PSKs are stored encrypted. Isthmus auto-creates in slots **1–7** only (never overwrites PRIMARY or occupied slots).
+
+USB ports are classified by handshake (MeshCore companion / repeater CLI first, then Meshtastic `want_config`). Pin only when you need to override:
+
+```bash
+# ISTHMUS_MESHTASTIC_PORT=/dev/ttyUSB0
+```
+
+### Invite a second Meshtastic device
+
+Isthmus talks to **one** USB companion. Other Meshtastic devices join the same channel via the Meshtastic app.
+
+1. Admin → **Meshtastic** → select the group with a linked channel
+2. Click **Show channel invite**
+3. On the second device, Meshtastic app → add channel using either:
+   - **PSK** — paste the channel name + hex PSK
+   - **QR / URL** — scan the QR (or open the `https://meshtastic.org/e/#…?add=true` link)
+4. Send a message in that channel; Isthmus fans it out to attached members
+
+Bridge membership stays under Admin → **Groups**.
+

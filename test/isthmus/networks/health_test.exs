@@ -71,4 +71,16 @@ defmodule Isthmus.Networks.HealthTest do
     assert report.issue =~ "Waiting for RNS/LXMF hello"
     assert report.fix =~ "pip install"
   end
+
+  test "disabled meshtastic companion explains auto-detect" do
+    report =
+      Health.normalize(:meshtastic, %{
+        status: :disabled,
+        last_error: "no companion detected (set ISTHMUS_MESHTASTIC_PORT to override)"
+      })
+
+    assert report.severity == :info
+    assert report.summary =~ "offline"
+    assert report.fix =~ "Rescan" or report.fix =~ "ISTHMUS_MESHTASTIC_PORT"
+  end
 end

@@ -259,6 +259,19 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
     end
   end
 
+  def handle_event("unlink_channel", %{"network" => "meshcore", "group_id" => group_id}, socket) do
+    unlink_radio_channel(socket, group_id, &Registrations.unlink_meshcore_channel/1, "MeshCore")
+  end
+
+  def handle_event("unlink_channel", %{"network" => "meshtastic", "group_id" => group_id}, socket) do
+    unlink_radio_channel(
+      socket,
+      group_id,
+      &Registrations.unlink_meshtastic_channel/1,
+      "Meshtastic"
+    )
+  end
+
   defp refresh(socket) do
     all_groups = Registrations.list_all()
     revoked_count = Enum.count(all_groups, &(&1.status == "revoked"))
@@ -320,6 +333,125 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
 
   defp announceable_legs(_), do: []
 
+  defp unlink_radio_channel(socket, group_id, unlink_fun, label) do
+    group = Registrations.get_group!(group_id)
+
+    case unlink_fun.(group) do
+      {:ok, _} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "#{label} channel unlinked.")
+         |> refresh()}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Unlink failed: #{inspect(reason)}")}
+    end
+  end
+
+  defp presence_chips(group) do
+    identity =
+      Enum.map(group.legs || [], fn leg ->
+        %{
+          id: "chip-leg-#{leg.id}",
+          label: "#{leg.network}/#{leg.role}",
+          class: "badge-ghost"
+        }
+      end)
+
+    channels =
+      []
+      |> maybe_channel_chip(group.meshcore_channel_idx, "meshcore", "badge-primary")
+      |> maybe_channel_chip(group.meshtastic_channel_idx, "meshtastic", "badge-accent")
+
+    identity ++ channels
+  end
+
+  defp maybe_channel_chip(chips, nil, _network, _class), do: chips
+
+  defp maybe_channel_chip(chips, idx, network, class) when is_integer(idx) do
+    chips ++
+      [
+        %{
+          id: "chip-#{network}-ch",
+          label: "#{network}/ch #{idx}",
+          class: class
+        }
+      ]
+  end
+
+  defp member_rows(group) do
+    identity =
+      Enum.map(group.legs || [], fn leg ->
+        {label, class, hint} = identity_role_copy(leg.role)
+
+        %{
+          id: "member-#{leg.id}",
+          network: leg.network,
+          identity: format_identity_ref(leg.network, leg.identity_ref),
+          title: leg.identity_ref,
+          kind: :identity,
+          leg_id: leg.id,
+          detachable?: leg.role == "member",
+          role_label: label,
+          role_class: class,
+          role_hint: hint
+        }
+      end)
+
+    channels =
+      []
+      |> maybe_channel_row(group, :meshcore, group.meshcore_channel_idx, ~p"/admin/meshcore")
+      |> maybe_channel_row(
+        group,
+        :meshtastic,
+        group.meshtastic_channel_idx,
+        ~p"/admin/meshtastic"
+      )
+
+    identity ++ channels
+  end
+
+  defp identity_role_copy("proxy") do
+    {"proxy", "badge-info",
+     "Isthmus-owned identity. Announced from this node; peers message this."}
+  end
+
+  defp identity_role_copy("member") do
+    {"external", "badge-ghost",
+     "Attached peer. Isthmus delivers to this identity; it is not announced from here."}
+  end
+
+  defp identity_role_copy("primary") do
+    {"primary", "badge-primary", "Your own identity on this network."}
+  end
+
+  defp identity_role_copy(role) do
+    {role || "unknown", "badge-ghost", ""}
+  end
+
+  defp maybe_channel_row(rows, _group, _network, nil, _href), do: rows
+
+  defp maybe_channel_row(rows, group, network, idx, href) when is_integer(idx) do
+    net = Atom.to_string(network)
+
+    rows ++
+      [
+        %{
+          id: "member-channel-#{net}",
+          network: net,
+          identity: "channel slot #{idx}",
+          title: nil,
+          kind: :channel,
+          unlink_network: net,
+          group_id: group.id,
+          href: href,
+          role_label: "channel",
+          role_class: "badge-ghost",
+          role_hint: "Private radio channel linked to this group."
+        }
+      ]
+  end
+
   defp needs_bridge_proxy?(%{kind: "bridge", status: "active", legs: legs}) when is_list(legs) do
     not Enum.any?(legs, &(&1.network == "reticulum" and &1.role == "proxy"))
   end
@@ -343,8 +475,9 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
           <div>
             <h1 class="text-3xl font-semibold">Groups</h1>
             <p class="mt-1 text-sm text-base-content/70">
-              Groups attach real identities across networks. Private MeshCore channels are
-              configured under <.link navigate={~p"/admin/meshcore"} class="link">MeshCore</.link>.
+              Groups attach real identities across networks. Private radio channels are
+              configured under <.link navigate={~p"/admin/meshcore"} class="link">MeshCore</.link>
+              and <.link navigate={~p"/admin/meshtastic"} class="link">Meshtastic</.link>.
             </p>
           </div>
           <.admin_nav current={:groups} />
@@ -367,46 +500,67 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
           <p class="text-sm opacity-70">
             MeshCore address token: <code class="font-mono">@{token_for(@selected_bridge)}</code>
           </p>
-          <%= if @selected_bridge.meshcore_channel_idx != nil do %>
-            <p class="text-sm opacity-70" id="bridge-channel-badge">
-              Linked private MeshCore channel · slot {@selected_bridge.meshcore_channel_idx} ·
-              <.link navigate={~p"/admin/meshcore"} class="link">
-                Manage invite / unlink on MeshCore →
-              </.link>
-            </p>
-          <% else %>
-            <p class="text-sm opacity-70">
-              No private MeshCore channel linked.
-              <.link navigate={~p"/admin/meshcore"} class="link">Configure on MeshCore →</.link>
-            </p>
-          <% end %>
+          <p class="text-xs opacity-60">
+            <strong class="font-medium">Proxy</strong>
+            identities are minted and announced by Isthmus.
+            <strong class="font-medium">External</strong>
+            identities are attached peers Isthmus sends to.
+          </p>
           <div class="overflow-x-auto">
             <table class="table table-sm" id="bridge-members-table">
               <thead>
                 <tr>
                   <th>Network</th>
+                  <th>Role</th>
                   <th>Identity</th>
                   <th></th>
                 </tr>
               </thead>
               <tbody>
-                <tr :for={leg <- @selected_bridge.legs} id={"member-#{leg.id}"}>
-                  <td class="capitalize">{leg.network}</td>
+                <tr :for={row <- member_rows(@selected_bridge)} id={row.id}>
+                  <td class="capitalize">{row.network}</td>
+                  <td>
+                    <span
+                      id={"#{row.id}-role"}
+                      class={["badge badge-sm", row.role_class]}
+                      title={row.role_hint}
+                    >
+                      {row.role_label}
+                    </span>
+                  </td>
                   <td
                     class="font-mono text-xs break-all"
-                    title={leg.identity_ref}
+                    title={row.title}
                   >
-                    {format_identity_ref(leg.network, leg.identity_ref)}
+                    {row.identity}
                   </td>
                   <td>
-                    <button
-                      class="btn btn-ghost btn-xs text-error"
-                      phx-click="detach_member"
-                      phx-value-leg_id={leg.id}
-                      phx-value-group_id={@selected_bridge.id}
-                    >
-                      Detach
-                    </button>
+                    <div class="flex flex-wrap gap-1 justify-end">
+                      <%= if row.kind == :identity do %>
+                        <button
+                          :if={row.detachable?}
+                          class="btn btn-ghost btn-xs text-error"
+                          phx-click="detach_member"
+                          phx-value-leg_id={row.leg_id}
+                          phx-value-group_id={@selected_bridge.id}
+                        >
+                          Detach
+                        </button>
+                      <% else %>
+                        <.link navigate={row.href} class="btn btn-ghost btn-xs">
+                          Invite
+                        </.link>
+                        <button
+                          class="btn btn-ghost btn-xs text-error"
+                          id={"unlink-#{row.unlink_network}-channel-btn"}
+                          phx-click="unlink_channel"
+                          phx-value-network={row.unlink_network}
+                          phx-value-group_id={row.group_id}
+                        >
+                          Unlink
+                        </button>
+                      <% end %>
+                    </div>
                   </td>
                 </tr>
               </tbody>
@@ -442,7 +596,6 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                   <th>Name</th>
                   <th>Status</th>
                   <th>Legs</th>
-                  <th>MC ch</th>
                   <th></th>
                 </tr>
               </thead>
@@ -467,17 +620,15 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                   <td><span class="badge">{group.status}</span></td>
                   <td>
                     <div class="flex flex-wrap gap-1">
-                      <span :for={leg <- group.legs} class="badge badge-ghost badge-sm capitalize">
-                        {leg.network}/{leg.role}
+                      <span class="hidden only:block opacity-50">—</span>
+                      <span
+                        :for={chip <- presence_chips(group)}
+                        id={"group-#{group.id}-#{chip.id}"}
+                        class={["badge badge-sm capitalize", chip.class]}
+                      >
+                        {chip.label}
                       </span>
                     </div>
-                  </td>
-                  <td>
-                    <%= if group.meshcore_channel_idx != nil do %>
-                      <span class="badge badge-primary badge-sm">{group.meshcore_channel_idx}</span>
-                    <% else %>
-                      —
-                    <% end %>
                   </td>
                   <td>
                     <div class="flex flex-wrap gap-1 justify-end">

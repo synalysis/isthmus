@@ -3,12 +3,16 @@ defmodule Isthmus.Networks.LocalIdentityTest do
 
   alias Isthmus.Networks.LocalIdentity
 
-  test "meshtastic reports unavailable with an explanation" do
+  test "meshtastic reports pending until the companion reports a node id" do
     identity = LocalIdentity.for_network("meshtastic")
 
-    assert identity.status == :unavailable
-    assert identity.refs == []
-    assert identity.note =~ "stub"
+    assert identity.status in [:ok, :pending]
+    assert is_list(identity.refs)
+
+    if identity.status == :pending do
+      assert identity.refs == []
+      assert identity.hint =~ "companion"
+    end
   end
 
   test "unknown networks are unavailable rather than crashing" do

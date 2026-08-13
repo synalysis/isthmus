@@ -171,6 +171,7 @@ defmodule Isthmus.Topology do
           status: group.status,
           slug: Registrations.token_slug(group.display_name),
           channel_idx: group.meshcore_channel_idx,
+          meshtastic_channel_idx: group.meshtastic_channel_idx,
           legs: Enum.map(group.legs, &leg_summary/1)
         }
       }
@@ -228,27 +229,50 @@ defmodule Isthmus.Topology do
     end)
   end
 
-  # A group with a MeshCore channel slot bridges group chat on that slot even
-  # when it holds no MeshCore identity leg, so it gets its own edge.
+  # A group with a MeshCore or Meshtastic channel slot bridges group chat on
+  # that slot even when it holds no identity leg on that network.
   defp channel_edges(groups) do
-    groups
-    |> Enum.filter(&(&1.meshcore_channel_idx != nil))
-    |> Enum.map(fn group ->
-      %{
-        id: "channel:#{group.id}",
-        type: :channel,
-        from: group_id(group),
-        to: network_id("meshcore"),
-        role: "channel",
-        network: "meshcore",
-        ref: "ch #{group.meshcore_channel_idx}",
-        external?: false,
-        dashed?: false,
-        path_state: nil,
-        channel_idx: group.meshcore_channel_idx,
-        offset: 0
-      }
-    end)
+    meshcore =
+      groups
+      |> Enum.filter(&(&1.meshcore_channel_idx != nil))
+      |> Enum.map(fn group ->
+        %{
+          id: "channel:#{group.id}",
+          type: :channel,
+          from: group_id(group),
+          to: network_id("meshcore"),
+          role: "channel",
+          network: "meshcore",
+          ref: "ch #{group.meshcore_channel_idx}",
+          external?: false,
+          dashed?: false,
+          path_state: nil,
+          channel_idx: group.meshcore_channel_idx,
+          offset: 0
+        }
+      end)
+
+    meshtastic =
+      groups
+      |> Enum.filter(&(&1.meshtastic_channel_idx != nil))
+      |> Enum.map(fn group ->
+        %{
+          id: "channel:meshtastic:#{group.id}",
+          type: :channel,
+          from: group_id(group),
+          to: network_id("meshtastic"),
+          role: "channel",
+          network: "meshtastic",
+          ref: "ch #{group.meshtastic_channel_idx}",
+          external?: false,
+          dashed?: false,
+          path_state: nil,
+          channel_idx: group.meshtastic_channel_idx,
+          offset: 0
+        }
+      end)
+
+    meshcore ++ meshtastic
   end
 
   # Path state only applies to external Reticulum legs the bridge must reach.
@@ -468,7 +492,16 @@ defmodule Isthmus.Topology do
   end
 
   defp networks_from_channels(groups) do
-    if Enum.any?(groups, &(&1.meshcore_channel_idx != nil)), do: ["meshcore"], else: []
+    Enum.flat_map(groups, fn group ->
+      Enum.reject(
+        [
+          group.meshcore_channel_idx && "meshcore",
+          group.meshtastic_channel_idx && "meshtastic"
+        ],
+        &is_nil/1
+      )
+    end)
+    |> Enum.uniq()
   end
 
   defp networks_from_peers(peers) do

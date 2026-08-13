@@ -1,19 +1,21 @@
 defmodule Isthmus.Networks.MeshCore.Discover do
   @moduledoc """
-  Detect which MeshCore roles are attached to which serial ports.
+  Detect which radios are attached to which serial ports.
 
   Roles:
-  - `:companion` — Companion Radio Protocol (framed `<`/`>` DEVICE_QUERY)
-  - `:bridge_cli` — repeater text CLI (`ver\\r`)
+  - `:companion` — MeshCore Companion Radio Protocol (framed `<`/`>` DEVICE_QUERY)
+  - `:bridge_cli` — MeshCore repeater text CLI (`ver\\r`)
   - `:bridge_packet` — sibling CDC of a detected CLI (or env override)
+  - `:meshtastic` — Meshtastic serial API (`0x94 0xC3` protobuf want_config)
 
   Environment variables override detection when set:
   - `ISTHMUS_MESHCORE_PORT`
   - `ISTHMUS_MESHCORE_BRIDGE_CLI_PORT`
   - `ISTHMUS_MESHCORE_BRIDGE_PORT`
+  - `ISTHMUS_MESHTASTIC_PORT`
 
-  Discovery runs at boot before Companion / BridgeCLI / BridgeLink open ports.
-  Call `refresh/0` after hotplug or a repeater reboot.
+  Discovery runs at boot before Companion / BridgeCLI / BridgeLink / Meshtastic
+  Companion open ports. Call `refresh/0` after hotplug or a repeater reboot.
   """
   use GenServer
 
@@ -21,13 +23,14 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   alias Isthmus.Networks.MeshCore.Ports
   alias Isthmus.Networks.MeshCore.Protocol
+  alias Isthmus.Networks.Meshtastic.Protocol, as: MeshtasticProtocol
 
   @table :isthmus_meshcore_discover
   @baud 115_200
   @probe_timeout_ms 500
   @open_timeout_ms 1_500
 
-  @type role :: :companion | :bridge_cli | :bridge_packet
+  @type role :: :companion | :bridge_cli | :bridge_packet | :meshtastic
   @type assignment :: %{
           path: String.t(),
           source: :env | :detected,
@@ -48,7 +51,8 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   end
 
   @doc "Port path for a role, or nil."
-  def role(role, name \\ __MODULE__) when role in [:companion, :bridge_cli, :bridge_packet] do
+  def role(role, name \\ __MODULE__)
+      when role in [:companion, :bridge_cli, :bridge_packet, :meshtastic] do
     case roles(name)[role] do
       %{path: path} when is_binary(path) and path != "" -> path
       _ -> nil
@@ -82,6 +86,12 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     first_present([env.("ISTHMUS_MESHCORE_BRIDGE_PORT"), role(:bridge_packet, name)])
   end
 
+  def resolve_port(:meshtastic, opts) do
+    env = Keyword.get(opts, :env, &System.get_env/1)
+    name = Keyword.get(opts, :discover, __MODULE__)
+    first_present([env.("ISTHMUS_MESHTASTIC_PORT"), role(:meshtastic, name)])
+  end
+
   @doc "Re-scan serial ports and notify link processes to reconnect."
   def refresh(name \\ __MODULE__) do
     case safe_call(name, :refresh, {:error, :not_started}, 15_000) do
@@ -99,7 +109,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   Options:
   - `:enumerate` — `fn -> %{name => meta}` (default Circuits.UART.enumerate/0)
-  - `:probe` — `fn path, meta -> :companion | :bridge_cli | :unknown | {:error, term}`
+  - `:probe` — `fn path, meta -> :companion | :bridge_cli | :meshtastic | :unknown | {:error, term}`
   - `:env` — `fn key -> value | nil`
   - `:skip_paths` — ports to leave alone (already open elsewhere)
   """
@@ -112,6 +122,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     env_companion = blank_to_nil(env.("ISTHMUS_MESHCORE_PORT"))
     env_cli = blank_to_nil(env.("ISTHMUS_MESHCORE_BRIDGE_CLI_PORT"))
     env_packet = blank_to_nil(env.("ISTHMUS_MESHCORE_BRIDGE_PORT"))
+    env_meshtastic = blank_to_nil(env.("ISTHMUS_MESHTASTIC_PORT"))
 
     ports =
       Ports.list(enumerate: enumerate, configured: env_companion)
@@ -126,12 +137,13 @@ defmodule Isthmus.Networks.MeshCore.Discover do
           MapSet.member?(claimed, port.path) ->
             {acc, claimed}
 
-          env_companion == port.path or env_cli == port.path or env_packet == port.path ->
+          env_companion == port.path or env_cli == port.path or env_packet == port.path or
+              env_meshtastic == port.path ->
             # Env-pinned ports are not actively probed; role comes from the env.
-            {acc, claimed}
+            {acc, MapSet.put(claimed, port.path)}
 
-          Map.has_key?(acc, :companion) and Map.has_key?(acc, :bridge_cli) ->
-            # Already have both speakable roles; packet sibling is derived later.
+          Map.has_key?(acc, :companion) and Map.has_key?(acc, :bridge_cli) and
+              Map.has_key?(acc, :meshtastic) ->
             {acc, claimed}
 
           true ->
@@ -148,6 +160,12 @@ defmodule Isthmus.Networks.MeshCore.Discover do
                 {Map.put(acc, :bridge_cli, %{path: port.path, source: :detected, detail: port}),
                  MapSet.put(claimed, port.path)}
 
+              :meshtastic ->
+                Logger.info("MeshCore discover: #{port.path} -> meshtastic")
+
+                {Map.put(acc, :meshtastic, %{path: port.path, source: :detected, detail: port}),
+                 MapSet.put(claimed, port.path)}
+
               other ->
                 Logger.debug("MeshCore discover: #{port.path} -> #{inspect(other)}")
                 {acc, claimed}
@@ -159,6 +177,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       %{}
       |> put_role(:companion, env_companion, detected[:companion], :env)
       |> put_role(:bridge_cli, env_cli, detected[:bridge_cli], :env)
+      |> put_role(:meshtastic, env_meshtastic, detected[:meshtastic], :env)
       |> maybe_packet(env_packet, detected[:bridge_cli], by_path, claimed)
 
     roles
@@ -353,7 +372,15 @@ defmodule Isthmus.Networks.MeshCore.Discover do
         if read_until(uart, &cli_response?/1, @probe_timeout_ms) do
           :bridge_cli
         else
-          :unknown
+          _ = Circuits.UART.flush(uart)
+          nonce = :rand.uniform(0x7FFF_FFFE) + 1
+          _ = Circuits.UART.write(uart, MeshtasticProtocol.want_config_frame(nonce))
+
+          if read_until(uart, &meshtastic_response?/1, @probe_timeout_ms) do
+            :meshtastic
+          else
+            :unknown
+          end
         end
     end
   end
@@ -384,6 +411,25 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   end
 
   defp cli_response?(_), do: false
+
+  defp meshtastic_response?(data) when is_binary(data) do
+    {frames, _} = MeshtasticProtocol.decode_stream(data)
+
+    Enum.any?(frames, fn payload ->
+      case MeshtasticProtocol.parse_frame(payload) do
+        {:my_info, _} -> true
+        {:node_info, _} -> true
+        {:channel, _} -> true
+        {:config, _} -> true
+        {:config_complete, _} -> true
+        {:packet, _} -> true
+        :rebooted -> true
+        _ -> false
+      end
+    end)
+  end
+
+  defp meshtastic_response?(_), do: false
 
   defp read_until(uart, pred, timeout_ms) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
@@ -444,7 +490,8 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     for mod <- [
           Isthmus.Networks.MeshCore.Companion,
           Isthmus.Networks.MeshCore.BridgeCLI,
-          Isthmus.Networks.MeshCore.BridgeLink
+          Isthmus.Networks.MeshCore.BridgeLink,
+          Isthmus.Networks.Meshtastic.Companion
         ] do
       if function_exported?(mod, :reconnect, 0) do
         try do

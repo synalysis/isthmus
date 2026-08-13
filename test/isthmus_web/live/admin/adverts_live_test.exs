@@ -79,6 +79,30 @@ defmodule IsthmusWeb.Admin.AdvertsLiveTest do
     assert has_element?(view, advert_sel("meshcore", mc))
   end
 
+  test "lists meshtastic nodeinfo sightings", %{conn: conn} do
+    ref = "aabbccdd"
+
+    {:ok, _} =
+      Sightings.record(%{
+        network: "meshtastic",
+        direction: "in",
+        identity_ref: ref,
+        hops: 1,
+        meta: %{"name" => "Trail Node", "source" => "nodeinfo"}
+      })
+
+    {:ok, view, html} = live(conn, ~p"/admin/adverts")
+
+    assert has_element?(view, "#filter-meshtastic")
+    assert has_element?(view, advert_sel("meshtastic", ref))
+    assert html =~ "Trail Node"
+    assert html =~ "NodeInfo"
+    assert html =~ "!aabbccdd"
+
+    view |> element("#filter-meshtastic") |> render_click()
+    refute has_element?(view, advert_sel("meshtastic", ref))
+  end
+
   test "deselected reticulum does not hide older meshcore adverts", %{conn: conn} do
     older = DateTime.utc_now() |> DateTime.add(-180, :second) |> DateTime.truncate(:second)
     mc = String.duplicate("11", 32)

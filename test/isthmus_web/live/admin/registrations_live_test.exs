@@ -93,5 +93,37 @@ defmodule IsthmusWeb.Admin.RegistrationsLiveTest do
 
     refute has_element?(view, "#attach-member-modal")
     assert render(view) =~ "Member attached."
+    assert has_element?(view, "#bridge-members-table", "external")
+  end
+
+  test "minted Nostr proxy is labelled proxy, attached Reticulum is external",
+       %{conn: conn, group: group} do
+    ref = String.duplicate("ef", 16)
+    assert {:ok, group} = Registrations.attach_member(group, "reticulum", ref)
+    assert {:ok, group} = Registrations.ensure_nostr_proxy(group)
+
+    nostr = Enum.find(group.legs, &(&1.network == "nostr" and &1.role == "proxy"))
+    rns = Enum.find(group.legs, &(&1.network == "reticulum" and &1.role == "member"))
+    assert nostr
+    assert rns
+
+    {:ok, view, _html} = live(conn, ~p"/admin/registrations")
+
+    assert has_element?(view, "#member-#{nostr.id}-role", "proxy")
+    assert has_element?(view, "#member-#{rns.id}-role", "external")
+  end
+
+  test "radio channels show as legs, not a separate MC ch column", %{conn: conn, group: group} do
+    psk = String.duplicate("ab", 16)
+    assert {:ok, _} = Registrations.link_meshcore_channel(group, 2, psk)
+    assert {:ok, _} = Registrations.link_meshtastic_channel(group, 3, psk)
+
+    {:ok, view, html} = live(conn, ~p"/admin/registrations")
+
+    refute html =~ "MC ch"
+    assert has_element?(view, "#group-#{group.id}-chip-meshcore-ch", "meshcore/ch 2")
+    assert has_element?(view, "#group-#{group.id}-chip-meshtastic-ch", "meshtastic/ch 3")
+    assert has_element?(view, "#member-channel-meshcore", "channel slot 2")
+    assert has_element?(view, "#member-channel-meshtastic", "channel slot 3")
   end
 end

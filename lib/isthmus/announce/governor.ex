@@ -50,6 +50,7 @@ defmodule Isthmus.Announce.Governor do
     # tokens per hour
     "reticulum" => 120,
     "meshcore" => 60,
+    "meshtastic" => 60,
     "nostr" => 60
   }
 

@@ -13,6 +13,8 @@ defmodule Isthmus.Registrations.RegistrationGroup do
     field :kind, :string, default: "registration"
     field :meshcore_channel_idx, :integer
     field :meshcore_channel_secret_enc, :binary
+    field :meshtastic_channel_idx, :integer
+    field :meshtastic_channel_psk_enc, :binary
 
     has_many :legs, Isthmus.Registrations.IdentityLeg
 
@@ -28,7 +30,9 @@ defmodule Isthmus.Registrations.RegistrationGroup do
       :created_by,
       :kind,
       :meshcore_channel_idx,
-      :meshcore_channel_secret_enc
+      :meshcore_channel_secret_enc,
+      :meshtastic_channel_idx,
+      :meshtastic_channel_psk_enc
     ])
     |> update_change(:owner_pubkey_hex, &String.downcase/1)
     |> validate_required([:owner_pubkey_hex, :status, :created_by, :kind])
@@ -36,6 +40,10 @@ defmodule Isthmus.Registrations.RegistrationGroup do
     |> validate_inclusion(:created_by, ~w(self_service admin))
     |> validate_inclusion(:kind, ~w(registration bridge))
     |> validate_number(:meshcore_channel_idx,
+      greater_than_or_equal_to: 0,
+      less_than_or_equal_to: 7
+    )
+    |> validate_number(:meshtastic_channel_idx,
       greater_than_or_equal_to: 0,
       less_than_or_equal_to: 7
     )

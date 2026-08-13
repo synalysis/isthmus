@@ -225,6 +225,29 @@ defmodule Isthmus.TopologyTest do
     refute Enum.any?(graph.edges, &(&1.type == :leg and &1.id == "channel:#{group.id}"))
   end
 
+  test "a linked Meshtastic channel slot draws an edge to the Meshtastic node" do
+    owner = owner_hex()
+
+    assert {:ok, group} =
+             Registrations.create_bridge_group(owner, %{display_name: "MT Slotted"})
+
+    assert {:ok, group} =
+             Registrations.link_meshtastic_channel(group, 2, String.duplicate("ab", 16))
+
+    graph = Topology.build(:all)
+
+    edge = Enum.find(graph.edges, &(&1.id == "channel:meshtastic:#{group.id}"))
+    assert edge
+    assert edge.type == :channel
+    assert edge.from == "group:#{group.id}"
+    assert edge.to == "network:meshtastic"
+    assert edge.channel_idx == 2
+    assert edge.ref == "ch 2"
+
+    assert Enum.any?(graph.nodes, &(&1.id == "network:meshtastic"))
+    assert graph.counts.channels >= 1
+  end
+
   test "channel edge does not overlap the group's MeshCore leg edges" do
     owner = owner_hex()
 

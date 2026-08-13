@@ -78,4 +78,20 @@ defmodule Isthmus.Announce.InboundTest do
 
     assert Sightings.best_for("reticulum", ref) == nil
   end
+
+  test "records a named meshtastic nodeinfo sighting with hops" do
+    ref = "deadbeef"
+
+    assert :ok =
+             Inbound.record("meshtastic", ref, "Trail Node", "node_db", %{hops: 2, snr: 7.5})
+
+    assert %{network: "meshtastic", hops: 2, snr: snr, meta: meta} =
+             Sightings.best_for("meshtastic", ref)
+
+    assert meta["name"] == "Trail Node"
+    assert meta["source"] == "node_db"
+    refute Map.has_key?(meta, "hops")
+    refute Map.has_key?(meta, "snr")
+    assert_in_delta snr, 7.5, 0.01
+  end
 end

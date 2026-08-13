@@ -112,7 +112,23 @@ defmodule Isthmus.Networks.Health do
   defp summary(:reticulum, :starting, _), do: "RNS sidecar starting"
   defp summary(:reticulum, status, _), do: "Sidecar #{status}"
 
+  defp summary(:meshtastic, :online, health) do
+    port = health[:port] || health["port"]
+    node = health[:node_id] || health["node_id"]
+    base = "Companion online" <> if(port, do: " · #{port}", else: "")
+    if is_binary(node) and node != "", do: "#{base} · !#{node}", else: base
+  end
+
+  defp summary(:meshtastic, :disabled, _),
+    do: "Companion offline — plug in a radio or set ISTHMUS_MESHTASTIC_PORT"
+
   defp summary(:meshtastic, :stub, _), do: "Adapter stub — radio not wired yet"
+
+  defp summary(:meshtastic, status, health) do
+    port = health[:port] || health["port"]
+    "Companion #{status}" <> if(port, do: " · #{port}", else: "")
+  end
+
   defp summary(_net, status, _), do: "Status: #{status}"
 
   defp diagnose(:meshcore, _status, health, last_error) do
@@ -215,6 +231,29 @@ defmodule Isthmus.Networks.Health do
   defp diagnose(:meshtastic, :stub, _, _),
     do: {nil, "See docs/guides/meshtastic_adapter.md to wire a live radio."}
 
+  defp diagnose(:meshtastic, _status, health, last_error) do
+    port = health[:port] || health["port"] || System.get_env("ISTHMUS_MESHTASTIC_PORT")
+    err = to_string(last_error || "")
+
+    cond do
+      health[:status] in [:disabled, "disabled"] ->
+        {nil,
+         "Plug in a Meshtastic companion (USB serial API) and Rescan, or pin ISTHMUS_MESHTASTIC_PORT."}
+
+      String.contains?(err, "eacces") or String.contains?(err, ":eacces") ->
+        {"Permission denied opening #{port || "serial port"}",
+         "Your user must be in the dialout group. Confirm with `groups`, then restart Isthmus. " <>
+           "Shortcut without logout: `sg dialout -c './bin/dev'`."}
+
+      health[:status] in [:error, :disconnected, "error", "disconnected"] ->
+        {"Meshtastic companion not connected",
+         "Rescan USB on Admin → Meshtastic, or pin ISTHMUS_MESHTASTIC_PORT if several serial devices are attached."}
+
+      true ->
+        {nil, nil}
+    end
+  end
+
   defp diagnose(_, _, _, _), do: {nil, nil}
 
   defp meta_lines(:meshcore, health) do
@@ -245,6 +284,18 @@ defmodule Isthmus.Networks.Health do
       {"LXMF", meta["lxmf_version"]},
       {"Socket", interface_socket_path()},
       {"Error", health[:last_error]}
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) or v == "" end)
+  end
+
+  defp meta_lines(:meshtastic, health) do
+    [
+      {"Port", health[:port]},
+      {"Node", health[:node_id] && "!#{health[:node_id]}"},
+      {"Region", health[:status] in [:online, "online"] && health[:region_label]},
+      {"Modem", health[:status] in [:online, "online"] && health[:modem_preset_label]},
+      {"Sent", health[:sent]},
+      {"Received", health[:received]}
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) or v == "" end)
   end

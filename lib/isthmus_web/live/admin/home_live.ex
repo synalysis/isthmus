@@ -55,6 +55,7 @@ defmodule IsthmusWeb.Admin.HomeLive do
 
   defp network_setup_link(:nostr), do: {~p"/admin/nostr", "Open Nostr setup →"}
   defp network_setup_link(:meshcore), do: {~p"/admin/meshcore", "Open MeshCore setup →"}
+  defp network_setup_link(:meshtastic), do: {~p"/admin/meshtastic", "Open Meshtastic setup →"}
   defp network_setup_link(:reticulum), do: {~p"/admin/reticulum", "Open Reticulum setup →"}
   defp network_setup_link(_), do: nil
 

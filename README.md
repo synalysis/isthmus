@@ -1,6 +1,6 @@
 # Isthmus
 
-Multi-network mesh gateway for **Reticulum**, **MeshCore**, and **Nostr** (Meshtastic later).
+Multi-network mesh gateway for **Reticulum**, **MeshCore**, **Nostr**, and **Meshtastic**.
 
 Isthmus runs as an Elixir/OTP + Phoenix app with:
 
@@ -67,6 +67,7 @@ The Blueprint is the public site only. Self-host the Phoenix gateway with Docker
 | `SECRET_KEY_BASE` | Phoenix cookie/session signing (`mix phx.gen.secret`) |
 | `ISTHMUS_VAULT_SECRET` | Encrypts proxy private keys at rest |
 | `ISTHMUS_ADMIN_NPUBS` | Comma-separated admin npubs |
+| `ISTHMUS_MESHTASTIC_PORT` | Optional pin for the Meshtastic companion (auto-detected otherwise) |
 | `ISTHMUS_RNS_CONFIGDIR` | Sidecar Reticulum config dir (default `~/.isthmus/reticulum`) |
 | `ISTHMUS_RNS_SOCKET` | Unix socket for `IsthmusInterface` (default `/tmp/isthmus.sock`) |
 | `FORCE_SSL` | `true` (default in prod) behind TLS; `false` for plain local Docker |
@@ -76,6 +77,6 @@ The Blueprint is the public site only. Self-host the Phoenix gateway with Docker
 ## Status
 
 Phase 0–4 delivered: auth, registration/QR, relays, tunnels, AnnounceGovernor,
-MeshCore USB companion, Nostr relay pool, **live RNS/LXMF sidecar**, gateway
+MeshCore USB companion, Meshtastic serial companion, Nostr relay pool, **live RNS/LXMF sidecar**, gateway
 translator, admin network health + forward log. See `docs/guides/reticulum.md`
 for MeshChatX peering.

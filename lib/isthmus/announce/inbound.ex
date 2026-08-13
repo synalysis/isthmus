@@ -58,6 +58,13 @@ defmodule Isthmus.Announce.Inbound do
     :ok
   end
 
+  @doc "Record a Meshtastic NodeInfo sighting (`!` node id, long name when known)."
+  def record_meshtastic(node_id, name, source \\ "nodeinfo", extra \\ %{})
+      when is_binary(node_id) do
+    Task.start(fn -> record("meshtastic", node_id, normalize_name(name), source, extra) end)
+    :ok
+  end
+
   @doc false
   def record_reticulum(destination_hash, name) do
     record("reticulum", destination_hash, normalize_name(name), "announce")
@@ -102,6 +109,18 @@ defmodule Isthmus.Announce.Inbound do
             identity_ref: ref,
             meta: meta
           }
+
+          attrs =
+            case extra[:hops] || extra["hops"] do
+              n when is_integer(n) and n >= 0 -> Map.put(attrs, :hops, n)
+              _ -> attrs
+            end
+
+          attrs =
+            case extra[:snr] || extra["snr"] do
+              n when is_number(n) -> Map.put(attrs, :snr, n * 1.0)
+              _ -> attrs
+            end
 
           attrs =
             case extra[:tunnel_id] || extra["tunnel_id"] do
@@ -155,7 +174,7 @@ defmodule Isthmus.Announce.Inbound do
       key = to_string(k)
 
       cond do
-        key in ["source", "name", "tunnel_id", "direction"] -> acc
+        key in ["source", "name", "tunnel_id", "direction", "hops", "snr"] -> acc
         is_nil(v) -> acc
         true -> Map.put(acc, key, v)
       end

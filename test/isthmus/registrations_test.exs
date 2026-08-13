@@ -179,6 +179,57 @@ defmodule Isthmus.RegistrationsTest do
     assert {:error, :no_channel_linked} = Registrations.meshcore_channel_invite(revoked)
   end
 
+  test "link_meshtastic_channel stores encrypted PSK and enforces uniqueness" do
+    owner = owner_hex()
+    assert {:ok, g1} = Registrations.create_bridge_group(owner, %{display_name: "MT A"})
+    assert {:ok, g2} = Registrations.create_bridge_group(owner, %{display_name: "MT B"})
+    psk = String.duplicate("ab", 16)
+
+    assert {:ok, linked} = Registrations.link_meshtastic_channel(g1, 2, psk)
+    assert linked.meshtastic_channel_idx == 2
+    assert linked.meshtastic_channel_psk_enc != nil
+
+    assert Registrations.find_by_meshtastic_channel(2).id == g1.id
+    assert {:error, :channel_already_linked} = Registrations.link_meshtastic_channel(g2, 2, psk)
+
+    assert {:ok, _} = Registrations.unlink_meshtastic_channel(linked)
+    assert Registrations.find_by_meshtastic_channel(2) == nil
+  end
+
+  test "meshtastic_channel_invite returns PSK and meshtastic URL" do
+    owner = owner_hex()
+    assert {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "Camp Radio"})
+    psk = String.duplicate("cd", 16)
+
+    assert {:error, :no_channel_linked} = Registrations.meshtastic_channel_invite(group)
+
+    assert {:ok, linked} = Registrations.link_meshtastic_channel(group, 3, psk)
+    assert {:ok, invite} = Registrations.meshtastic_channel_invite(linked)
+
+    assert invite.slot == 3
+    assert invite.name == "Camp Radio"
+    assert invite.psk_hex == psk
+    assert String.starts_with?(invite.uri, "https://meshtastic.org/e/#")
+    assert String.contains?(invite.uri, "?add=true")
+
+    assert {:ok, unlinked} = Registrations.unlink_meshtastic_channel(linked)
+    assert {:error, :no_channel_linked} = Registrations.meshtastic_channel_invite(unlinked)
+  end
+
+  test "create_bridge_with_meshtastic_channel requires a live companion" do
+    owner = owner_hex()
+
+    assert {:error, :not_connected} =
+             Registrations.create_bridge_with_meshtastic_channel(owner, %{display_name: "NoRadio"})
+  end
+
+  test "provision_meshtastic_channel requires a live companion" do
+    owner = owner_hex()
+    assert {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "Lobby"})
+
+    assert {:error, :not_connected} = Registrations.provision_meshtastic_channel(group)
+  end
+
   test "ensure_reticulum_ready remints stub seed_hex legs when sidecar is live" do
     {_seckey, pubkey} = Secp256k1.keypair(:xonly)
     hex = Base.encode16(pubkey, case: :lower)

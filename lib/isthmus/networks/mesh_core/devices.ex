@@ -45,6 +45,14 @@ defmodule Isthmus.Networks.MeshCore.Devices do
     bridge_cli = Keyword.get(opts, :bridge_cli, %{})
     bridge_link = Keyword.get(opts, :bridge_link, %{})
 
+    meshtastic_path =
+      case roles[:meshtastic] do
+        %{path: path} when is_binary(path) -> path
+        _ -> nil
+      end
+
+    ports = Enum.reject(ports, fn p -> p.path == meshtastic_path end)
+
     path_roles = role_paths(roles)
     by_path = Map.new(ports, &{&1.path, &1})
 
@@ -85,6 +93,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
 
   defp role_paths(roles) when is_map(roles) do
     for {role, %{path: path}} <- roles,
+        role in [:companion, :bridge_cli, :bridge_packet],
         is_binary(path) and path != "",
         into: %{},
         do: {path, normalize_role(role)}

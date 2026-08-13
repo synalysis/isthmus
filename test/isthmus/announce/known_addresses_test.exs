@@ -54,4 +54,31 @@ defmodule Isthmus.Announce.KnownAddressesTest do
     assert KnownAddresses.for_network("nostr") == []
     assert KnownAddresses.for_network("bogus") == []
   end
+
+  test "meshtastic suggestions come from nodeinfo sightings" do
+    ref = "aabbccdd"
+
+    {:ok, _} =
+      Sightings.record(%{
+        network: "meshtastic",
+        direction: "in",
+        identity_ref: ref,
+        meta: %{"name" => "Trail Node", "source" => "nodeinfo"}
+      })
+
+    {:ok, _} =
+      Sightings.record(%{
+        network: "meshcore",
+        direction: "in",
+        identity_ref: String.duplicate("ef", 32)
+      })
+
+    suggestions = KnownAddresses.for_network("meshtastic")
+    assert Enum.any?(suggestions, &(&1.ref == ref and &1.name == "Trail Node"))
+
+    refute Enum.any?(
+             suggestions,
+             &(&1.ref == String.duplicate("ef", 32))
+           )
+  end
 end

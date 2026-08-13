@@ -16,6 +16,11 @@ defmodule IsthmusWeb.AdminNav do
         <span class="text-xs uppercase tracking-wide opacity-50 mr-1">Networks</span>
         <.nav_link href={~p"/admin/reticulum"} label="Reticulum" current={@current == :reticulum} />
         <.nav_link href={~p"/admin/meshcore"} label="MeshCore" current={@current == :meshcore} />
+        <.nav_link
+          href={~p"/admin/meshtastic"}
+          label="Meshtastic"
+          current={@current == :meshtastic}
+        />
         <.nav_link href={~p"/admin/nostr"} label="Nostr" current={@current == :nostr} />
       </div>
       <div class="flex flex-wrap items-center gap-2">

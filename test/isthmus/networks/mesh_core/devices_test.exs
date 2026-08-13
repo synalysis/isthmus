@@ -87,4 +87,31 @@ defmodule Isthmus.Networks.MeshCore.DevicesTest do
     assert Enum.map(bridge.ports, & &1.role) == [:bridge_cli, :bridge_packet]
     assert bridge.bridge_link_health[:frames_in] == 3
   end
+
+  test "inventory ignores a Meshtastic discover role" do
+    ports = [
+      %{
+        name: "ttyUSB0",
+        path: "/dev/ttyUSB0",
+        score: 1,
+        reasons: [],
+        description: "Meshtastic",
+        manufacturer: "Silicon Labs",
+        serial_number: "MT1",
+        vendor_id: 0x10C4,
+        product_id: 0xEA60
+      }
+    ]
+
+    devices =
+      Devices.inventory(
+        ports: ports,
+        roles: %{meshtastic: %{path: "/dev/ttyUSB0", detail: %{}}},
+        companion: %{},
+        bridge_cli: %{},
+        bridge_link: %{}
+      )
+
+    assert devices == []
+  end
 end
