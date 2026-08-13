@@ -13,7 +13,7 @@ defmodule Isthmus.Gateway.Message do
     meta: %{}
   ]
 
-  @type network :: :nostr | :meshcore | :reticulum
+  @type network :: :nostr | :meshcore | :reticulum | :meshtastic | :agent | :admin
   @type t :: %__MODULE__{
           from_network: network() | String.t(),
           from_ref: String.t() | nil,

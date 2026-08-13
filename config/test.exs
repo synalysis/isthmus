@@ -42,6 +42,9 @@ config :swoosh, :api_client, false
 # Print only warnings and errors during test
 config :logger, level: :warning
 
+# Do not spawn an ACP subprocess during tests.
+config :isthmus, Isthmus.Networks.Agent, enabled: false, command: []
+
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 

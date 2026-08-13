@@ -394,6 +394,20 @@ defmodule Isthmus.RegistrationsTest do
     assert Enum.any?(inboxes, fn {pk, _} -> pk == proxy.identity_ref end)
   end
 
+  test "bridge group can attach an ACP agent member" do
+    owner = owner_hex()
+    assert {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "AI Camp"})
+    mc = String.duplicate("33", 32)
+    assert {:ok, group} = Registrations.attach_member(group, "meshcore", mc)
+    assert {:ok, group} = Registrations.attach_member(group, "agent", "cursor")
+
+    assert {:error, :invalid_agent_identity} =
+             Registrations.attach_member(group, "agent", "not a name")
+
+    others = Registrations.other_legs(group, :meshcore, mc)
+    assert Enum.any?(others, &(&1.network == "agent" and &1.identity_ref == "cursor"))
+  end
+
   defp owner_hex do
     {_seckey, pubkey} = Secp256k1.keypair(:xonly)
     Base.encode16(pubkey, case: :lower)

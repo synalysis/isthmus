@@ -2,6 +2,8 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
   use IsthmusWeb, :live_view
 
   alias Isthmus.Announce.KnownAddresses
+  alias Isthmus.Gateway.Message
+  alias Isthmus.Gateway.Translator
   alias Isthmus.Registrations
 
   @impl true
@@ -15,6 +17,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
      |> assign(:show_revoked, false)
      |> assign(:bridge_form, to_form(%{"display_name" => ""}))
      |> assign(:attach_form, to_form(%{"group_id" => "", "network" => "nostr", "identity" => ""}))
+     |> assign(:inject_form, to_form(%{"group_id" => "", "body" => ""}))
      |> assign(:attach_network, "nostr")
      |> assign(:attach_group_id, nil)
      |> assign(:attach_group_name, nil)
@@ -162,9 +165,18 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
      |> assign(:modal, :attach)}
   end
 
+  def handle_event("open_inject", %{"id" => id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:selected_bridge_id, id)
+     |> assign(:inject_form, to_form(%{"group_id" => id, "body" => ""}))
+     |> assign(:modal, :inject)
+     |> refresh()}
+  end
+
   def handle_event("close_modal", _params, socket) do
     next_modal =
-      if socket.assigns.modal == :attach and socket.assigns.selected_bridge do
+      if socket.assigns.modal in [:attach, :inject] and socket.assigns.selected_bridge do
         :manage
       else
         nil
@@ -218,6 +230,42 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
          "identity" => display_ref
        })
      )}
+  end
+
+  def handle_event("inject_message", params, socket) do
+    body = params |> Map.get("body", "") |> to_string() |> String.trim()
+    group_id = params["group_id"] || socket.assigns.selected_bridge_id
+
+    cond do
+      body == "" ->
+        {:noreply,
+         socket
+         |> put_flash(:error, "Message is empty.")
+         |> assign(:inject_form, to_form(%{"group_id" => group_id, "body" => ""}))}
+
+      true ->
+        case Registrations.get_group(group_id) do
+          %{status: "active"} = group ->
+            Translator.ingest(%Message{
+              from_network: :admin,
+              from_ref: "admin",
+              body: body,
+              group_id: group.id,
+              external_id: "ui-#{System.unique_integer([:positive])}",
+              meta: %{"injected_by" => "admin"}
+            })
+
+            {:noreply,
+             socket
+             |> put_flash(:info, "Sent to #{group.display_name}.")
+             |> assign(:inject_form, to_form(%{"group_id" => group.id, "body" => ""}))
+             |> assign(:selected_bridge_id, group.id)
+             |> refresh()}
+
+          _ ->
+            {:noreply, put_flash(socket, :error, "Group is not active.")}
+        end
+    end
   end
 
   def handle_event("attach_member", params, socket) do
@@ -304,7 +352,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
       |> assign(:selected_bridge, selected)
       |> assign(:selected_bridge_id, selected && selected.id)
 
-    if socket.assigns.modal == :manage and is_nil(selected) do
+    if socket.assigns.modal in [:manage, :inject] and is_nil(selected) do
       assign(socket, :modal, nil)
     else
       socket
@@ -583,6 +631,16 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                         Attach member
                       </button>
                       <button
+                        :if={group.status == "active"}
+                        type="button"
+                        id={"inject-group-#{group.id}"}
+                        class="btn btn-ghost btn-xs"
+                        phx-click="open_inject"
+                        phx-value-id={group.id}
+                      >
+                        Send message
+                      </button>
+                      <button
                         :if={group.kind == "bridge" and group.status == "active"}
                         type="button"
                         id={"manage-group-#{group.id}"}
@@ -729,6 +787,15 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
             </div>
             <div class="modal-action">
               <button
+                class="btn btn-outline btn-sm"
+                type="button"
+                id={"manage-inject-#{@selected_bridge.id}"}
+                phx-click="open_inject"
+                phx-value-id={@selected_bridge.id}
+              >
+                Send message
+              </button>
+              <button
                 class="btn btn-primary btn-sm"
                 type="button"
                 phx-click="open_attach"
@@ -740,6 +807,46 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                 Close
               </button>
             </div>
+          </div>
+          <div class="modal-backdrop" phx-click="close_modal"></div>
+        </div>
+
+        <%!-- Inject message modal --%>
+        <div
+          :if={@modal == :inject and @selected_bridge}
+          class="modal modal-open"
+          role="dialog"
+          id="inject-message-modal"
+        >
+          <div class="modal-box">
+            <h3 class="text-lg font-semibold">
+              Send to {@selected_bridge.display_name}
+            </h3>
+            <p class="mt-1 text-sm opacity-70">
+              Injects a message as if it arrived from the admin UI. It fans out to
+              attached members (including ACP agents) and linked radio channels.
+            </p>
+            <.form
+              for={@inject_form}
+              id="group-inject-form"
+              phx-submit="inject_message"
+              class="mt-4 space-y-4"
+            >
+              <input type="hidden" name="group_id" value={@selected_bridge.id} />
+              <.input
+                field={@inject_form[:body]}
+                type="textarea"
+                label="Message"
+                placeholder="Hello from Isthmus…"
+                rows="5"
+              />
+              <div class="modal-action">
+                <button class="btn btn-ghost btn-sm" phx-click="close_modal" type="button">
+                  Cancel
+                </button>
+                <button class="btn btn-primary btn-sm" type="submit">Send</button>
+              </div>
+            </.form>
           </div>
           <div class="modal-backdrop" phx-click="close_modal"></div>
         </div>
@@ -798,7 +905,8 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                 options={[
                   {"MeshCore", "meshcore"},
                   {"Reticulum", "reticulum"},
-                  {"Nostr", "nostr"}
+                  {"Nostr", "nostr"},
+                  {"ACP agent", "agent"}
                 ]}
               />
               <div>
@@ -806,7 +914,12 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                   field={@attach_form[:identity]}
                   type="text"
                   label="Identity"
-                  placeholder="npub / MeshCore pubkey / RNS dest hash"
+                  placeholder={
+                    if(@attach_network == "agent",
+                      do: "cursor",
+                      else: "npub / MeshCore pubkey / RNS dest hash"
+                    )
+                  }
                   autocomplete="off"
                   phx-debounce="150"
                 />

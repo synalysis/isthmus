@@ -1,13 +1,14 @@
 defmodule Isthmus.Networks do
   @moduledoc "Adapter registry."
 
-  alias Isthmus.Networks.{MeshCore, Meshtastic, Nostr, Reticulum}
+  alias Isthmus.Networks.{Agent, MeshCore, Meshtastic, Nostr, Reticulum}
 
   @adapters %{
     nostr: Nostr,
     reticulum: Reticulum,
     meshcore: MeshCore,
-    meshtastic: Meshtastic
+    meshtastic: Meshtastic,
+    agent: Agent
   }
 
   def adapter!(network) when is_atom(network), do: Map.fetch!(@adapters, network)

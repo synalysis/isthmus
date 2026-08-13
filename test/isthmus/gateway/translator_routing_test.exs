@@ -270,6 +270,61 @@ defmodule Isthmus.Gateway.TranslatorRoutingTest do
     assert dm.from_ref == stranger
   end
 
+  test "agent reply fans out to other attached legs" do
+    owner = owner_hex()
+    assert {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "Bot Camp"})
+    mc = String.duplicate("44", 32)
+    assert {:ok, _} = Registrations.attach_member(group, "meshcore", mc)
+    assert {:ok, _} = Registrations.attach_member(group, "agent", "cursor")
+
+    ext = "acp-test-#{System.unique_integer([:positive])}"
+
+    Translator.ingest(%Message{
+      from_network: :agent,
+      from_ref: "cursor",
+      body: "hello from the model",
+      external_id: ext,
+      meta: %{}
+    })
+
+    _ = :sys.get_state(Translator)
+
+    assert Enum.any?(Gateway.list_forward_log(20), fn log ->
+             log.registration_group_id == group.id and log.to_network == "meshcore" and
+               log.external_id == ext
+           end)
+  end
+
+  test "admin inject with group_id fans out to attached legs" do
+    owner = owner_hex()
+    assert {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "Inject Camp"})
+    mc = String.duplicate("55", 32)
+    assert {:ok, _} = Registrations.attach_member(group, "meshcore", mc)
+    assert {:ok, _} = Registrations.attach_member(group, "agent", "cursor")
+
+    ext = "ui-test-#{System.unique_integer([:positive])}"
+
+    Translator.ingest(%Message{
+      from_network: :admin,
+      from_ref: "admin",
+      body: "hello from the desk",
+      group_id: group.id,
+      external_id: ext,
+      meta: %{"injected_by" => "admin"}
+    })
+
+    _ = :sys.get_state(Translator)
+
+    logs =
+      Enum.filter(
+        Gateway.list_forward_log(20),
+        &(&1.registration_group_id == group.id and &1.external_id == ext)
+      )
+
+    assert Enum.any?(logs, &(&1.to_network == "meshcore"))
+    assert Enum.any?(logs, &(&1.to_network == "agent"))
+  end
+
   defp owner_hex do
     {_seckey, pubkey} = Secp256k1.keypair(:xonly)
     Base.encode16(pubkey, case: :lower)

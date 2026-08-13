@@ -28,6 +28,7 @@ defmodule Isthmus.Networks.Supervisor do
       Isthmus.Networks.Reticulum.Sidecar,
       Isthmus.Networks.Nostr.RelayPool,
       Isthmus.Networks.Nostr.ServiceInbox,
+      Isthmus.Networks.Agent.Bridge,
       Isthmus.Gateway.Translator
     ]
 

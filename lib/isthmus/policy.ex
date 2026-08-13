@@ -76,7 +76,7 @@ defmodule Isthmus.Policy do
   end
 
   def direction_keys do
-    nets = ~w(nostr reticulum meshcore meshtastic)
+    nets = ~w(nostr reticulum meshcore meshtastic agent)
 
     for from <- nets, to <- nets, from != to do
       "#{from}>#{to}"

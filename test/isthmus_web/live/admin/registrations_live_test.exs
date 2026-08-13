@@ -52,6 +52,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLiveTest do
     |> render_click()
 
     assert has_element?(view, "#attach-member-modal #bridge-attach-form")
+    assert has_element?(view, "#bridge-attach-form option[value='agent']")
 
     # Switch the network to reticulum; the heard address should be suggested.
     view
@@ -147,5 +148,42 @@ defmodule IsthmusWeb.Admin.RegistrationsLiveTest do
     assert mt
     assert has_element?(view, "#member-channel-#{mc.id}", "channel slot 2")
     assert has_element?(view, "#member-channel-#{mt.id}", "channel slot 3")
+  end
+
+  test "send message modal injects into the selected group", %{conn: conn, group: group} do
+    mc = String.duplicate("aa", 32)
+    assert {:ok, _} = Registrations.attach_member(group, "meshcore", mc)
+
+    {:ok, view, _html} = live(conn, ~p"/admin/registrations")
+
+    refute has_element?(view, "#inject-message-modal")
+    view |> element("#inject-group-#{group.id}") |> render_click()
+
+    assert has_element?(view, "#inject-message-modal #group-inject-form")
+    assert has_element?(view, "#inject-message-modal", "Camp")
+
+    view
+    |> form("#group-inject-form", %{"body" => "hello from admin"})
+    |> render_submit()
+
+    assert render(view) =~ "Sent to Camp."
+    _ = :sys.get_state(Isthmus.Gateway.Translator)
+
+    assert Enum.any?(Isthmus.Gateway.list_forward_log(20), fn log ->
+             log.registration_group_id == group.id and log.from_network == "admin" and
+               log.to_network == "meshcore"
+           end)
+  end
+
+  test "send message modal rejects an empty body", %{conn: conn, group: group} do
+    {:ok, view, _html} = live(conn, ~p"/admin/registrations")
+    view |> element("#inject-group-#{group.id}") |> render_click()
+
+    view
+    |> form("#group-inject-form", %{"body" => "   "})
+    |> render_submit()
+
+    assert render(view) =~ "Message is empty."
+    assert has_element?(view, "#inject-message-modal")
   end
 end

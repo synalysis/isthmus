@@ -34,6 +34,24 @@ Use this when everyone already has working identities and you only need a cross-
 
 Manage under **Admin → Groups** (`/admin/registrations`).
 
+## ACP agent (AI member)
+
+A bridge group can attach an **ACP agent** as a member. Isthmus is the ACP *client*; the agent (default: Cursor CLI `agent acp`) is the conversational peer.
+
+1. Install and log in to the agent (`agent login` for Cursor).
+2. Admin → **Groups** → **Attach member** → network **ACP agent** → identity `cursor` (any short name: `a-z`, digits, `_`, `-`).
+3. Send a message into the group from radio / Nostr / RNS, or **Admin → Groups → Send message**. Isthmus prompts the agent and fans the reply back to the other legs.
+
+Env:
+
+```bash
+# ISTHMUS_ACP_ENABLED=false
+# ISTHMUS_ACP_COMMAND=agent acp
+# ISTHMUS_ACP_CWD=/path/to/workspace
+```
+
+The agent identity is unique across groups (`cursor` can only be attached once). Tool calls from the agent are rejected — this path is for short mesh replies, not an IDE session. See [ex_mcp](https://hex.pm/packages/ex_mcp) and [Cursor ACP](https://cursor.com/docs/cli/acp).
+
 ## MeshCore companion constraint
 
 One USB/BLE companion = one RF inbox. Isthmus cannot receive as N minted MeshCore pubkeys on that radio.

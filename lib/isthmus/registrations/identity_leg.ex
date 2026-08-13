@@ -34,7 +34,7 @@ defmodule Isthmus.Registrations.IdentityLeg do
       other -> other
     end)
     |> validate_required([:network, :role, :identity_ref, :public_material])
-    |> validate_inclusion(:network, ~w(nostr reticulum meshcore))
+    |> validate_inclusion(:network, ~w(nostr reticulum meshcore agent))
     |> validate_inclusion(:role, ~w(primary proxy member))
     |> unique_constraint([:network, :identity_ref])
   end

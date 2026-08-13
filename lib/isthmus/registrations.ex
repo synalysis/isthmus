@@ -56,6 +56,12 @@ defmodule Isthmus.Registrations do
     |> Repo.one()
   end
 
+  def get_group(id) do
+    RegistrationGroup
+    |> preload(^@group_preloads)
+    |> Repo.get(id)
+  end
+
   def get_group!(id) do
     RegistrationGroup
     |> preload(^@group_preloads)
@@ -1170,6 +1176,12 @@ defmodule Isthmus.Registrations do
   defp parse_attached("reticulum", input) do
     with {:ok, ref, material} <- Networks.Reticulum.parse_identity_ref(input) do
       {:ok, ref, material, Networks.Reticulum.identity_presentations(ref, material)}
+    end
+  end
+
+  defp parse_attached("agent", input) do
+    with {:ok, ref, material} <- Networks.Agent.parse_identity_ref(input) do
+      {:ok, ref, material, Networks.Agent.identity_presentations(ref, material)}
     end
   end
 

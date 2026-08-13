@@ -5,7 +5,7 @@ defmodule Isthmus.Networks.Health do
 
   alias Isthmus.Networks
 
-  @display_order [:meshcore, :nostr, :reticulum, :meshtastic]
+  @display_order [:meshcore, :nostr, :reticulum, :meshtastic, :agent]
 
   @doc "Ordered list of normalized health reports for all adapters."
   def report_all do
@@ -40,6 +40,7 @@ defmodule Isthmus.Networks.Health do
   defp label(:nostr), do: "Nostr"
   defp label(:reticulum), do: "Reticulum"
   defp label(:meshtastic), do: "Meshtastic"
+  defp label(:agent), do: "ACP agent"
   defp label(other), do: other |> to_string() |> String.capitalize()
 
   defp normalize_status(nil), do: :unknown
@@ -148,6 +149,20 @@ defmodule Isthmus.Networks.Health do
   defp summary(:meshtastic, status, health) do
     port = health[:port] || health["port"]
     "Companion #{status}" <> if(port, do: " · #{port}", else: "")
+  end
+
+  defp summary(:agent, :online, health) do
+    cmd = health[:command]
+    "ACP agent online" <> if(is_binary(cmd) and cmd != "", do: " · #{cmd}", else: "")
+  end
+
+  defp summary(:agent, :disabled, _),
+    do: "ACP agent disabled — attach a member named cursor, then run `agent acp`"
+
+  defp summary(:agent, status, health) do
+    err = health[:last_error]
+    base = "ACP agent #{status}"
+    if is_binary(err) and err != "", do: "#{base} · #{err}", else: base
   end
 
   defp summary(_net, status, _), do: "Status: #{status}"
@@ -322,6 +337,27 @@ defmodule Isthmus.Networks.Health do
     end
   end
 
+  defp diagnose(:agent, :disabled, _, _),
+    do:
+      {nil,
+       "Install Cursor CLI, run `agent login`, then start Isthmus. Override the binary with ISTHMUS_ACP_COMMAND."}
+
+  defp diagnose(:agent, _status, health, last_error) do
+    err = to_string(last_error || health[:last_error] || "")
+
+    cond do
+      health[:status] in [:disabled, "disabled"] ->
+        {nil, "Install Cursor CLI (`agent acp`) or set ISTHMUS_ACP_COMMAND."}
+
+      err != "" ->
+        {"ACP agent not connected",
+         "Run `agent login`, check ISTHMUS_ACP_COMMAND, then restart Isthmus."}
+
+      true ->
+        {nil, nil}
+    end
+  end
+
   defp diagnose(_, _, _, _), do: {nil, nil}
 
   defp meta_lines(:meshcore, health) do
@@ -372,6 +408,16 @@ defmodule Isthmus.Networks.Health do
       {"Clock", health[:status] in [:online, "online"] && format_unix_clock(health)},
       {"Sent", health[:sent]},
       {"Received", health[:received]}
+    ]
+    |> Enum.reject(fn {_k, v} -> is_nil(v) or v == "" end)
+  end
+
+  defp meta_lines(:agent, health) do
+    [
+      {"Command", health[:command]},
+      {"Sessions", health[:sessions]},
+      {"Queued", health[:queued]},
+      {"Error", health[:last_error]}
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) or v == "" end)
   end

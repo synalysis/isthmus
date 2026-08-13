@@ -63,6 +63,33 @@ if vault = System.get_env("ISTHMUS_VAULT_SECRET") do
   config :isthmus, vault_secret: vault
 end
 
+if config_env() != :test do
+  acp_opts = []
+
+  acp_opts =
+    case System.get_env("ISTHMUS_ACP_ENABLED") do
+      val when val in ["0", "false", "FALSE"] -> Keyword.put(acp_opts, :enabled, false)
+      _ -> acp_opts
+    end
+
+  acp_opts =
+    case System.get_env("ISTHMUS_ACP_COMMAND") do
+      nil -> acp_opts
+      "" -> Keyword.merge(acp_opts, enabled: false, command: [])
+      cmd -> Keyword.put(acp_opts, :command, String.split(cmd))
+    end
+
+  acp_opts =
+    case System.get_env("ISTHMUS_ACP_CWD") do
+      cwd when is_binary(cwd) and cwd != "" -> Keyword.put(acp_opts, :cwd, cwd)
+      _ -> acp_opts
+    end
+
+  if acp_opts != [] do
+    config :isthmus, Isthmus.Networks.Agent, acp_opts
+  end
+end
+
 if config_env() == :prod do
   database_path =
     System.get_env("DATABASE_PATH") ||

@@ -24,6 +24,7 @@ defmodule Isthmus.Gateway.Translator do
   alias Isthmus.Networks.MeshCore.Companion
   alias Isthmus.Networks.MeshCore.SyntheticNode
   alias Isthmus.Networks.Meshtastic.Companion, as: MeshtasticCompanion
+  alias Isthmus.Networks.Agent.Bridge, as: AgentBridge
   alias Isthmus.Networks.Nostr.RelayPool
   alias Isthmus.Networks.Nostr.ServiceInbox
   alias Isthmus.Networks.Reticulum.Sidecar
@@ -49,6 +50,7 @@ defmodule Isthmus.Gateway.Translator do
     Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshcore:inbound")
     Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshtastic:inbound")
     Phoenix.PubSub.subscribe(Isthmus.PubSub, "reticulum:inbound")
+    Phoenix.PubSub.subscribe(Isthmus.PubSub, "agent:inbound")
     {:ok, %{processed: 0, seen_ids: %{}}}
   end
 
@@ -138,6 +140,19 @@ defmodule Isthmus.Gateway.Translator do
       body: attrs["body"] || attrs[:body] || "",
       external_id: attrs["id"],
       meta: %{}
+    })
+
+    {:noreply, state}
+  end
+
+  def handle_info({:agent_message, attrs}, state) when is_map(attrs) do
+    ingest(%Message{
+      from_network: :agent,
+      from_ref: attrs[:from_ref] || attrs["from_ref"],
+      to_ref: nil,
+      body: attrs[:body] || attrs["body"] || "",
+      external_id: attrs[:external_id] || "acp-#{System.unique_integer([:positive])}",
+      meta: attrs[:meta] || attrs["meta"] || %{}
     })
 
     {:noreply, state}
@@ -261,8 +276,15 @@ defmodule Isthmus.Gateway.Translator do
   defp service_recipient?(_), do: false
 
   # Returns {group | nil, msg} — msg may have @token stripped from body.
-  # Prefer recipient (proxy) → subject room → author leg.
+  # Prefer explicit group_id (admin inject) → recipient (proxy) → subject room → author leg.
   # Never called for service-identity recipients (see bridge/1).
+  defp resolve_group(%Message{group_id: id} = msg) when is_binary(id) and id != "" do
+    case Registrations.get_group(id) do
+      %{status: "active"} = group -> {group, msg}
+      _ -> {nil, msg}
+    end
+  end
+
   defp resolve_group(%Message{from_network: :nostr} = msg) do
     subject = msg.meta["subject"] || msg.meta[:subject]
     to = msg.to_ref && String.downcase(msg.to_ref)
@@ -431,7 +453,7 @@ defmodule Isthmus.Gateway.Translator do
   defp deliver(group, msg, leg) do
     network = leg.network
 
-    case Policy.allow_gateway_direction?(msg.from_network, network) do
+    case allow_direction?(msg.from_network, network) do
       {:drop, reason} ->
         Gateway.log(
           log_attrs(msg, network, "dropped", "policy:#{reason}",
@@ -457,6 +479,7 @@ defmodule Isthmus.Gateway.Translator do
                 "meshtastic" -> MeshtasticCompanion.send_text(leg.identity_ref, prefix_body(msg))
                 "reticulum" -> send_reticulum(group, leg, msg)
                 "nostr" -> send_nostr(group, leg, msg)
+                "agent" -> send_agent(group, leg, msg)
                 _ -> {:error, :unknown_network}
               end
 
@@ -740,9 +763,30 @@ defmodule Isthmus.Gateway.Translator do
     end
   end
 
+  defp send_agent(group, leg, msg) do
+    from = msg.from_ref || "unknown"
+
+    prompt = """
+    Message in Isthmus group #{group.display_name} from #{msg.from_network}/#{from}:
+
+    #{msg.body}
+
+    Reply with a short plain-text message suitable for a LoRa mesh. No markdown.
+    """
+
+    AgentBridge.prompt(leg.identity_ref, prompt, %{
+      "group_id" => group.id,
+      "from_network" => to_string(msg.from_network),
+      "from_ref" => from
+    })
+  end
+
   defp prefix_body(%Message{} = msg) do
     "[via Isthmus/#{msg.from_network}] #{msg.body}"
   end
+
+  defp allow_direction?(from, _to) when from in [:admin, "admin"], do: :ok
+  defp allow_direction?(from, to), do: Policy.allow_gateway_direction?(from, to)
 
   defp maybe_deliver_meshcore_channel(group, msg) do
     src_idx = meshcore_channel_idx(msg)
@@ -819,7 +863,7 @@ defmodule Isthmus.Gateway.Translator do
   defp deliver_meshtastic_channel(group, msg, link) do
     idx = link.channel_idx
 
-    case Policy.allow_gateway_direction?(msg.from_network, "meshtastic") do
+    case allow_direction?(msg.from_network, "meshtastic") do
       {:drop, reason} ->
         Gateway.log(
           log_attrs(msg, "meshtastic", "dropped", "policy:#{reason}",
@@ -867,7 +911,7 @@ defmodule Isthmus.Gateway.Translator do
     idx = link.channel_idx
     port = Companion.port_for_radio_id(link.device_id)
 
-    case Policy.allow_gateway_direction?(msg.from_network, "meshcore") do
+    case allow_direction?(msg.from_network, "meshcore") do
       {:drop, reason} ->
         Gateway.log(
           log_attrs(msg, "meshcore", "dropped", "policy:#{reason}",

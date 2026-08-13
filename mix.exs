@@ -88,7 +88,8 @@ defmodule Isthmus.MixProject do
       {:nostr_lib, "~> 0.2.1"},
       {:eqrcode, "~> 0.2.0"},
       {:websockex, "~> 0.5.1"},
-      {:circuits_uart, "~> 1.5"}
+      {:circuits_uart, "~> 1.5"},
+      {:ex_mcp, "~> 1.0.0-rc.6"}
     ]
   end
 
