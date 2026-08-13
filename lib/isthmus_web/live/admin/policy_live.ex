@@ -92,15 +92,9 @@ defmodule IsthmusWeb.Admin.PolicyLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-8">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Policy</h1>
-            <p class="mt-1 text-sm text-base-content/70">
-              Registration, budgets, and gateway direction rules.
-            </p>
-          </div>
-          <.admin_nav current={:policy} />
-        </div>
+        <.admin_header current={:policy} title="Policy">
+          Registration, budgets, and gateway direction rules.
+        </.admin_header>
 
         <div class="rounded-box border border-base-300 bg-base-200 p-4 space-y-2">
           <p class="font-medium">Registration</p>

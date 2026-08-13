@@ -29,15 +29,9 @@ defmodule IsthmusWeb.Admin.AuditLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-6">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Governor audit</h1>
-            <p class="mt-1 text-sm text-base-content/70">
-              Allow / drop decisions across announce, tunnel, and gateway classes.
-            </p>
-          </div>
-          <.admin_nav current={:audit} />
-        </div>
+        <.admin_header current={:audit} title="Governor audit">
+          Allow / drop decisions across announce, tunnel, and gateway classes.
+        </.admin_header>
 
         <div class="overflow-x-auto rounded-box border border-base-300" id="governor-audit">
           <table class="table table-sm">

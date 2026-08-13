@@ -64,13 +64,9 @@ defmodule IsthmusWeb.Admin.HomeLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-8">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Admin</h1>
-            <p class="mt-2 text-base-content/70">Ops control plane for Isthmus.</p>
-          </div>
-          <.admin_nav current={:home} />
-        </div>
+        <.admin_header current={:home} title="Admin">
+          Ops control plane for Isthmus.
+        </.admin_header>
 
         <div :if={@problems != []} class="space-y-3">
           <div :for={p <- @problems} class="alert alert-warning text-sm items-start">

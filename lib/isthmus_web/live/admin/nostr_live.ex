@@ -115,17 +115,11 @@ defmodule IsthmusWeb.Admin.NostrLive do
   def render(assigns) do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
-      <section class="space-y-8 max-w-3xl">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Nostr</h1>
-            <p class="text-sm opacity-70 mt-1">
-              Relays and the Isthmus service identity. Group chat uses each group’s own
-              proxy npub (see Groups) — not this key.
-            </p>
-          </div>
-          <.admin_nav current={:nostr} />
-        </div>
+      <section class="space-y-8">
+        <.admin_header current={:nostr} title="Nostr">
+          Relays and the Isthmus service identity. Group chat uses each group’s own
+          proxy npub (see Groups) — not this key.
+        </.admin_header>
 
         <div class="card bg-base-200 border border-base-300" id="service-identity-card">
           <div class="card-body space-y-3">

@@ -29,11 +29,11 @@ defmodule Isthmus.Announce.Inbound do
     cond do
       # Primary: LXMF delivery destinations (what Attach-member uses).
       aspect == "lxmf.delivery" ->
-        log_and_record(dh, name, aspect)
+        log_and_record(dh, name, aspect, hops_extra(msg))
 
       # Unclassified but name decoded from LXMF-shaped app_data.
       (is_nil(aspect) or aspect == "") and is_binary(name) ->
-        log_and_record(dh, name, aspect)
+        log_and_record(dh, name, aspect, hops_extra(msg))
 
       true ->
         :ok
@@ -42,13 +42,16 @@ defmodule Isthmus.Announce.Inbound do
 
   def handle_reticulum(_), do: :ok
 
-  defp log_and_record(dh, name, aspect) do
+  defp log_and_record(dh, name, aspect, extra) do
     Logger.info(
-      "RNS announce #{String.slice(dh, 0, 8)}… name=#{inspect(name)} aspect=#{inspect(aspect)}"
+      "RNS announce #{String.slice(dh, 0, 8)}… name=#{inspect(name)} aspect=#{inspect(aspect)} hops=#{inspect(extra[:hops])}"
     )
 
-    record("reticulum", dh, name, "announce")
+    record("reticulum", dh, name, "announce", extra)
   end
+
+  defp hops_extra(%{"hops" => n}) when is_integer(n) and n >= 0, do: %{hops: n}
+  defp hops_extra(_), do: %{}
 
   @doc "Record a MeshCore advert/contact sighting with optional display name."
   def record_meshcore(pubkey_hex, name, source \\ "advert", extra \\ %{})
@@ -81,15 +84,13 @@ defmodule Isthmus.Announce.Inbound do
     if ref == "" do
       :ok
     else
-      case decide(network, ref, name) do
+      case decide(network, ref, name, extra) do
         :skip ->
           :ok
 
         {:upgrade, row} ->
-          case Sightings.put_name(row, name) do
-            {:ok, _} -> :ok
-            {:error, reason} -> Logger.debug("announce name upgrade failed: #{inspect(reason)}")
-          end
+          _ = maybe_upgrade_name(row, name)
+          _ = maybe_upgrade_hops(row, extra)
 
         :insert ->
           meta =
@@ -138,17 +139,20 @@ defmodule Isthmus.Announce.Inbound do
     e -> Logger.debug("announce record error: #{inspect(e)}")
   end
 
-  defp decide(network, ref, name) do
+  defp decide(network, ref, name, extra) do
     case Sightings.best_for(network, ref) do
       %{seen_at: %DateTime{} = seen_at, meta: meta} = row ->
         age = DateTime.diff(DateTime.utc_now(), seen_at, :second)
         existing = sighting_name(meta)
+        hops = extra[:hops] || extra["hops"]
+        name_upgrade? = is_binary(name) and name != "" and is_nil(existing)
+        hops_upgrade? = is_nil(row.hops) and is_integer(hops) and hops >= 0
 
         cond do
           age >= @dedup_window_seconds ->
             :insert
 
-          is_binary(name) and name != "" and is_nil(existing) ->
+          name_upgrade? or hops_upgrade? ->
             {:upgrade, row}
 
           true ->
@@ -157,6 +161,30 @@ defmodule Isthmus.Announce.Inbound do
 
       _ ->
         :insert
+    end
+  end
+
+  defp maybe_upgrade_name(row, name) do
+    if is_binary(name) and name != "" and is_nil(sighting_name(row.meta)) do
+      case Sightings.put_name(row, name) do
+        {:ok, _} -> :ok
+        {:error, reason} -> Logger.debug("announce name upgrade failed: #{inspect(reason)}")
+      end
+    else
+      :ok
+    end
+  end
+
+  defp maybe_upgrade_hops(row, extra) do
+    hops = extra[:hops] || extra["hops"]
+
+    if is_nil(row.hops) and is_integer(hops) and hops >= 0 do
+      case Sightings.put_hops(row, hops) do
+        {:ok, _} -> :ok
+        {:error, reason} -> Logger.debug("announce hops upgrade failed: #{inspect(reason)}")
+      end
+    else
+      :ok
     end
   end
 

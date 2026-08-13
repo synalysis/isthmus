@@ -231,15 +231,9 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-8">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Reticulum</h1>
-            <p class="mt-1 text-sm text-base-content/70">
-              Sidecar status and Isthmus-owned RNS config (`ISTHMUS_RNS_CONFIGDIR`).
-            </p>
-          </div>
-          <.admin_nav current={:reticulum} />
-        </div>
+        <.admin_header current={:reticulum} title="Reticulum">
+          Sidecar status and Isthmus-owned RNS config (`ISTHMUS_RNS_CONFIGDIR`).
+        </.admin_header>
 
         <div :if={@error} class="alert alert-error text-sm" id="rns-status-error">
           <div class="space-y-1">

@@ -202,18 +202,12 @@ defmodule IsthmusWeb.Admin.AdvertsLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-6">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Adverts</h1>
-            <p class="mt-1 text-sm text-base-content/70">
-              Heard identities from the last 24 hours: MeshCore flood-adverts,
-              Reticulum LXMF announces, Nostr, and Meshtastic NodeInfo (Meshtastic
-              has no flood advert). These power address suggestions when attaching
-              members on <.link navigate={~p"/admin/registrations"} class="link">Groups</.link>.
-            </p>
-          </div>
-          <.admin_nav current={:adverts} />
-        </div>
+        <.admin_header current={:adverts} title="Adverts">
+          Heard identities from the last 24 hours: MeshCore flood-adverts,
+          Reticulum LXMF announces, Nostr, and Meshtastic NodeInfo (Meshtastic
+          has no flood advert). These power address suggestions when attaching
+          members on <.link navigate={~p"/admin/registrations"} class="link">Groups</.link>.
+        </.admin_header>
 
         <div id="adverts-filter" class="flex flex-wrap items-center gap-2">
           <span class="text-sm opacity-70">Networks</span>

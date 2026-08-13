@@ -55,16 +55,10 @@ defmodule IsthmusWeb.Admin.TopologyLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-6">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Topology</h1>
-            <p class="mt-1 text-sm text-base-content/70">
-              {@graph.counts.groups} groups · {@graph.counts.networks} networks · {@graph.counts.legs} legs · {@graph.counts.channels} channel slots · {@graph.counts.tunnels} tunnels.
-              Click a node to inspect its identities.
-            </p>
-          </div>
-          <.admin_nav current={:topology} />
-        </div>
+        <.admin_header current={:topology} title="Topology">
+          {@graph.counts.groups} groups · {@graph.counts.networks} networks · {@graph.counts.legs} legs · {@graph.counts.channels} channel slots · {@graph.counts.tunnels} tunnels.
+          Click a node to inspect its identities.
+        </.admin_header>
 
         <.topology_graph
           graph={@graph}

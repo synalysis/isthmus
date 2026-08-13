@@ -183,6 +183,16 @@ defmodule Isthmus.Announce.Sightings do
 
   def put_name(row, _), do: {:ok, row}
 
+  @doc "Fill in hops on a recent sighting that was recorded without them."
+  def put_hops(%Sighting{} = row, hops) when is_integer(hops) and hops >= 0 do
+    row
+    |> Sighting.changeset(%{hops: hops})
+    |> Repo.update()
+    |> tap_broadcast()
+  end
+
+  def put_hops(row, _), do: {:ok, row}
+
   @doc "Delete expired rows."
   def purge_expired do
     now = DateTime.utc_now() |> DateTime.truncate(:second)

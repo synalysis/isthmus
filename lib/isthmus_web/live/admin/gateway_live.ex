@@ -49,15 +49,9 @@ defmodule IsthmusWeb.Admin.GatewayLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-6">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Gateway</h1>
-            <p class="mt-1 text-sm text-base-content/70">
-              Forward stats and route log (message content is never shown).
-            </p>
-          </div>
-          <.admin_nav current={:gateway} />
-        </div>
+        <.admin_header current={:gateway} title="Gateway">
+          Forward stats and route log (message content is never shown).
+        </.admin_header>
 
         <div class="alert alert-info text-sm">
           <%= if @service_npub do %>

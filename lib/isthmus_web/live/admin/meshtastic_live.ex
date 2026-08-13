@@ -384,16 +384,10 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-10">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Meshtastic</h1>
-            <p class="mt-1 text-sm text-base-content/70 max-w-2xl">
-              Connect a <strong class="font-medium">companion radio</strong>
-              over USB serial and link a private channel to an Isthmus group.
-            </p>
-          </div>
-          <.admin_nav current={:meshtastic} />
-        </div>
+        <.admin_header current={:meshtastic} title="Meshtastic">
+          Connect a <strong class="font-medium">companion radio</strong>
+          over USB serial and link a private channel to an Isthmus group.
+        </.admin_header>
 
         <div class="space-y-4" id="companion-status">
           <div class="flex flex-wrap items-start justify-between gap-3">

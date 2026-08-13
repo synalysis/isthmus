@@ -471,17 +471,11 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-10">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Groups</h1>
-            <p class="mt-1 text-sm text-base-content/70">
-              Groups attach real identities across networks. Private radio channels are
-              configured under <.link navigate={~p"/admin/meshcore"} class="link">MeshCore</.link>
-              and <.link navigate={~p"/admin/meshtastic"} class="link">Meshtastic</.link>.
-            </p>
-          </div>
-          <.admin_nav current={:groups} />
-        </div>
+        <.admin_header current={:groups} title="Groups">
+          Groups attach real identities across networks. Private radio channels are
+          configured under <.link navigate={~p"/admin/meshcore"} class="link">MeshCore</.link>
+          and <.link navigate={~p"/admin/meshtastic"} class="link">Meshtastic</.link>.
+        </.admin_header>
 
         <div class="flex flex-wrap items-center gap-2">
           <button class="btn btn-primary btn-sm" phx-click="open_new_group" type="button">

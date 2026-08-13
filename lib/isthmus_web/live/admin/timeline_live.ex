@@ -30,15 +30,9 @@ defmodule IsthmusWeb.Admin.TimelineLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-6">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Ops timeline</h1>
-            <p class="mt-1 text-sm text-base-content/70">
-              Unified view of announces, gateway forwards, and governor decisions.
-            </p>
-          </div>
-          <.admin_nav current={:timeline} />
-        </div>
+        <.admin_header current={:timeline} title="Ops timeline">
+          Unified view of announces, gateway forwards, and governor decisions.
+        </.admin_header>
 
         <div class="overflow-x-auto rounded-box border border-base-300" id="ops-timeline">
           <table class="table table-sm">

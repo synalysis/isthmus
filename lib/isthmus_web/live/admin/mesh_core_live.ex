@@ -516,17 +516,11 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-10">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">MeshCore</h1>
-            <p class="mt-1 text-sm text-base-content/70 max-w-2xl">
-              Connect radios here. An <strong class="font-medium">island tunnel radio</strong>
-              carries mesh traffic for tunnels; a <strong class="font-medium">companion radio</strong>
-              links private channels to groups.
-            </p>
-          </div>
-          <.admin_nav current={:meshcore} />
-        </div>
+        <.admin_header current={:meshcore} title="MeshCore">
+          Connect radios here. An <strong class="font-medium">island tunnel radio</strong>
+          carries mesh traffic for tunnels; a <strong class="font-medium">companion radio</strong>
+          links private channels to groups.
+        </.admin_header>
 
         <%!-- 1. Connected radios --%>
         <div class="space-y-4" id="connected-radios">

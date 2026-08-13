@@ -245,6 +245,20 @@ class Sidecar:
 
         return None
 
+    def _hops_to(self, destination_hash) -> Optional[int]:
+        """Hop count from the transport table, or None when unknown.
+
+        Same source MeshChatX uses for announce lists: ``Transport.hops_to``.
+        ``PATHFINDER_M`` (128) means RNS has no path yet.
+        """
+        try:
+            raw = int(self.RNS.Transport.hops_to(destination_hash))
+            if raw < int(self.RNS.Transport.PATHFINDER_M):
+                return raw
+        except Exception:  # noqa: BLE001
+            return None
+        return None
+
     def _emit_announce(self, destination_hash, announced_identity, app_data) -> None:
         try:
             aspect = self._announce_aspect(destination_hash, announced_identity)
@@ -256,6 +270,7 @@ class Sidecar:
                     "destination_hash": hex_of(destination_hash),
                     "identity_hash": getattr(announced_identity, "hexhash", None),
                     "name": name,
+                    "hops": self._hops_to(destination_hash),
                 }
             )
         except Exception as exc:  # noqa: BLE001
@@ -556,17 +571,10 @@ class Sidecar:
         if self.router is not None:
             backchannel = to_hash in getattr(self.router, "backchannel_links", {})
             direct = to_hash in getattr(self.router, "direct_links", {})
-        hops = None
+        hops = self._hops_to(to_hash) if has_path else None
         next_hop = None
         interface = None
         if has_path:
-            try:
-                raw_hops = int(self.RNS.Transport.hops_to(to_hash))
-                # PATHFINDER_M means "unknown" in RNS.
-                if raw_hops < int(self.RNS.Transport.PATHFINDER_M):
-                    hops = raw_hops
-            except Exception:  # noqa: BLE001
-                hops = None
             try:
                 nh = self.RNS.Transport.next_hop(to_hash)
                 if isinstance(nh, (bytes, bytearray)) and nh:

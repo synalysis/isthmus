@@ -43,6 +43,9 @@ defmodule IsthmusWeb.Admin.AdvertsLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/admin/adverts")
 
+    assert has_element?(view, "#admin-nav")
+    assert has_element?(view, "#admin-nav-networks")
+    assert has_element?(view, "#admin-nav-ops")
     assert has_element?(view, advert_sel("reticulum", rns))
     assert has_element?(view, advert_sel("meshcore", mc))
     assert has_element?(view, "#filter-meshcore")

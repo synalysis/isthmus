@@ -311,12 +311,7 @@ defmodule IsthmusWeb.Admin.TunnelsLive do
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-8">
-        <div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <h1 class="text-3xl font-semibold">Tunnels & governor</h1>
-          </div>
-          <.admin_nav current={:tunnels} />
-        </div>
+        <.admin_header current={:tunnels} title="Tunnels & governor" />
 
         <div class="grid gap-4 md:grid-cols-4">
           <div class="stat bg-base-200 rounded-box border border-base-300">

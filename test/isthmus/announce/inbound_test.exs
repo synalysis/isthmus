@@ -66,6 +66,36 @@ defmodule Isthmus.Announce.InboundTest do
     assert %{meta: %{"name" => "Bob"}} = Sightings.best_for("reticulum", ref)
   end
 
+  test "handle_reticulum records hops from the sidecar announce" do
+    ref = String.duplicate("33", 16)
+
+    assert :ok =
+             Inbound.handle_reticulum(%{
+               "destination_hash" => ref,
+               "name" => "Carol",
+               "aspect" => "lxmf.delivery",
+               "hops" => 2
+             })
+
+    assert %{hops: 2, meta: %{"name" => "Carol"}} = Sightings.best_for("reticulum", ref)
+  end
+
+  test "upgrades hops on a recent nameless reticulum sighting" do
+    ref = String.duplicate("44", 16)
+    assert :ok = Inbound.record("reticulum", ref, "Dana", "announce")
+    assert %{hops: nil} = Sightings.best_for("reticulum", ref)
+
+    assert :ok =
+             Inbound.handle_reticulum(%{
+               "destination_hash" => ref,
+               "name" => "Dana",
+               "aspect" => "lxmf.delivery",
+               "hops" => 3
+             })
+
+    assert %{hops: 3} = Sightings.best_for("reticulum", ref)
+  end
+
   test "handle_reticulum ignores isthmus.tunnel announces without names" do
     ref = String.duplicate("22", 16)
 
