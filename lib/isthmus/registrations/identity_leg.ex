@@ -2,6 +2,19 @@ defmodule Isthmus.Registrations.IdentityLeg do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @type network :: String.t()
+  @type role :: String.t()
+  @type t :: %__MODULE__{
+          id: String.t() | nil,
+          network: network() | nil,
+          role: role() | nil,
+          identity_ref: String.t() | nil,
+          public_material: map(),
+          encrypted_private_material: binary() | nil,
+          presentation_cache: map(),
+          registration_group_id: String.t() | nil
+        }
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 

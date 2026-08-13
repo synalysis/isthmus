@@ -12,6 +12,11 @@ defmodule Isthmus.MixProject do
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       listeners: listeners(),
+      dialyzer: [
+        plt_local_path: "priv/plts/project.plt",
+        plt_core_path: "priv/plts/core.plt",
+        plt_add_apps: [:ex_unit, :mix, :eex]
+      ],
       releases: [
         isthmus: [
           include_executables_for: [:unix],
@@ -89,7 +94,8 @@ defmodule Isthmus.MixProject do
       {:eqrcode, "~> 0.2.0"},
       {:websockex, "~> 0.5.1"},
       {:circuits_uart, "~> 1.5"},
-      {:ex_mcp, "~> 1.0.0-rc.6"}
+      {:ex_mcp, "~> 1.0.0-rc.6"},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false}
     ]
   end
 

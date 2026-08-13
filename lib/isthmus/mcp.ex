@@ -7,10 +7,12 @@ defmodule Isthmus.MCP do
   `ISTHMUS_MCP_TOKEN`.
   """
 
+  @spec enabled?() :: boolean()
   def enabled? do
     Keyword.get(env(), :enabled, true) != false
   end
 
+  @spec token() :: String.t() | nil
   def token do
     case Keyword.get(env(), :token) do
       token when is_binary(token) and token != "" -> token
@@ -18,6 +20,7 @@ defmodule Isthmus.MCP do
     end
   end
 
+  @spec configured?() :: boolean()
   def configured? do
     enabled?() and is_binary(token())
   end

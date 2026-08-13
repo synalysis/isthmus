@@ -3,6 +3,9 @@ defmodule Isthmus.Networks do
 
   alias Isthmus.Networks.{Agent, MeshCore, Meshtastic, Nostr, Reticulum}
 
+  @type network :: atom() | String.t()
+  @type adapter :: module()
+
   @adapters %{
     nostr: Nostr,
     reticulum: Reticulum,
@@ -11,16 +14,20 @@ defmodule Isthmus.Networks do
     agent: Agent
   }
 
+  @spec adapter!(network()) :: adapter()
   def adapter!(network) when is_atom(network), do: Map.fetch!(@adapters, network)
   def adapter!(network) when is_binary(network), do: adapter!(String.to_existing_atom(network))
 
+  @spec list_adapters() :: [atom()]
   def list_adapters, do: Map.keys(@adapters)
 
+  @spec health_all() :: %{optional(atom()) => map()}
   def health_all do
     Map.new(@adapters, fn {id, mod} -> {id, mod.health()} end)
   end
 
   @doc "True when the adapter implements announce/advert discovery."
+  @spec supports_announce?(network()) :: boolean()
   def supports_announce?(network) do
     mod = adapter!(network)
     caps = mod.capabilities()
@@ -49,6 +56,8 @@ defmodule Isthmus.Networks do
   - `:force` — skip announce governor dedup/budget (for explicit UI actions)
   - `:flood` — MeshCore flood advert (default zero-hop)
   """
+  @spec announce(network(), String.t()) :: :ok | {:error, term()}
+  @spec announce(network(), String.t(), map() | keyword()) :: :ok | {:error, term()}
   def announce(network, identity_ref, opts \\ %{}) when is_binary(identity_ref) do
     unless supports_announce?(network) do
       {:error, :announce_not_supported}

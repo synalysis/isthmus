@@ -24,6 +24,17 @@ defmodule Isthmus.Nostr.Crypto do
   # secp256k1 curve order
   @n 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 
+  # nostr_lib specs omit runtime shapes we handle (unsigned events, nested
+  # `{:error, :invalid_id, rumor}` from Seal.unwrap/2).
+  @dialyzer {:nowarn_function,
+             [
+               dm_event: 3,
+               receive_dm_safe: 2,
+               receive_dm_lenient: 2,
+               normalize_rumor: 1,
+               verify_subject_in_wraps: 3
+             ]}
+
   def service_keypair do
     case System.get_env("ISTHMUS_NOSTR_NSEC") do
       nil ->

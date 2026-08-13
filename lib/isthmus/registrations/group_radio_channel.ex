@@ -8,6 +8,15 @@ defmodule Isthmus.Registrations.GroupRadioChannel do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @type t :: %__MODULE__{
+          id: String.t() | nil,
+          network: String.t() | nil,
+          device_id: String.t() | nil,
+          channel_idx: integer() | nil,
+          secret_enc: binary() | nil,
+          registration_group_id: String.t() | nil
+        }
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 

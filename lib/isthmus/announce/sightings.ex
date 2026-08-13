@@ -215,8 +215,6 @@ defmodule Isthmus.Announce.Sightings do
     |> Repo.one()
   end
 
-  defp lookup_tunnel_id(_), do: nil
-
   defp normalize_ref(ref) when is_binary(ref), do: String.downcase(String.trim(ref))
   defp normalize_ref(_), do: ""
 end

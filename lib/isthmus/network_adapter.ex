@@ -3,7 +3,7 @@ defmodule Isthmus.NetworkAdapter do
   Behaviour for pluggable network adapters (Reticulum, MeshCore, Nostr, …).
   """
 
-  @type network_id :: :reticulum | :meshcore | :nostr | atom()
+  @type network_id :: :reticulum | :meshcore | :nostr | :meshtastic | :agent | atom()
   @type identity_ref :: String.t()
   @type presentation :: %{
           required(:format_id) => String.t(),

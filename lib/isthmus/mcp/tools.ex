@@ -1,6 +1,8 @@
 defmodule Isthmus.MCP.Tools do
   @moduledoc false
 
+  import Isthmus.MCP.Args
+
   alias Isthmus.Accounts
   alias Isthmus.Announce.Governor
   alias Isthmus.Announce.Sightings
@@ -12,12 +14,14 @@ defmodule Isthmus.MCP.Tools do
   alias Isthmus.Networks.Health
   alias Isthmus.Networks.MeshCore.Companion, as: MeshCoreCompanion
   alias Isthmus.Networks.Meshtastic.Companion, as: MeshtasticCompanion
-  alias Isthmus.Nostr.Bech32
   alias Isthmus.Policy
   alias Isthmus.Registrations
   alias Isthmus.Relays
   alias Isthmus.Topology
   alias Isthmus.Tunnel
+
+  @type args :: map()
+  @type result :: {:ok, map()} | {:error, String.t()}
 
   @writable_policy ~w(
     registration_open
@@ -28,6 +32,7 @@ defmodule Isthmus.MCP.Tools do
     tunnel_block_meshcore_public
   )
 
+  @spec health(args()) :: result()
   def health(_args \\ %{}) do
     reports =
       Enum.map(Health.report_all(), fn r ->
@@ -46,6 +51,7 @@ defmodule Isthmus.MCP.Tools do
     {:ok, %{reports: reports}}
   end
 
+  @spec list_groups(args()) :: result()
   def list_groups(_args \\ %{}) do
     groups =
       Registrations.list_all()
@@ -54,12 +60,14 @@ defmodule Isthmus.MCP.Tools do
     {:ok, %{groups: groups}}
   end
 
+  @spec get_group(args()) :: result()
   def get_group(args) do
     with {:ok, group} <- resolve_group(fetch(args, :group)) do
       {:ok, dump_group(group)}
     end
   end
 
+  @spec create_group(args()) :: result()
   def create_group(args) do
     name = args |> fetch(:name) |> to_string() |> String.trim()
 
@@ -80,6 +88,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec attach_member(args()) :: result()
   def attach_member(args) do
     with {:ok, group} <- resolve_group(fetch(args, :group)),
          {:ok, network} <- require_text(args, :network),
@@ -91,13 +100,14 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec detach_member(args()) :: result()
   def detach_member(args) do
     with {:ok, group} <- resolve_group(fetch(args, :group)),
          {:ok, identity} <- require_text(args, :identity) do
       network = optional_text(args, :network)
 
       leg =
-        Enum.find(group.legs || [], fn leg ->
+        Enum.find(group.legs, fn leg ->
           String.downcase(leg.identity_ref) == String.downcase(identity) and
             (is_nil(network) or leg.network == network)
         end)
@@ -110,6 +120,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec inject_message(args()) :: result()
   def inject_message(args) do
     with {:ok, group} <- resolve_group(fetch(args, :group)),
          {:ok, body} <- require_text(args, :body) do
@@ -130,6 +141,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec announce_group(args()) :: result()
   def announce_group(args) do
     with {:ok, group} <- resolve_group(fetch(args, :group)) do
       case Registrations.announce_group(group) do
@@ -153,6 +165,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec mint_proxy(args()) :: result()
   def mint_proxy(args) do
     with {:ok, group} <- resolve_group(fetch(args, :group)),
          {:ok, network} <- require_text(args, :network) do
@@ -171,6 +184,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec revoke_group(args()) :: result()
   def revoke_group(args) do
     with {:ok, group} <- resolve_group(fetch(args, :group)) do
       case Registrations.revoke(group) do
@@ -180,6 +194,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec list_adverts(args()) :: result()
   def list_adverts(args) do
     limit = clamp_int(fetch(args, :limit), 50, 1, 200)
     network = optional_text(args, :network)
@@ -208,6 +223,7 @@ defmodule Isthmus.MCP.Tools do
     {:ok, %{adverts: rows}}
   end
 
+  @spec list_tunnels(args()) :: result()
   def list_tunnels(_args \\ %{}) do
     peers =
       Enum.map(Tunnel.list_peers(), fn p ->
@@ -225,6 +241,7 @@ defmodule Isthmus.MCP.Tools do
     {:ok, %{tunnels: peers}}
   end
 
+  @spec create_tunnel(args()) :: result()
   def create_tunnel(args) do
     with {:ok, name} <- require_text(args, :name),
          {:ok, payload} <- require_text(args, :payload_network),
@@ -247,6 +264,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec set_tunnel_enabled(args()) :: result()
   def set_tunnel_enabled(args) do
     with {:ok, peer} <- resolve_tunnel(fetch(args, :tunnel)),
          {:ok, enabled} <- require_bool(args, :enabled) do
@@ -257,6 +275,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec list_relays(args()) :: result()
   def list_relays(_args \\ %{}) do
     relays =
       Enum.map(Relays.list_relays(), fn r ->
@@ -273,6 +292,7 @@ defmodule Isthmus.MCP.Tools do
     {:ok, %{relays: relays}}
   end
 
+  @spec create_relay(args()) :: result()
   def create_relay(args) do
     with {:ok, url} <- require_text(args, :url) do
       attrs = %{
@@ -299,6 +319,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec list_timeline(args()) :: result()
   def list_timeline(args) do
     limit = clamp_int(fetch(args, :limit), 40, 1, 80)
 
@@ -316,20 +337,24 @@ defmodule Isthmus.MCP.Tools do
     {:ok, %{entries: entries}}
   end
 
+  @spec gateway_log(args()) :: result()
   def gateway_log(args) do
     limit = clamp_int(fetch(args, :limit), 30, 1, 100)
 
     {:ok, %{log: Gateway.list_forward_log(limit)}}
   end
 
+  @spec governor_drops(args()) :: result()
   def governor_drops(_args \\ %{}) do
     {:ok, %{drops: Governor.drops_summary(20), stats: Governor.stats()}}
   end
 
+  @spec get_policy(args()) :: result()
   def get_policy(_args \\ %{}) do
     {:ok, %{settings: Policy.all_settings(), directions: Policy.direction_keys()}}
   end
 
+  @spec get_acp(args()) :: result()
   def get_acp(_args \\ %{}) do
     settings = Settings.current()
     health = safe_agent_health()
@@ -346,6 +371,7 @@ defmodule Isthmus.MCP.Tools do
      }}
   end
 
+  @spec set_acp(args()) :: result()
   def set_acp(args) do
     params = %{
       "enabled" => fetch(args, :enabled),
@@ -376,6 +402,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec set_policy(args()) :: result()
   def set_policy(args) do
     with {:ok, key} <- require_text(args, :key) do
       if key not in @writable_policy do
@@ -391,6 +418,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec list_radios(args()) :: result()
   def list_radios(_args \\ %{}) do
     {:ok,
      %{
@@ -399,6 +427,7 @@ defmodule Isthmus.MCP.Tools do
      }}
   end
 
+  @spec set_meshtastic_time(args()) :: result()
   def set_meshtastic_time(args) do
     port = optional_text(args, :port)
     tz = optional_text(args, :timezone)
@@ -412,6 +441,7 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec set_meshtastic_settings(args()) :: result()
   def set_meshtastic_settings(args) do
     port = optional_text(args, :port)
 
@@ -443,10 +473,12 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec topology(args()) :: result()
   def topology(_args \\ %{}) do
     {:ok, Topology.build(:all)}
   end
 
+  @spec list_admins(args()) :: result()
   def list_admins(_args \\ %{}) do
     admins =
       Enum.map(Accounts.list_admins(), fn a ->
@@ -465,7 +497,7 @@ defmodule Isthmus.MCP.Tools do
       owner: group.owner_pubkey_hex,
       token: Registrations.token_slug(group.display_name),
       members:
-        Enum.map(group.legs || [], fn leg ->
+        Enum.map(group.legs, fn leg ->
           %{
             id: leg.id,
             network: leg.network,
@@ -474,7 +506,7 @@ defmodule Isthmus.MCP.Tools do
           }
         end),
       channels:
-        Enum.map(group.radio_channels || [], fn ch ->
+        Enum.map(group.radio_channels, fn ch ->
           %{
             id: ch.id,
             network: ch.network,
@@ -497,116 +529,6 @@ defmodule Isthmus.MCP.Tools do
     }
   end
 
-  defp resolve_group(nil), do: {:error, "group is required"}
-  defp resolve_group(""), do: {:error, "group is required"}
-
-  defp resolve_group(id_or_name) when is_binary(id_or_name) do
-    trimmed = String.trim(id_or_name)
-
-    by_id =
-      case Ecto.UUID.cast(trimmed) do
-        {:ok, _} -> Registrations.get_group(trimmed)
-        :error -> nil
-      end
-
-    cond do
-      is_map(by_id) ->
-        {:ok, by_id}
-
-      true ->
-        name = String.downcase(trimmed)
-
-        case Enum.find(
-               Registrations.list_all(),
-               &(String.downcase(&1.display_name || "") == name)
-             ) do
-          nil -> {:error, "group not found: #{trimmed}"}
-          group -> {:ok, Registrations.get_group!(group.id)}
-        end
-    end
-  end
-
-  defp resolve_group(_), do: {:error, "group is required"}
-
-  defp resolve_tunnel(nil), do: {:error, "tunnel is required"}
-  defp resolve_tunnel(""), do: {:error, "tunnel is required"}
-
-  defp resolve_tunnel(id_or_name) when is_binary(id_or_name) do
-    trimmed = String.trim(id_or_name)
-    peers = Tunnel.list_peers()
-
-    found =
-      Enum.find(peers, &(&1.id == trimmed)) ||
-        Enum.find(peers, &(String.downcase(&1.name || "") == String.downcase(trimmed))) ||
-        Enum.find(peers, &(&1.tunnel_id == trimmed))
-
-    if found, do: {:ok, found}, else: {:error, "tunnel not found: #{trimmed}"}
-  end
-
-  defp resolve_owner(nil), do: default_owner()
-  defp resolve_owner(""), do: default_owner()
-
-  defp resolve_owner(value) when is_binary(value) do
-    trimmed = String.trim(value)
-
-    cond do
-      String.match?(trimmed, ~r/\A[0-9a-f]{64}\z/i) ->
-        {:ok, String.downcase(trimmed)}
-
-      true ->
-        case Bech32.decode(trimmed) do
-          {:ok, "npub", pubkey} -> {:ok, Base.encode16(pubkey, case: :lower)}
-          _ -> {:error, "owner must be an npub or 64-char hex pubkey"}
-        end
-    end
-  end
-
-  defp default_owner do
-    case Accounts.list_admins() do
-      [%{pubkey_hex: hex} | _] -> {:ok, hex}
-      [] -> {:error, "no admin on file — pass owner as npub"}
-    end
-  end
-
-  defp require_text(args, key) do
-    case args |> fetch(key) |> to_string() |> String.trim() do
-      "" -> {:error, "#{key} is required"}
-      value -> {:ok, value}
-    end
-  end
-
-  defp optional_text(args, key) do
-    case args |> fetch(key) |> to_string() |> String.trim() do
-      "" -> nil
-      value -> value
-    end
-  end
-
-  defp require_bool(args, key) do
-    case fetch(args, key) do
-      v when is_boolean(v) -> {:ok, v}
-      "true" -> {:ok, true}
-      "false" -> {:ok, false}
-      _ -> {:error, "#{key} must be true or false"}
-    end
-  end
-
-  defp fetch(args, key) when is_map(args) do
-    Map.get(args, key) || Map.get(args, Atom.to_string(key))
-  end
-
-  defp clamp_int(nil, default, _min, _max), do: default
-  defp clamp_int(n, _default, min, max) when is_integer(n), do: n |> max(min) |> min(max)
-
-  defp clamp_int(n, default, min, max) when is_binary(n) do
-    case Integer.parse(n) do
-      {i, ""} -> clamp_int(i, default, min, max)
-      _ -> default
-    end
-  end
-
-  defp clamp_int(_, default, _, _), do: default
-
   defp coerce_policy(key, value)
        when key in ["registration_open", "tunnel_block_meshcore_public"] do
     case value do
@@ -627,20 +549,6 @@ defmodule Isthmus.MCP.Tools do
   defp coerce_policy(_key, value) when is_list(value), do: Enum.map(value, &to_string/1)
   defp coerce_policy(_key, value) when is_binary(value), do: value
   defp coerce_policy(_key, value), do: value
-
-  defp format_error(%Ecto.Changeset{} = changeset) do
-    changeset
-    |> Ecto.Changeset.traverse_errors(fn {msg, opts} ->
-      Enum.reduce(opts, msg, fn {key, value}, acc ->
-        String.replace(acc, "%{#{key}}", to_string(value))
-      end)
-    end)
-    |> inspect()
-  end
-
-  defp format_error(reason) when is_binary(reason), do: reason
-  defp format_error(reason) when is_atom(reason), do: Atom.to_string(reason)
-  defp format_error(reason), do: inspect(reason)
 
   defp safe_health(fun) do
     fun.()

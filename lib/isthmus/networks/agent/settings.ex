@@ -11,6 +11,27 @@ defmodule Isthmus.Networks.Agent.Settings do
 
   alias Isthmus.Policy
 
+  @type preset :: %{id: String.t(), label: String.t(), command: String.t()}
+  @type source :: :policy | :config
+  @type settings :: %{
+          enabled: boolean(),
+          command: String.t(),
+          command_argv: [String.t()],
+          cwd: String.t() | nil,
+          preset: String.t(),
+          source: source(),
+          prompt_timeout_ms: pos_integer()
+        }
+  @type form_params :: %{
+          String.t() => boolean() | String.t()
+        }
+  @type apply_attrs :: %{
+          enabled: boolean(),
+          command: String.t(),
+          command_argv: [String.t()],
+          cwd: String.t() | nil
+        }
+
   @app :isthmus
   @env_key Isthmus.Networks.Agent
 
@@ -26,13 +47,16 @@ defmodule Isthmus.Networks.Agent.Settings do
     %{id: "auggie", label: "Auggie", command: "auggie --acp"}
   ]
 
+  @spec presets() :: [preset()]
   def presets, do: @presets
 
+  @spec preset_options() :: [{String.t(), String.t()}]
   def preset_options do
     Enum.map(@presets, &{&1.label <> " (`#{&1.command}`)", &1.id}) ++ [{"Custom", "custom"}]
   end
 
   @doc "Currently running settings (Application env)."
+  @spec current() :: settings()
   def current do
     opts = env()
     command = command_argv(opts)
@@ -49,6 +73,8 @@ defmodule Isthmus.Networks.Agent.Settings do
     }
   end
 
+  @spec form_params() :: form_params()
+  @spec form_params(settings()) :: form_params()
   def form_params(settings \\ current()) do
     %{
       "enabled" => settings.enabled,
@@ -59,6 +85,7 @@ defmodule Isthmus.Networks.Agent.Settings do
   end
 
   @doc "Persist to policy, update Application env, and reconnect the ACP client."
+  @spec apply(map()) :: {:ok, map()} | {:error, :blank_command}
   def apply(params) when is_map(params) do
     with {:ok, attrs} <- cast(params) do
       persist!(attrs)
@@ -72,6 +99,7 @@ defmodule Isthmus.Networks.Agent.Settings do
   end
 
   @doc "Copy policy overrides into Application env (boot). No-op when unset."
+  @spec hydrate_from_policy() :: :ok
   def hydrate_from_policy do
     case policy_override() do
       nil -> :ok
@@ -79,6 +107,8 @@ defmodule Isthmus.Networks.Agent.Settings do
     end
   end
 
+  @spec command_argv() :: [String.t()]
+  @spec command_argv(keyword()) :: [String.t()]
   def command_argv(opts \\ env()) do
     case Keyword.get(opts, :command, ["agent", "acp"]) do
       list when is_list(list) -> Enum.filter(list, &(is_binary(&1) and &1 != ""))
@@ -87,6 +117,7 @@ defmodule Isthmus.Networks.Agent.Settings do
     end
   end
 
+  @spec split_command(term()) :: [String.t()]
   def split_command(command) when is_binary(command) do
     command
     |> String.trim()
@@ -95,6 +126,7 @@ defmodule Isthmus.Networks.Agent.Settings do
 
   def split_command(_), do: []
 
+  @spec preset_id(String.t()) :: String.t()
   def preset_id(command) when is_binary(command) do
     case Enum.find(@presets, &(&1.command == String.trim(command))) do
       %{id: id} -> id
@@ -161,36 +193,31 @@ defmodule Isthmus.Networks.Agent.Settings do
     if is_nil(enabled) and is_nil(command) and is_nil(cwd) do
       nil
     else
-      command_s =
-        case command do
-          s when is_binary(s) -> String.trim(s)
-          _ -> current().command
-        end
-
-      cwd_s =
-        case cwd do
-          s when is_binary(s) ->
-            trimmed = String.trim(s)
-            if trimmed == "", do: nil, else: trimmed
-
-          _ ->
-            current().cwd
-        end
-
-      enabled? =
-        case enabled do
-          v when is_boolean(v) -> v
-          _ -> current().enabled
-        end
+      command_s = override_command(command)
 
       %{
-        enabled: enabled?,
+        enabled: override_enabled(enabled),
         command: command_s,
         command_argv: split_command(command_s),
-        cwd: cwd_s
+        cwd: override_cwd(cwd)
       }
     end
   end
+
+  defp override_command(s) when is_binary(s), do: String.trim(s)
+  defp override_command(_), do: current().command
+
+  defp override_cwd(s) when is_binary(s) do
+    case String.trim(s) do
+      "" -> nil
+      path -> path
+    end
+  end
+
+  defp override_cwd(_), do: current().cwd
+
+  defp override_enabled(v) when is_boolean(v), do: v
+  defp override_enabled(_), do: current().enabled
 
   defp source do
     if policy_get("acp_command") != nil or policy_get("acp_enabled") != nil or

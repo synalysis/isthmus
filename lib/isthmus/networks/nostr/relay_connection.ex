@@ -175,7 +175,7 @@ defmodule Isthmus.Networks.Nostr.RelayConnection do
           ],
           content: ""
         )
-        |> Nostr.Event.sign(seckey_hex)
+        |> Isthmus.Nostr.Event.sign(seckey_hex)
 
       {:ok, Isthmus.Nostr.Event.to_wire_map(event)}
     else
@@ -195,7 +195,7 @@ defmodule Isthmus.Networks.Nostr.RelayConnection do
                 ],
                 content: ""
               )
-              |> Nostr.Event.sign(seckey_hex)
+              |> Isthmus.Nostr.Event.sign(seckey_hex)
 
             {:ok, Isthmus.Nostr.Event.to_wire_map(event)}
 

@@ -16,9 +16,15 @@ defmodule Isthmus.Policy do
     "tunnel_block_meshcore_public" => true
   }
 
+  @type key :: String.t()
+  @type value :: term()
+  @type direction :: :ok | {:drop, :direction_denied | :direction_not_allowed}
+
   @doc "When true (default), tunnels do not carry MeshCore default Public channel traffic."
+  @spec tunnel_block_meshcore_public?() :: boolean()
   def tunnel_block_meshcore_public?, do: get("tunnel_block_meshcore_public") != false
 
+  @spec get(key()) :: value()
   def get(key) when is_binary(key) do
     case Repo.get_by(Setting, key: key) do
       nil -> Map.get(@defaults, key)
@@ -27,8 +33,10 @@ defmodule Isthmus.Policy do
     end
   end
 
+  @spec registration_open?() :: boolean()
   def registration_open?, do: get("registration_open") == true
 
+  @spec put(key(), value()) :: {:ok, Setting.t()} | {:error, Ecto.Changeset.t()}
   def put(key, value) when is_binary(key) do
     case Repo.get_by(Setting, key: key) do
       nil ->
@@ -43,6 +51,7 @@ defmodule Isthmus.Policy do
     end
   end
 
+  @spec all_settings() :: %{String.t() => value()}
   def all_settings do
     db =
       Repo.all(from s in Setting, select: {s.key, s.value})
@@ -59,6 +68,7 @@ defmodule Isthmus.Policy do
 
   Direction key is `"from>to"` (e.g. `"nostr>reticulum"`).
   """
+  @spec allow_gateway_direction?(term(), term()) :: direction()
   def allow_gateway_direction?(from_network, to_network) do
     from = to_string(from_network)
     to = to_string(to_network)
@@ -75,6 +85,7 @@ defmodule Isthmus.Policy do
     end
   end
 
+  @spec direction_keys() :: [String.t()]
   def direction_keys do
     nets = ~w(nostr reticulum meshcore meshtastic agent)
 

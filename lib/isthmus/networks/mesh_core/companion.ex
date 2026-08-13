@@ -16,9 +16,10 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   require Logger
 
-  alias Isthmus.Announce.Inbound
-  alias Isthmus.Announce.Sightings
   alias Isthmus.Networks.MeshCore.BLETransport
+  alias Isthmus.Networks.MeshCore.Companion.Channels
+  alias Isthmus.Networks.MeshCore.Companion.Frames
+  alias Isthmus.Networks.MeshCore.Companion.Status
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.MeshCore.Protocol
   alias Isthmus.Networks.MeshCore.RadioParams
@@ -28,21 +29,25 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   @status_table :isthmus_meshcore_status
   @registry Isthmus.Networks.MeshCore.Registry
   @max_channel_slots 8
-  @max_channel_slots 8
-  # Per-slot wait; overall deadline must cover worst case (all slots timing out).
-  @channel_step_ms 1_000
-  @channel_sync_slack_ms 2_000
 
+  @type port_arg :: String.t() | nil | :primary
+  @type health :: map()
+  @type channel :: map()
+
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  @spec via(String.t()) :: {:via, module(), {module(), String.t()}}
   def via(port) when is_binary(port) do
     {:via, Registry, {@registry, port}}
   end
 
+  @spec health() :: health()
+  @spec health(port_arg()) :: health()
   def health(port \\ nil) do
-    key = ets_port_key(port)
+    key = Status.ets_port_key(port)
 
     case :ets.lookup(@status_table, {:health, key}) do
       [{_, health}] ->
@@ -54,6 +59,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   @doc "Health maps for every companion process (primary + extras)."
+  @spec list_health() :: [health()]
   def list_health do
     @status_table
     |> :ets.match({{:health, :_}, :"$1"})
@@ -88,8 +94,10 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def sync_contacts, do: GenServer.cast(__MODULE__, :sync_contacts)
 
   @doc "Non-blocking read of cached channel slots (ETS)."
+  @spec list_channels() :: [channel()]
+  @spec list_channels(port_arg()) :: [channel()]
   def list_channels(port \\ nil) do
-    case :ets.lookup(@channels_table, {:all, ets_port_key(port)}) do
+    case :ets.lookup(@channels_table, {:all, Status.ets_port_key(port)}) do
       [{_, channels}] when is_list(channels) -> channels
       _ -> []
     end
@@ -97,8 +105,10 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     _ -> []
   end
 
+  @spec get_channel(integer()) :: channel() | nil
+  @spec get_channel(integer(), port_arg()) :: channel() | nil
   def get_channel(idx, port \\ nil) when is_integer(idx) do
-    case :ets.lookup(@channels_table, {idx, ets_port_key(port)}) do
+    case :ets.lookup(@channels_table, {idx, Status.ets_port_key(port)}) do
       [{_, channel}] -> channel
       _ -> nil
     end
@@ -211,11 +221,6 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     if port == primary, do: __MODULE__, else: via(port)
   end
 
-  defp ets_port_key(nil), do: Discover.resolve_port(:companion) || :none
-  defp ets_port_key(:primary), do: Discover.resolve_port(:companion) || :none
-  defp ets_port_key(port) when is_binary(port) and port != "", do: port
-  defp ets_port_key(_), do: :none
-
   defp safe_call(request, fallback, timeout, port \\ nil) do
     GenServer.call(target(port), request, timeout)
   catch
@@ -225,8 +230,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
-    ensure_ets(@channels_table)
-    ensure_ets(@status_table)
+    Status.ensure_ets(@channels_table)
+    Status.ensure_ets(@status_table)
 
     fixed_port? = Keyword.get(opts, :fixed_port, false)
 
@@ -273,14 +278,14 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     }
 
     state = maybe_connect(state)
-    publish_status(state)
+    Status.publish(state)
     {:ok, state}
   end
 
   @impl true
   def handle_call(:health, _from, state) do
-    health = health_map(state)
-    publish_status(state)
+    health = Status.health_map(state)
+    Status.publish(state)
     {:reply, health, state}
   end
 
@@ -288,7 +293,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     if state.transport, do: state.transport_mod.close(state.transport)
 
     state =
-      publish_status(%{
+      Status.publish(%{
         state
         | transport: nil,
           buffer: <<>>,
@@ -301,7 +306,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   def handle_call(:list_channels, _from, state) do
-    {:reply, cached_channel_list(state), state}
+    {:reply, Status.cached_channel_list(state), state}
   end
 
   def handle_call({:get_channel, idx}, _from, state) when is_integer(idx) do
@@ -316,8 +321,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       when not is_nil(t) do
     state =
       state
-      |> maybe_abort_channel_sync({:error, :superseded})
-      |> start_channel_sync(from)
+      |> Channels.maybe_abort({:error, :superseded})
+      |> Channels.start(from)
 
     {:noreply, state}
   end
@@ -332,7 +337,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         %{status: :online, transport: t, transport_mod: mod} = state
       )
       when not is_nil(t) do
-    secret_bin = channel_secret_bin(secret)
+    secret_bin = Channels.channel_secret_bin(secret)
     frame = Protocol.set_channel_frame(idx, name, secret_bin)
 
     case mod.write(t, Protocol.encode_usb_frame(frame)) do
@@ -341,10 +346,10 @@ defmodule Isthmus.Networks.MeshCore.Companion do
           index: idx,
           name: name,
           secret_hex: Base.encode16(secret_bin, case: :lower),
-          empty?: name == "" and zero_secret?(secret_bin)
+          empty?: name == "" and Channels.zero_secret?(secret_bin)
         }
 
-        state = put_in(state, [:channels, idx], channel) |> persist_channels()
+        state = put_in(state, [:channels, idx], channel) |> Status.persist_channels()
         {:reply, {:ok, channel}, state}
 
       {:error, reason} ->
@@ -534,8 +539,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def handle_cast(:sync_channels, %{status: :online, transport: t} = state) when not is_nil(t) do
     state =
       state
-      |> maybe_abort_channel_sync({:error, :superseded})
-      |> start_channel_sync(nil)
+      |> Channels.maybe_abort({:error, :superseded})
+      |> Channels.start(nil)
 
     {:noreply, state}
   end
@@ -546,14 +551,14 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def handle_info({:circuits_uart, _port, data}, state) when is_binary(data) do
     buffer = state.buffer <> data
     {frames, rest} = Protocol.decode_usb_stream(buffer)
-    state = Enum.reduce(frames, %{state | buffer: rest}, &apply_frame/2)
+    state = Enum.reduce(frames, %{state | buffer: rest}, &Frames.apply/2)
     {:noreply, state}
   end
 
   def handle_info(:reconnect, state) do
     if state.transport, do: state.transport_mod.close(state.transport)
     state = maybe_connect(%{state | transport: nil, status: :disconnected})
-    publish_status(state)
+    Status.publish(state)
     {:noreply, state}
   end
 
@@ -581,7 +586,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   def handle_info(:channel_sync_timeout, state) do
-    missing = missing_channel_indices(state)
+    missing = Channels.missing_indices(state)
 
     if missing != [] do
       Logger.debug(
@@ -590,21 +595,21 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       )
     end
 
-    state = fill_missing_channels(state, missing)
-    {:noreply, finish_channel_sync(state, :ok)}
+    state = Channels.fill_missing(state, missing)
+    {:noreply, Channels.finish(state, :ok)}
   end
 
   def handle_info({:channel_sync_step_timeout, idx}, %{channel_sync_awaiting: idx} = state)
       when not is_nil(idx) do
     Logger.debug("MeshCore channel #{idx} no response — treating as empty")
-    state = put_in(state, [:channels, idx], empty_channel(idx))
-    {:noreply, advance_channel_sync(state)}
+    state = put_in(state, [:channels, idx], Channels.empty_channel(idx))
+    {:noreply, Channels.advance(state)}
   end
 
   def handle_info({:channel_sync_step_timeout, _idx}, state), do: {:noreply, state}
 
   def handle_info({:DOWN, ref, :process, _pid, _reason}, %{channel_sync_monitor: ref} = state) do
-    {:noreply, clear_channel_sync(state)}
+    {:noreply, Channels.clear(state)}
   end
 
   def handle_info(_msg, state), do: {:noreply, state}
@@ -612,118 +617,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   @impl true
   def terminate(_reason, state) do
     if state.transport, do: state.transport_mod.close(state.transport)
-    if state[:fixed_port], do: drop_ets(state)
+    if state[:fixed_port], do: Status.drop_ets(state)
     :ok
-  end
-
-  defp drop_ets(state) do
-    key = ets_port_key(state.port)
-    :ets.delete(@status_table, {:health, key})
-    :ets.delete(@channels_table, {:all, key})
-
-    Enum.each(0..(@max_channel_slots - 1), fn idx ->
-      :ets.delete(@channels_table, {idx, key})
-    end)
-  rescue
-    _ -> :ok
-  end
-
-  defp apply_frame(frame, state) do
-    case Protocol.parse_frame(frame) do
-      {:raw_data, payload} ->
-        # ISTH → Engine; otherwise MeshCore island bytes for meshcore-payload tunnels.
-        Isthmus.Tunnel.Engine.ingest_carrier_blob("meshcore", payload, %{source: "companion_raw"})
-        state
-
-      {:advert, pubkey_hex} ->
-        record_advert(pubkey_hex, state.contacts)
-        Process.send_after(self(), :sync_contacts_boot, 500)
-        state
-
-      {:path_updated, pubkey_hex} ->
-        Logger.debug("MeshCore path updated for #{pubkey_hex}")
-        Process.send_after(self(), :sync_contacts_boot, 200)
-        state
-
-      {:contacts_start, count} ->
-        Logger.info("MeshCore contacts sync starting (#{count})")
-        state
-
-      {:contact, contact} ->
-        _ = record_contact_sighting(contact)
-        put_in(state, [:contacts, contact.public_key], contact)
-
-      {:end_of_contacts, lastmod} ->
-        Logger.info("MeshCore contacts sync done (#{map_size(state.contacts)} contacts)")
-        %{state | contacts_lastmod: lastmod}
-
-      {:msg_waiting, true} ->
-        send(self(), :poll_messages)
-        state
-
-      {:contact_msg, msg} ->
-        maybe_record_peer_snr(msg)
-
-        Phoenix.PubSub.broadcast(
-          Isthmus.PubSub,
-          "meshcore:inbound",
-          {:meshcore_dm,
-           %{
-             from_ref: msg.from_ref,
-             body: sanitize_text(msg.body),
-             meta: Map.take(msg, [:timestamp, :txt_type, :snr, :score])
-           }}
-        )
-
-        state
-
-      {:channel_info, channel} ->
-        state = put_in(state, [:channels, channel.index], channel)
-        maybe_complete_awaited_channel(state, channel.index)
-
-      {:error, :remote} ->
-        # Firmware may ERROR on empty/unsupported slots during GET_CHANNEL.
-        case state.channel_sync_awaiting do
-          nil ->
-            state
-
-          idx ->
-            state = put_in(state, [:channels, idx], empty_channel(idx))
-            advance_channel_sync(state)
-        end
-
-      {:channel_msg, msg} ->
-        Phoenix.PubSub.broadcast(
-          Isthmus.PubSub,
-          "meshcore:inbound",
-          {:meshcore_channel,
-           %{
-             channel_idx: msg.channel_idx,
-             body: sanitize_text(msg.body),
-             meta:
-               Map.merge(Map.take(msg, [:timestamp, :txt_type, :snr]), %{
-                 radio_id: get_in(state, [:self_info, :public_key])
-               })
-           }}
-        )
-
-        state
-
-      {:device_info, rest} ->
-        %{state | max_channels: parse_max_channels(rest, state.max_channels)}
-
-      {:self_info, %{public_key: pubkey} = info} when is_binary(pubkey) ->
-        # Arrives once per connect, in reply to CMD_APP_START; republish so the
-        # cached health map carries our own node key.
-        publish_status(%{state | self_info: info})
-
-      {:no_more_messages, _} ->
-        state
-
-      other ->
-        Logger.debug("meshcore frame: #{inspect(other)}")
-        state
-    end
   end
 
   defp resolve_path(opts, contacts) do
@@ -755,44 +650,6 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     end
   end
 
-  defp record_advert(pubkey_hex, contacts) when is_map(contacts) do
-    name =
-      case Map.get(contacts, String.downcase(pubkey_hex || "")) do
-        %{name: n} when is_binary(n) and n != "" -> n
-        _ -> nil
-      end
-
-    Inbound.record_meshcore(pubkey_hex, name, "push_advert")
-  end
-
-  defp record_contact_sighting(%{public_key: ref, name: name})
-       when is_binary(ref) and is_binary(name) and name != "" do
-    Inbound.record_meshcore(ref, name, "contact")
-  end
-
-  defp record_contact_sighting(_), do: :ok
-
-  defp maybe_record_peer_snr(%{from_ref: from_ref} = msg) when is_binary(from_ref) do
-    snr = Map.get(msg, :snr)
-
-    if snr != nil do
-      _ =
-        Sightings.record(%{
-          network: "meshcore",
-          direction: "in",
-          identity_ref: from_ref,
-          snr: snr / 4.0,
-          meta: %{source: "contact_msg", score: Map.get(msg, :score)}
-        })
-    end
-  end
-
-  defp maybe_record_peer_snr(_), do: :ok
-
-  defp sanitize_text(text) when is_binary(text) do
-    text |> String.trim_trailing(<<0>>) |> String.trim()
-  end
-
   defp reply_write(mod, transport, frame, state) do
     case mod.write(transport, Protocol.encode_usb_frame(frame)) do
       :ok -> {:reply, :ok, state}
@@ -801,7 +658,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   defp maybe_connect(%{transport_kind: :usb, port: nil} = state) do
-    publish_status(%{
+    Status.publish(%{
       state
       | status: :disabled,
         last_error: "no companion detected (set ISTHMUS_MESHCORE_PORT to override)"
@@ -814,7 +671,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   defp maybe_connect(%{transport_kind: :ble, ble_address: addr} = state)
        when addr in [nil, ""] do
-    publish_status(%{
+    Status.publish(%{
       state
       | status: :disabled,
         last_error: "ISTHMUS_MESHCORE_BLE_ADDRESS not set"
@@ -846,7 +703,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         schedule_poll()
         Process.send_after(self(), :sync_contacts_boot, 1_000)
 
-        publish_status(%{
+        Status.publish(%{
           state
           | transport: transport,
             status: :online,
@@ -859,7 +716,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         log_connect_failure(reason, delay)
         Process.send_after(self(), :reconnect, delay)
 
-        publish_status(%{
+        Status.publish(%{
           state
           | status: :error,
             last_error: inspect(reason),
@@ -905,218 +762,4 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   defp truthy_opt?(_, _), do: false
-
-  # Sequential GET_CHANNEL — firmware often cannot answer a burst of 8 queries.
-  defp start_channel_sync(state, from) do
-    monitor =
-      case from do
-        {pid, _} when is_pid(pid) -> Process.monitor(pid)
-        _ -> nil
-      end
-
-    deadline = state.max_channels * @channel_step_ms + @channel_sync_slack_ms
-    timer = Process.send_after(self(), :channel_sync_timeout, deadline)
-    queue = Enum.to_list(0..(state.max_channels - 1))
-
-    %{
-      state
-      | channel_sync_from: from,
-        channel_sync_monitor: monitor,
-        channel_sync_queue: queue,
-        channel_sync_awaiting: nil,
-        channel_sync_timer: timer
-    }
-    |> query_next_channel()
-  end
-
-  defp query_next_channel(%{status: :online, transport: t, transport_mod: mod} = state)
-       when not is_nil(t) do
-    case state.channel_sync_queue do
-      [idx | rest] ->
-        _ = mod.write(t, Protocol.encode_usb_frame(Protocol.get_channel_frame(idx)))
-        Process.send_after(self(), {:channel_sync_step_timeout, idx}, @channel_step_ms)
-        %{state | channel_sync_queue: rest, channel_sync_awaiting: idx}
-
-      [] ->
-        finish_channel_sync(state, :ok)
-    end
-  end
-
-  defp query_next_channel(state), do: finish_channel_sync(state, {:error, :not_connected})
-
-  defp maybe_complete_awaited_channel(%{channel_sync_awaiting: idx} = state, idx)
-       when not is_nil(idx) do
-    advance_channel_sync(state)
-  end
-
-  defp maybe_complete_awaited_channel(state, _idx), do: state
-
-  defp advance_channel_sync(state) do
-    %{state | channel_sync_awaiting: nil}
-    |> query_next_channel()
-  end
-
-  defp finish_channel_sync(state, reason) do
-    state = persist_channels(state)
-    channels = cached_channel_list(state)
-
-    reply =
-      case reason do
-        :ok -> {:ok, channels}
-        :timeout -> {:ok, channels}
-        {:error, _} = err -> err
-      end
-
-    if state.channel_sync_from do
-      GenServer.reply(state.channel_sync_from, reply)
-    end
-
-    if reason in [:ok, :timeout] do
-      Logger.info("MeshCore channel sync done (#{length(channels)} slots)")
-
-      Phoenix.PubSub.broadcast(
-        Isthmus.PubSub,
-        "meshcore:channels",
-        {:meshcore_channels, channels, state.port}
-      )
-    end
-
-    clear_channel_sync(state)
-  end
-
-  defp maybe_abort_channel_sync(%{channel_sync_from: from} = state, reply)
-       when not is_nil(from) do
-    GenServer.reply(from, reply)
-    clear_channel_sync(state)
-  end
-
-  defp maybe_abort_channel_sync(state, _reply), do: clear_channel_sync(state)
-
-  defp clear_channel_sync(state) do
-    if state.channel_sync_monitor, do: Process.demonitor(state.channel_sync_monitor, [:flush])
-    if is_reference(state.channel_sync_timer), do: Process.cancel_timer(state.channel_sync_timer)
-
-    %{
-      state
-      | channel_sync_from: nil,
-        channel_sync_monitor: nil,
-        channel_sync_queue: [],
-        channel_sync_awaiting: nil,
-        channel_sync_timer: nil
-    }
-  end
-
-  defp empty_channel(idx) do
-    %{
-      index: idx,
-      name: "",
-      secret_hex: String.duplicate("00", 16),
-      empty?: true
-    }
-  end
-
-  defp missing_channel_indices(state) do
-    have = MapSet.new(Map.keys(state.channels))
-
-    remaining =
-      [state.channel_sync_awaiting | state.channel_sync_queue]
-      |> Enum.reject(&is_nil/1)
-
-    0..(state.max_channels - 1)
-    |> Enum.to_list()
-    |> Enum.reject(&MapSet.member?(have, &1))
-    |> Enum.concat(remaining)
-    |> Enum.uniq()
-    |> Enum.sort()
-  end
-
-  defp fill_missing_channels(state, indices) do
-    Enum.reduce(indices, state, fn idx, acc ->
-      if Map.has_key?(acc.channels, idx) do
-        acc
-      else
-        put_in(acc, [:channels, idx], empty_channel(idx))
-      end
-    end)
-  end
-
-  defp ensure_ets(name) do
-    case :ets.whereis(name) do
-      :undefined -> :ets.new(name, [:named_table, :public, :set, read_concurrency: true])
-      _ -> name
-    end
-  end
-
-  defp parse_max_channels(<<fw, _max_contacts, max_channels, _::binary>>, _default)
-       when fw >= 3 and max_channels > 0 do
-    min(max_channels, @max_channel_slots)
-  end
-
-  defp parse_max_channels(_, default), do: default
-
-  defp cached_channel_list(state) do
-    state.channels
-    |> Map.values()
-    |> Enum.sort_by(& &1.index)
-  end
-
-  defp persist_channels(state) do
-    channels = cached_channel_list(state)
-    key = ets_port_key(state.port)
-    :ets.insert(@channels_table, {{:all, key}, channels})
-
-    Enum.each(channels, fn ch ->
-      :ets.insert(@channels_table, {{ch.index, key}, ch})
-    end)
-
-    state
-  end
-
-  defp health_map(state) do
-    info = state.self_info || %{}
-
-    %{
-      status: state.status,
-      transport: state.transport_kind,
-      port: state.port,
-      ble_address: state.ble_address,
-      last_error: state.last_error,
-      contacts: map_size(state.contacts),
-      channels: map_size(state.channels),
-      max_channels: state.max_channels,
-      self_ref: info[:public_key],
-      self_name: info[:name],
-      freq_mhz: info[:freq_mhz],
-      bw_khz: info[:bw_khz],
-      sf: info[:sf],
-      cr: info[:cr],
-      tx_power: info[:tx_power],
-      max_tx_power: info[:max_tx_power],
-      primary?: state[:fixed_port] != true
-    }
-  end
-
-  defp publish_status(state) do
-    :ets.insert(@status_table, {{:health, ets_port_key(state.port)}, health_map(state)})
-    state
-  end
-
-  defp channel_secret_bin(nil), do: :crypto.strong_rand_bytes(16)
-
-  defp channel_secret_bin(secret) when is_binary(secret) do
-    cond do
-      byte_size(secret) == 16 ->
-        secret
-
-      String.match?(secret, ~r/^[0-9a-fA-F]{32}$/) ->
-        {:ok, bin} = Base.decode16(secret, case: :mixed)
-        bin
-
-      true ->
-        :crypto.strong_rand_bytes(16)
-    end
-  end
-
-  defp zero_secret?(bin) when is_binary(bin),
-    do: byte_size(bin) > 0 and :binary.bin_to_list(bin) |> Enum.all?(&(&1 == 0))
 end

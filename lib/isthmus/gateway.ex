@@ -5,6 +5,10 @@ defmodule Isthmus.Gateway do
   alias Isthmus.Gateway.Activity
   alias Isthmus.Repo
 
+  @type log_row :: map()
+
+  @spec list_recent() :: [Activity.t()]
+  @spec list_recent(pos_integer()) :: [Activity.t()]
   def list_recent(limit \\ 50) do
     Activity
     |> order_by([a], desc: a.inserted_at)
@@ -17,11 +21,15 @@ defmodule Isthmus.Gateway do
 
   Returns maps with route/status metadata and `body_bytes` only.
   """
+  @spec list_forward_log() :: [log_row()]
+  @spec list_forward_log(pos_integer()) :: [log_row()]
   def list_forward_log(limit \\ 50) do
     list_recent(limit) |> Enum.map(&public_row/1)
   end
 
   @doc "Failed / dropped gateway forwards for DLQ view."
+  @spec list_dead() :: [log_row()]
+  @spec list_dead(pos_integer()) :: [log_row()]
   def list_dead(limit \\ 50) do
     Activity
     |> where([a], a.status in ["failed", "dropped"])
@@ -34,6 +42,7 @@ defmodule Isthmus.Gateway do
   @doc """
   Aggregate gateway forward stats for the admin UI.
   """
+  @spec stats() :: map()
   def stats do
     now = DateTime.utc_now() |> DateTime.truncate(:second)
     hour_ago = DateTime.add(now, -3_600, :second)
@@ -51,6 +60,7 @@ defmodule Isthmus.Gateway do
   end
 
   @doc "Most recent MeshCore peer pubkey seen for a registration (for reply routing)."
+  @spec last_mesh_peer(String.t()) :: String.t() | nil
   def last_mesh_peer(group_id) when is_binary(group_id) do
     from(a in Activity,
       where:
@@ -64,6 +74,7 @@ defmodule Isthmus.Gateway do
   end
 
   @doc "Most recent Reticulum/LXMF peer destination hash for reply routing."
+  @spec last_rns_peer(String.t()) :: String.t() | nil
   def last_rns_peer(group_id) when is_binary(group_id) do
     from(a in Activity,
       where:
@@ -76,12 +87,14 @@ defmodule Isthmus.Gateway do
     |> Repo.one()
   end
 
+  @spec log!(map()) :: Activity.t()
   def log!(attrs) do
     %Activity{}
     |> Activity.changeset(attrs)
     |> Repo.insert!()
   end
 
+  @spec log(map()) :: {:ok, Activity.t()} | {:error, Ecto.Changeset.t()}
   def log(attrs) do
     %Activity{}
     |> Activity.changeset(attrs)

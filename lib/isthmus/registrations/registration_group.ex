@@ -2,6 +2,25 @@ defmodule Isthmus.Registrations.RegistrationGroup do
   use Ecto.Schema
   import Ecto.Changeset
 
+  @type kind :: String.t()
+  @type status :: String.t()
+  @type t :: %__MODULE__{
+          id: String.t() | nil,
+          owner_pubkey_hex: String.t() | nil,
+          display_name: String.t() | nil,
+          status: status() | nil,
+          created_by: String.t() | nil,
+          kind: kind() | nil,
+          meshcore_channel_idx: integer() | nil,
+          meshcore_channel_secret_enc: binary() | nil,
+          meshcore_channel_device_id: String.t() | nil,
+          meshtastic_channel_idx: integer() | nil,
+          meshtastic_channel_psk_enc: binary() | nil,
+          meshtastic_channel_device_id: String.t() | nil,
+          legs: [term()],
+          radio_channels: [term()]
+        }
+
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 

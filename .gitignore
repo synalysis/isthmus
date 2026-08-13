@@ -41,6 +41,9 @@ npm-debug.log
 /isthmus_channel/.elm-tailwind/
 /isthmus_channel/src/generated.css
 
+# Dialyzer PLTs
+/priv/plts/
+
 # Database files
 *.db
 *.db-*

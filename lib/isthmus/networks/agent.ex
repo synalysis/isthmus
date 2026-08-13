@@ -15,12 +15,16 @@ defmodule Isthmus.Networks.Agent do
   alias Isthmus.Networks.Agent.Bridge
 
   @impl true
+  @spec network_id() :: :agent
   def network_id, do: :agent
 
   @impl true
+  @spec capabilities() :: MapSet.t(atom())
   def capabilities, do: MapSet.new([:dm])
 
   @impl true
+  @spec parse_identity_ref(String.t()) ::
+          {:ok, String.t(), %{name: String.t()}} | {:error, :invalid_agent_identity}
   def parse_identity_ref(input) when is_binary(input) do
     cleaned =
       input
@@ -36,9 +40,11 @@ defmodule Isthmus.Networks.Agent do
   end
 
   @impl true
+  @spec generate_proxy_identity(map()) :: {:error, :not_supported}
   def generate_proxy_identity(_opts), do: {:error, :not_supported}
 
   @impl true
+  @spec identity_presentations(String.t(), map()) :: [Isthmus.NetworkAdapter.presentation()]
   def identity_presentations(ref, _material) do
     [
       %{
@@ -52,6 +58,7 @@ defmodule Isthmus.Networks.Agent do
   end
 
   @impl true
+  @spec health() :: map()
   def health do
     try do
       Bridge.health()
@@ -66,6 +73,7 @@ defmodule Isthmus.Networks.Agent do
   end
 
   @impl true
+  @spec send_message(String.t(), String.t(), map() | nil) :: :ok | {:error, term()}
   def send_message(identity_ref, text, meta) when is_binary(identity_ref) and is_binary(text) do
     Bridge.prompt(identity_ref, text, meta || %{})
   end

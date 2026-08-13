@@ -12,6 +12,12 @@ defmodule Isthmus.Policy.Setting do
     timestamps(type: :utc_datetime)
   end
 
+  @type t :: %__MODULE__{
+          id: String.t() | nil,
+          key: String.t() | nil,
+          value: map()
+        }
+
   def changeset(setting, attrs) do
     setting
     |> cast(attrs, [:key, :value])

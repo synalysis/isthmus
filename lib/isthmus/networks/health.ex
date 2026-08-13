@@ -7,7 +7,23 @@ defmodule Isthmus.Networks.Health do
 
   @display_order [:meshcore, :nostr, :reticulum, :meshtastic, :agent]
 
+  @type status :: atom()
+  @type severity :: :ok | :info | :warn | :error
+  @type health_map :: map()
+  @type report :: %{
+          network: atom(),
+          label: String.t(),
+          status: status(),
+          severity: severity(),
+          summary: String.t(),
+          issue: String.t() | nil,
+          fix: String.t() | nil,
+          detail: term(),
+          meta: [{String.t(), term()}]
+        }
+
   @doc "Ordered list of normalized health reports for all adapters."
+  @spec report_all() :: [report()]
   def report_all do
     raw = Networks.health_all()
 
@@ -17,6 +33,7 @@ defmodule Isthmus.Networks.Health do
   end
 
   @doc "Normalize one adapter health map."
+  @spec normalize(atom(), health_map()) :: report()
   def normalize(network, health) when is_map(health) do
     status = overall_status(network, health)
     last_error = health[:last_error] || health["last_error"]

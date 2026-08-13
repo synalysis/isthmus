@@ -53,6 +53,16 @@ defmodule Isthmus.Topology do
           offset: number()
         }
 
+  @type graph :: %{
+          scope: term(),
+          width: number(),
+          height: number(),
+          nodes: [node_t()],
+          edges: [edge_t()],
+          legend: term(),
+          counts: map()
+        }
+
   @doc """
   Build the topology graph for the given scope.
 
@@ -64,6 +74,8 @@ defmodule Isthmus.Topology do
     * `:path_by_leg` — map of `leg_id => path_status` used to annotate external
       Reticulum leg edges (default `%{}`)
   """
+  @spec build(term()) :: graph()
+  @spec build(term(), keyword()) :: graph()
   def build(scope, opts \\ []) do
     groups = load_groups(scope)
     include_tunnels? = Keyword.get(opts, :tunnels, true)
@@ -107,6 +119,7 @@ defmodule Isthmus.Topology do
   end
 
   @doc "Find a node by its id."
+  @spec node(graph(), String.t()) :: node_t() | nil
   def node(%{nodes: nodes}, id) when is_binary(id) do
     Enum.find(nodes, &(&1.id == id))
   end
@@ -118,6 +131,7 @@ defmodule Isthmus.Topology do
 
   Returns `nil` when the node is not found.
   """
+  @spec detail(graph(), String.t()) :: map() | nil
   def detail(%{nodes: nodes, edges: edges}, id) when is_binary(id) do
     case Enum.find(nodes, &(&1.id == id)) do
       nil -> nil

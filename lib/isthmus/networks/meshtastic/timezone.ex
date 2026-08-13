@@ -87,8 +87,6 @@ defmodule Isthmus.Networks.Meshtastic.Timezone do
       String.match?(s, ~r/\A(?:UTC0|GMT0|<[^>]+>-?\d|[A-Z]{2,6}-?\d)/)
   end
 
-  defp posix_like?(_), do: false
-
   # POSIX offset is hours *added to local* to get UTC (west of UTC is positive).
   defp offset_posix do
     utc = :calendar.datetime_to_gregorian_seconds(:calendar.universal_time())

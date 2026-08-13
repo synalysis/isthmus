@@ -12,10 +12,12 @@ defmodule Isthmus.MCP.JSON do
 
   @redact_names Enum.map(@redact, &Atom.to_string/1)
 
+  @spec encode(term()) :: String.t()
   def encode(data) do
     data |> sanitize() |> Jason.encode!(pretty: true)
   end
 
+  @spec sanitize(term()) :: term()
   def sanitize(%DateTime{} = dt), do: DateTime.to_iso8601(dt)
   def sanitize(%NaiveDateTime{} = dt), do: NaiveDateTime.to_iso8601(dt)
   def sanitize(%MapSet{} = set), do: set |> MapSet.to_list() |> sanitize()

@@ -12,16 +12,29 @@ defmodule Isthmus.Networks.Agent.Bridge do
 
   @reconnect_ms 15_000
 
+  @type health :: %{
+          :status => atom(),
+          :last_error => String.t() | nil,
+          optional(:detail) => String.t(),
+          optional(:command) => String.t(),
+          optional(:sessions) => non_neg_integer(),
+          optional(:queued) => non_neg_integer()
+        }
+
+  @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
+  @spec health() :: health()
   def health do
     GenServer.call(__MODULE__, :health, 1_000)
   catch
     :exit, _ -> %{status: :not_started, last_error: "ACP bridge not started"}
   end
 
+  @spec prompt(String.t(), String.t()) :: :ok | {:error, atom()}
+  @spec prompt(String.t(), String.t(), map()) :: :ok | {:error, atom()}
   def prompt(identity_ref, text, meta \\ %{})
       when is_binary(identity_ref) and is_binary(text) do
     GenServer.call(__MODULE__, {:enqueue, identity_ref, text, meta}, 5_000)
@@ -29,6 +42,7 @@ defmodule Isthmus.Networks.Agent.Bridge do
     :exit, _ -> {:error, :not_started}
   end
 
+  @spec reconnect() :: {:ok, health()} | {:error, :not_started}
   def reconnect do
     GenServer.call(__MODULE__, :reconnect, 15_000)
   catch
@@ -161,22 +175,26 @@ defmodule Isthmus.Networks.Agent.Bridge do
         }
 
       true ->
-        case ExMCP.ACP.start_client(
-               command: command(opts),
-               handler: Isthmus.Networks.Agent.Handler,
-               event_listener: self(),
-               capabilities: %{},
-               client_info: %{"name" => "isthmus", "version" => "0.1.0"}
-             ) do
-          {:ok, client} ->
-            Logger.info("ACP agent online via #{inspect(command(opts))}")
-            pump(%{state | client: client, status: :online, last_error: nil})
+        start_client(state, opts)
+    end
+  end
 
-          {:error, reason} ->
-            Logger.warning("ACP agent connect failed: #{inspect(reason)}")
-            Process.send_after(self(), :reconnect, @reconnect_ms)
-            %{state | status: :error, last_error: inspect(reason)}
-        end
+  defp start_client(state, opts) do
+    case ExMCP.ACP.start_client(
+           command: command(opts),
+           handler: Isthmus.Networks.Agent.Handler,
+           event_listener: self(),
+           capabilities: %{},
+           client_info: %{"name" => "isthmus", "version" => "0.1.0"}
+         ) do
+      {:ok, client} ->
+        Logger.info("ACP agent online via #{inspect(command(opts))}")
+        pump(%{state | client: client, status: :online, last_error: nil})
+
+      {:error, reason} ->
+        Logger.warning("ACP agent connect failed: #{inspect(reason)}")
+        Process.send_after(self(), :reconnect, @reconnect_ms)
+        %{state | status: :error, last_error: inspect(reason)}
     end
   end
 

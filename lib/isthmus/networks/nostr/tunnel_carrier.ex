@@ -38,7 +38,7 @@ defmodule Isthmus.Networks.Nostr.TunnelCarrier do
         event =
           @kind
           |> Nostr.Event.create(content: content, tags: nostr_tags)
-          |> Nostr.Event.sign(seckey_hex)
+          |> Event.sign(seckey_hex)
 
         RelayPool.publish_event(Event.to_wire_map(event))
 

@@ -5,6 +5,21 @@ defmodule Isthmus.Gateway.Activity do
   @primary_key {:id, :binary_id, autogenerate: true}
   @foreign_key_type :binary_id
 
+  @type t :: %__MODULE__{
+          id: String.t() | nil,
+          direction: String.t() | nil,
+          from_network: String.t() | nil,
+          to_network: String.t() | nil,
+          from_ref: String.t() | nil,
+          to_ref: String.t() | nil,
+          body: String.t() | nil,
+          status: String.t() | nil,
+          error: String.t() | nil,
+          external_id: String.t() | nil,
+          meta: map(),
+          registration_group_id: String.t() | nil
+        }
+
   schema "gateway_messages" do
     field :direction, :string
     field :from_network, :string
