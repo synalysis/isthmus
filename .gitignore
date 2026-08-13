@@ -52,3 +52,7 @@ npm-debug.log
 .env
 .env.local
 
+# Python bytecode (MCP stdio bridge, RNS sidecar)
+__pycache__/
+*.py[cod]
+

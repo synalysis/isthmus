@@ -78,6 +78,32 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
 
   def reconnect(name \\ __MODULE__), do: GenServer.cast(name, :reconnect)
 
+  @doc """
+  Close an island CLI that never answered `get radio`.
+
+  Kept for tests and a manual release. Discover.refresh/0 no longer calls this:
+  a silent `get radio` is not proof the port is Meshtastic.
+  """
+  def disconnect_unidentified(name \\ __MODULE__) do
+    if unidentified_bridge?(health(name)) do
+      _ = safe_call(name, :disconnect, :ok, 2_000)
+
+      try do
+        Isthmus.Networks.MeshCore.BridgeLink.disconnect()
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
+    :ok
+  end
+
+  defp unidentified_bridge?(health) when is_map(health) do
+    health[:status] in [:online, :live, :running] and is_nil(health[:freq_mhz])
+  end
+
+  defp unidentified_bridge?(_), do: false
+
   defp safe_call(name, request, fallback, timeout) do
     GenServer.call(name, request, timeout)
   catch
@@ -163,6 +189,21 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
 
   def handle_call(:reboot, _from, state), do: {:reply, {:error, :not_connected}, state}
 
+  def handle_call(:disconnect, _from, state) do
+    if state.transport, do: state.transport_mod.close(state.transport)
+
+    {:reply, :ok,
+     publish_status(%{
+       state
+       | transport: nil,
+         buffer: <<>>,
+         radio: nil,
+         last_reply: nil,
+         status: :disconnected,
+         last_error: "released for rediscovery"
+     })}
+  end
+
   @impl true
   def handle_cast(:reconnect, state) do
     if state.transport, do: state.transport_mod.close(state.transport)
@@ -241,7 +282,18 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
     case state.transport_mod.connect(Map.put(state.transport_opts, :port, state.port)) do
       {:ok, transport} ->
         Logger.info("MeshCore bridge CLI online via #{state.port}")
-        state = %{state | transport: transport, status: :online, last_error: nil, fail_count: 0}
+
+        state =
+          publish_status(%{
+            state
+            | transport: transport,
+              status: :online,
+              last_error: nil,
+              fail_count: 0,
+              buffer: <<>>
+          })
+
+        state = wake_cli(state)
         {_reply, state} = do_get_radio(state)
         publish_status(state)
 
@@ -259,23 +311,61 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
     end
   end
 
+  defp wake_cli(%{transport: nil} = state), do: state
+
+  defp wake_cli(state) do
+    _ = state.transport_mod.write(state.transport, "\r")
+    drain_uart(state, 200)
+  end
+
+  defp drain_uart(state, timeout_ms) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_drain_uart(state, deadline)
+  end
+
+  defp do_drain_uart(state, deadline) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+
+    if remaining <= 0 do
+      %{state | buffer: <<>>}
+    else
+      receive do
+        {:circuits_uart, _port, data} when is_binary(data) ->
+          do_drain_uart(state, deadline)
+
+        {:circuits_uart, _port, {:error, _}} ->
+          %{state | buffer: <<>>}
+      after
+        min(remaining, 50) ->
+          do_drain_uart(state, deadline)
+      end
+    end
+  end
+
   defp do_get_radio(state) do
     case cli_command(state, "get radio") do
       {:ok, state} ->
-        radio = parse_radio_reply(state.last_reply)
+        finish_get_radio(state)
 
-        case cli_command(state, "get tx") do
-          {:ok, state} ->
-            tx = parse_tx_reply(state.last_reply)
-            radio = if radio, do: Map.put(radio, :tx_power, tx || radio[:tx_power]), else: radio
-            {{:ok, radio}, %{state | radio: radio}}
-
-          {:error, reason, state} ->
-            {{:error, reason}, state}
+      {:error, _reason, state} ->
+        case cli_command(state, "get radio") do
+          {:ok, state} -> finish_get_radio(state)
+          {:error, reason, state} -> {{:error, reason}, state}
         end
+    end
+  end
+
+  defp finish_get_radio(state) do
+    radio = parse_radio_reply(state.last_reply)
+
+    case cli_command(state, "get tx") do
+      {:ok, state} ->
+        tx = parse_tx_reply(state.last_reply)
+        radio = if radio, do: Map.put(radio, :tx_power, tx || radio[:tx_power]), else: radio
+        {{:ok, radio}, %{state | radio: radio}}
 
       {:error, reason, state} ->
-        {{:error, reason}, state}
+        {{:error, reason}, %{state | radio: radio}}
     end
   end
 
@@ -400,8 +490,26 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
   end
 
   defp publish_status(state) do
-    :ets.insert(@status_table, {{:health, state.name}, health_map(state)})
-    state
+    health = health_map(state)
+    :ets.insert(@status_table, {{:health, state.name}, health})
+    key = {health[:status], health[:port]}
+
+    if state[:pub_key] != key do
+      broadcast_status(:bridge_cli, health)
+    end
+
+    Map.put(state, :pub_key, key)
+  end
+
+  defp broadcast_status(kind, health) do
+    Phoenix.PubSub.broadcast(
+      Isthmus.PubSub,
+      "meshcore:status",
+      {:meshcore_status, kind, health}
+    )
+  catch
+    :error, _ -> :ok
+    :exit, _ -> :ok
   end
 
   defp ensure_ets(name) do

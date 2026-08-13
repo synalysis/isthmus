@@ -47,6 +47,9 @@ config :isthmus, Isthmus.Networks.Agent, enabled: false, command: []
 
 config :isthmus, Isthmus.MCP, enabled: true, token: "test-mcp-token"
 
+# Keep GET /mcp SSE from parking ConnTest (production holds the stream).
+config :isthmus, :mcp_sse_hold, false
+
 # Initialize plugs at runtime for faster test compilation
 config :phoenix, :plug_init_mode, :runtime
 

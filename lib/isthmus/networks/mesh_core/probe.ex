@@ -113,8 +113,8 @@ defmodule Isthmus.Networks.MeshCore.Probe do
   end
 
   defp safe_close(uart) do
-    # Prefer kill over close — close often :port_timed_out on ACM devices.
-    Process.exit(uart, :kill)
+    # Never Circuits.UART.close/1 — close often :port_timed_out on ACM devices.
+    Isthmus.Networks.Uart.release(uart)
 
     receive do
       {:EXIT, ^uart, _} -> :ok

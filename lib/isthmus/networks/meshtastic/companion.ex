@@ -4,9 +4,9 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   The named process owns the primary port (`ISTHMUS_MESHTASTIC_PORT` or the first
   detected radio). Extra USB companions are started via `Meshtastic.Supervisor`
-  and addressed by port. Baud 115200. MeshCore companions are classified first
-  (framed `<`/`>`), so a Meshtastic radio is only claimed when it answers
-  `want_config` with `0x94 0xC3` FromRadio frames.
+  and addressed by port.   Baud 115200. MeshCore companions and repeater CLIs are classified first, so a
+  Meshtastic radio is only claimed when it answers `want_config` with a FromRadio
+  payload (not an echo of the ToRadio probe).
 
   Channel slots 0–7 on the radio can be linked to Isthmus bridge groups.
   Inbound TEXT_MESSAGE_APP broadcasts publish on `"meshtastic:inbound"`.
@@ -191,6 +191,38 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   def reconnect(port \\ nil), do: GenServer.cast(target(port), :reconnect)
 
+  @doc """
+  Close UART on companions that came online without a MyNodeInfo handshake.
+
+  Discovery used to treat a MeshCore repeater's echo of `want_config` as
+  Meshtastic, then skip that port on Rescan because the UART was already held.
+  Releasing it lets the next probe classify the radio as a MeshCore bridge.
+  """
+  def disconnect_unidentified do
+    list_health()
+    |> Enum.filter(&unidentified_companion?/1)
+    |> Enum.each(fn health ->
+      port = health[:port]
+
+      try do
+        GenServer.call(target(port), :disconnect, 2_000)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
+    :ok
+  end
+
+  defp unidentified_companion?(health) when is_map(health) do
+    status = health[:status]
+    ref = health[:self_ref] || health[:node_id]
+
+    status in [:online, :live, :running] and (is_nil(ref) or ref == "")
+  end
+
+  defp unidentified_companion?(_), do: false
+
   @doc "Inject a decoded inbound event (tests / future radio client)."
   def inject_inbound(kind, attrs) when kind in [:channel, :dm, :nodeinfo] and is_map(attrs) do
     GenServer.cast(__MODULE__, {:inject, kind, attrs})
@@ -256,6 +288,22 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     health = Status.with_estimated_clock(Status.health_map(state))
     Status.publish_status(state)
     {:reply, health, state}
+  end
+
+  def handle_call(:disconnect, _from, state) do
+    close_uart(state)
+
+    state =
+      Status.publish_status(%{
+        state
+        | uart: nil,
+          buffer: <<>>,
+          status: :disconnected,
+          my_info: nil,
+          last_error: "released for rediscovery"
+      })
+
+    {:reply, :ok, state}
   end
 
   def handle_call(:list_channels, _from, state) do
@@ -453,13 +501,9 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   defp maybe_connect(state) do
     case Circuits.UART.start_link() do
       {:ok, uart} ->
-        case Circuits.UART.open(uart, state.port,
-               speed: @baud,
-               active: true,
-               rs232_dtr: false,
-               rs232_rts: false
-             ) do
+        case Circuits.UART.open(uart, state.port, speed: @baud, active: true) do
           :ok ->
+            Isthmus.Networks.Uart.prepare(uart, state.port)
             Logger.info("Meshtastic companion online via #{state.port}")
             Process.send_after(self(), :heartbeat, @heartbeat_ms)
 
@@ -468,7 +512,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
             |> Status.publish_status()
 
           {:error, reason} ->
-            Process.exit(uart, :normal)
+            Isthmus.Networks.Uart.release(uart)
             fail_connect(state, reason)
         end
 
@@ -512,7 +556,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   defp reconnect_state(state) do
     close_uart(state)
-    port = Discover.resolve_port(:meshtastic) || state.port
+    port = Discover.resolve_port(:meshtastic)
 
     %{
       state
@@ -539,11 +583,8 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   end
 
   defp close_uart(%{uart: uart}) when is_pid(uart) do
-    _ = Circuits.UART.close(uart)
-    Process.exit(uart, :normal)
+    Isthmus.Networks.Uart.release(uart)
     :ok
-  catch
-    _, _ -> :ok
   end
 
   defp close_uart(_), do: :ok

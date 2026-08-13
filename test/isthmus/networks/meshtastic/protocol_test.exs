@@ -74,6 +74,19 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     assert info.node_id == "deadbeef"
   end
 
+  test "probe_from_radio? rejects an echoed want_config ToRadio" do
+    <<0x94, 0xC3, _len::big-16, payload::binary>> = Protocol.want_config_frame(99)
+    refute Protocol.probe_from_radio?(payload)
+  end
+
+  test "probe_from_radio? accepts FromRadio metadata and my_info" do
+    metadata = Protobuf.encode_message_field(13, <<>>)
+    my_info = Protobuf.encode_message_field(3, Protobuf.encode_varint_field(1, 1))
+    assert Protocol.probe_from_radio?(metadata)
+    assert Protocol.probe_from_radio?(my_info)
+    assert Protocol.probe_from_radio?(<<0x40, 0x01>>)
+  end
+
   test "send_channel_text_frame is a ToRadio packet to broadcast" do
     frame = Protocol.send_channel_text_frame(2, "hello")
     assert <<0x94, 0xC3, len::big-16, payload::binary-size(len)>> = frame

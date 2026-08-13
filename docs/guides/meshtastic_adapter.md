@@ -14,7 +14,7 @@ Opaque tunnel frames still go through the in-memory `Meshtastic.Transport` until
 
 ## Companion radio
 
-USB serial is **auto-detected** at boot (and on Rescan). The probe sends MeshCore `DEVICE_QUERY` and Meshtastic `want_config` together, then RNode, then repeater CLI. A complete `0x94 0xC3` serial frame claims the port as Meshtastic (including early `metadata` / log frames). DTR/RTS are left clear so CP210x ESP32 boards are not reset into the bootloader during the handshake.
+USB serial is **auto-detected** at boot (and on Rescan). The probe sends MeshCore `DEVICE_QUERY`, Meshtastic `want_config`, and repeater CLI `ver`, then RNode. A port is Meshtastic when a **FromRadio** payload arrives (`my_info`, channel, config, metadata, log, or the boot `:rebooted` frame) or the firmware prints the Meshtastic boot banner. An echo of the `want_config` ToRadio we wrote does not count — MeshCore repeater CLIs echo those bytes. Companion / CLI / `0xC0 0x3E` bridge frames win over Meshtastic. Seeed Wio Tracker L1 boards use the same USB identity for Meshtastic and MeshCore island-bridge firmware; those ports are probed with `want_config` first, and a silent dual-CDC pair is **not** claimed as MeshCore. CP210x / CH340 / Espressif USB-UART boards (Heltec Wireless Tracker, T-Beam, …) are the same: opening the port pulses DTR and Meshtastic ESP32 firmware immediately emits a FromRadio `:rebooted` frame plus the `MESHTASTIC` boot banner. Discovery listens for that **before** flushing or sending `ver`. DTR+RTS are asserted on ACM (nRF) ports so the serial API talks; CP210x/CH340 keep both clear so a second reset is not held.
 
 Pin only to choose which radio is **primary** when several are attached:
 

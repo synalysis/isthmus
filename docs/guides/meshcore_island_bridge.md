@@ -81,8 +81,8 @@ By default Isthmus **auto-detects** roles on USB serial ports:
 | Role | How detected | Process |
 | --- | --- | --- |
 | Companion | Companion Protocol `DEVICE_QUERY` | `Companion` |
-| Bridge CLI | Text `ver` reply | `BridgeCLI` (radio config) |
-| Bridge packet | Sibling CDC of the CLI (same USB serial) | `BridgeLink` |
+| Bridge CLI | Text `ver` reply (`->`). The Wio Tracker L1 USB id is also used by Meshtastic, so a silent dual-CDC pair is left unassigned | `BridgeCLI` (radio config) |
+| Bridge packet | Sibling CDC of the CLI, or `0xC0 0x3E` framing | `BridgeLink` |
 
 Optional env overrides pin a port when several devices are attached:
 
@@ -91,6 +91,8 @@ Optional env overrides pin a port when several devices are attached:
 # ISTHMUS_MESHCORE_BRIDGE_CLI_PORT=/dev/ttyACM0   # repeater CLI (CDC 0)
 # ISTHMUS_MESHCORE_BRIDGE_PORT=/dev/ttyACM1       # repeater packets (CDC 1)
 ```
+
+If the repeater stays silent during the handshake, pin those two ports. The Wio Tracker L1 USB identity is also used by Meshtastic, so Isthmus will not infer an island bridge from dual CDC alone.
 
 Never point the packet port at the CLI console — CLI text is counted as resync noise.
 

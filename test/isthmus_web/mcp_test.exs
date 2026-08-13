@@ -1,7 +1,9 @@
 defmodule IsthmusWeb.MCPTest do
   use IsthmusWeb.ConnCase, async: false
 
-  @token "test-mcp-token"
+  defp token do
+    Keyword.get(Application.get_env(:isthmus, Isthmus.MCP, []), :token, "test-mcp-token")
+  end
 
   test "rejects missing bearer token", %{conn: conn} do
     conn = post_mcp(conn, rpc("initialize"), [])
@@ -20,14 +22,14 @@ defmodule IsthmusWeb.MCPTest do
       Application.put_env(:isthmus, Isthmus.MCP, previous)
     end)
 
-    Application.put_env(:isthmus, Isthmus.MCP, enabled: false, token: @token)
+    Application.put_env(:isthmus, Isthmus.MCP, enabled: false, token: token())
 
-    conn = post_mcp(conn, rpc("initialize"), [{"authorization", "Bearer #{@token}"}])
+    conn = post_mcp(conn, rpc("initialize"), [{"authorization", "Bearer #{token()}"}])
     assert json_response(conn, 404)["error"] =~ "disabled"
   end
 
   test "initialize and tools/list with a valid bearer token", %{conn: conn} do
-    auth = [{"authorization", "Bearer #{@token}"}]
+    auth = [{"authorization", "Bearer #{token()}"}]
 
     conn = post_mcp(conn, rpc("initialize"), auth)
     body = json_response(conn, 200)
@@ -44,6 +46,23 @@ defmodule IsthmusWeb.MCPTest do
     assert "inject_message" in names
     assert "get_acp" in names
     assert "set_acp" in names
+  end
+
+  test "GET /mcp with text/event-stream is a Bandit-safe SSE handshake" do
+    conn =
+      Phoenix.ConnTest.build_conn()
+      |> Plug.Conn.put_req_header("authorization", "Bearer #{token()}")
+      |> Plug.Conn.put_req_header("accept", "text/event-stream")
+      |> Phoenix.ConnTest.dispatch(IsthmusWeb.Endpoint, :get, "/mcp", nil)
+
+    refute conn.status == 406
+    assert conn.status == 200
+    assert conn.halted
+
+    assert Enum.any?(
+             get_resp_header(conn, "content-type"),
+             &String.contains?(&1, "text/event-stream")
+           )
   end
 
   defp post_mcp(conn, payload, headers) do

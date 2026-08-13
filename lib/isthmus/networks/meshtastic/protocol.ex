@@ -355,6 +355,35 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
     end
   end
 
+  @doc """
+  True when `payload` looks like a FromRadio the radio sent, not a ToRadio we wrote.
+
+  `want_config` is ToRadio field 3 (varint). MeshCore repeater CLIs often echo
+  those exact bytes, so a complete `0x94 0xC3` frame is not proof by itself.
+  Early FromRadio types (metadata, log_record) still count.
+  """
+  def probe_from_radio?(payload) when is_binary(payload) and payload != <<>> do
+    case parse_frame(payload) do
+      {:my_info, _} -> true
+      {:node_info, _} -> true
+      {:config_complete, _} -> true
+      {:channel, _} -> true
+      {:config, _} -> true
+      {:packet, _} -> true
+      :rebooted -> true
+      {:other, fields} -> from_radio_other?(fields)
+    end
+  end
+
+  def probe_from_radio?(_), do: false
+
+  # FromRadio.packet = 1, log_record = 6, moduleConfig = 9,
+  # queueStatus = 11, metadata = 13, mqttClientProxyMessage = 14.
+  # ToRadio.want_config_id is field 3 as a varint — not in this list.
+  defp from_radio_other?(fields) when is_list(fields) do
+    Enum.any?([1, 6, 9, 11, 13, 14], fn n -> is_binary(Protobuf.bytes(fields, n)) end)
+  end
+
   def parse_mesh_packet(bin) when is_binary(bin) do
     fields = Protobuf.decode(bin)
     from = Protobuf.field(fields, 1) || 0

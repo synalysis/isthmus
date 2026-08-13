@@ -30,16 +30,32 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLITest do
 
       reply =
         cond do
-          String.starts_with?(data, "get radio") -> "> 910.525,62.5,7,5\n"
-          String.starts_with?(data, "get tx") -> "> 10\n"
-          String.starts_with?(data, "set radio") -> "> OK\n"
-          String.starts_with?(data, "set tx") -> "> OK\n"
-          String.starts_with?(data, "reboot") -> "> OK\n"
-          true -> "> ??:\n"
+          String.trim(data) == "" ->
+            nil
+
+          String.starts_with?(data, "get radio") ->
+            "> 910.525,62.5,7,5\n"
+
+          String.starts_with?(data, "get tx") ->
+            "> 10\n"
+
+          String.starts_with?(data, "set radio") ->
+            "> OK\n"
+
+          String.starts_with?(data, "set tx") ->
+            "> OK\n"
+
+          String.starts_with?(data, "reboot") ->
+            "> OK\n"
+
+          true ->
+            "> ??:\n"
         end
 
-      # Deliver into the BridgeCLI mailbox the same way Circuits.UART does.
-      send(self(), {:circuits_uart, t.port, reply})
+      if is_binary(reply) do
+        send(self(), {:circuits_uart, t.port, reply})
+      end
+
       :ok
     end
 

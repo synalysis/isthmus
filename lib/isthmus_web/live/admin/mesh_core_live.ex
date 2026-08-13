@@ -17,7 +17,8 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   def mount(_params, _session, socket) do
     if connected?(socket) do
       Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshcore:channels")
-      :timer.send_interval(5_000, self(), :refresh_synthetic)
+      Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshcore:status")
+      :timer.send_interval(5_000, self(), :refresh)
     end
 
     {:ok,
@@ -118,6 +119,8 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   def handle_event("rescan_devices", _params, socket) do
     case Discover.refresh() do
       {:ok, roles} ->
+        Process.send_after(self(), :refresh, 750)
+
         {:noreply,
          socket
          |> put_flash(:info, "Rescanned — #{format_roles_flash(roles)}")
@@ -242,8 +245,10 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     handle_info({:meshcore_channels, channels, nil}, socket)
   end
 
-  def handle_info(:refresh_synthetic, socket) do
-    {:noreply, assign(socket, :synthetic_health, SyntheticNode.health())}
+  def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
+
+  def handle_info({:meshcore_status, _kind, _health}, socket) do
+    {:noreply, refresh(socket)}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}

@@ -22,8 +22,11 @@ defmodule IsthmusWeb.Router do
   end
 
   pipeline :mcp do
-    plug :accepts, ["json"]
+    # Cursor Streamable HTTP follows initialize with GET Accept: text/event-stream.
+    # Do not restrict :accepts to JSON — that 406s the GET and the client falls back.
     plug IsthmusWeb.Plugs.McpAuth
+    # Bandit-safe GET stream. ExMCP's SSEHandler chunks from a GenServer and crashes.
+    plug IsthmusWeb.Plugs.McpSse
   end
 
   scope "/", IsthmusWeb do
@@ -46,6 +49,7 @@ defmodule IsthmusWeb.Router do
     forward "/mcp", ExMCP.HttpPlug,
       handler: Isthmus.MCP.Server,
       protocol_mode: :prefer_modern,
+      legacy_http_sse: false,
       server_info: %{name: "isthmus", version: "0.1.0"},
       instructions: Isthmus.MCP.Server.instructions(),
       cors_enabled: true,

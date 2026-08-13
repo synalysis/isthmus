@@ -212,7 +212,7 @@ defmodule Isthmus.TopologyTest do
 
     graph = Topology.build(:all)
 
-    edge = Enum.find(graph.edges, &(&1.id == "channel:#{group.id}"))
+    edge = Enum.find(graph.edges, &channel_edge?(&1, group, "meshcore"))
     assert edge
     assert edge.type == :channel
     assert edge.from == "group:#{group.id}"
@@ -222,7 +222,7 @@ defmodule Isthmus.TopologyTest do
 
     assert Enum.any?(graph.nodes, &(&1.id == "network:meshcore"))
     assert graph.counts.channels == 1
-    refute Enum.any?(graph.edges, &(&1.type == :leg and &1.id == "channel:#{group.id}"))
+    refute Enum.any?(graph.edges, &(&1.type == :leg and &1.id == edge.id))
   end
 
   test "a linked Meshtastic channel slot draws an edge to the Meshtastic node" do
@@ -236,7 +236,7 @@ defmodule Isthmus.TopologyTest do
 
     graph = Topology.build(:all)
 
-    edge = Enum.find(graph.edges, &(&1.id == "channel:meshtastic:#{group.id}"))
+    edge = Enum.find(graph.edges, &channel_edge?(&1, group, "meshtastic"))
     assert edge
     assert edge.type == :channel
     assert edge.from == "group:#{group.id}"
@@ -246,6 +246,41 @@ defmodule Isthmus.TopologyTest do
 
     assert Enum.any?(graph.nodes, &(&1.id == "network:meshtastic"))
     assert graph.counts.channels >= 1
+  end
+
+  test "two Meshtastic radios on one group draw two channel edges" do
+    owner = owner_hex()
+    psk = String.duplicate("ab", 16)
+
+    assert {:ok, group} =
+             Registrations.create_bridge_group(owner, %{display_name: "Lobby"})
+
+    assert {:ok, group} =
+             Registrations.link_meshtastic_channel(group, 6, psk, device_id: "aabbccdd")
+
+    assert {:ok, group} =
+             Registrations.link_meshtastic_channel(group, 2, psk, device_id: "11223344")
+
+    graph = Topology.build(:all)
+
+    edges =
+      graph.edges
+      |> Enum.filter(&channel_edge?(&1, group, "meshtastic"))
+      |> Enum.sort_by(& &1.channel_idx)
+
+    assert Enum.map(edges, & &1.channel_idx) == [2, 6]
+    assert Enum.map(edges, & &1.device_id) == ["11223344", "aabbccdd"]
+    assert Enum.map(edges, & &1.ref) == ["ch 2 · 11223344", "ch 6 · aabbccdd"]
+    assert length(Enum.uniq(Enum.map(edges, & &1.id))) == 2
+    assert length(Enum.uniq(Enum.map(edges, & &1.offset))) == 2
+    assert graph.counts.channels >= 2
+
+    group_node = Enum.find(graph.nodes, &(&1.id == "group:#{group.id}"))
+    assert group_node.meta.channel_caption == "MT 2, MT 6"
+
+    detail = Topology.detail(graph, "group:#{group.id}")
+    assert Enum.map(detail.channels, & &1.channel_idx) == [2, 6]
+    assert Enum.all?(detail.channels, &(&1.network == "meshtastic"))
   end
 
   test "channel edge does not overlap the group's MeshCore leg edges" do
@@ -393,5 +428,9 @@ defmodule Isthmus.TopologyTest do
   defp owner_hex do
     {_seckey, pubkey} = Secp256k1.keypair(:xonly)
     Base.encode16(pubkey, case: :lower)
+  end
+
+  defp channel_edge?(edge, group, network) do
+    edge.type == :channel and edge.from == "group:#{group.id}" and edge.network == network
   end
 end

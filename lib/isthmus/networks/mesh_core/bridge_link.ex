@@ -65,6 +65,9 @@ defmodule Isthmus.Networks.MeshCore.BridgeLink do
   @doc "Re-resolve the packet port (after Discover.refresh) and reconnect."
   def reconnect(name \\ __MODULE__), do: GenServer.cast(name, :reconnect)
 
+  @doc "Release the packet UART so Discover can re-probe the port."
+  def disconnect(name \\ __MODULE__), do: safe_call(name, :disconnect, :ok, 2_000)
+
   defp safe_call(name, request, fallback, timeout) do
     GenServer.call(name, request, timeout)
   catch
@@ -120,6 +123,19 @@ defmodule Isthmus.Networks.MeshCore.BridgeLink do
   @impl true
   def handle_call(:health, _from, state) do
     {:reply, health_map(state), publish_status(state)}
+  end
+
+  def handle_call(:disconnect, _from, state) do
+    if state.transport, do: state.transport_mod.close(state.transport)
+
+    {:reply, :ok,
+     publish_status(%{
+       state
+       | transport: nil,
+         buffer: <<>>,
+         status: :disconnected,
+         last_error: "released for rediscovery"
+     })}
   end
 
   def handle_call({:inject, packet}, _from, %{status: :online, transport: t} = state)
@@ -308,8 +324,26 @@ defmodule Isthmus.Networks.MeshCore.BridgeLink do
   end
 
   defp publish_status(state) do
-    :ets.insert(@status_table, {{:health, state.name}, health_map(state)})
-    state
+    health = health_map(state)
+    :ets.insert(@status_table, {{:health, state.name}, health})
+    key = {health[:status], health[:port]}
+
+    if state[:pub_key] != key do
+      broadcast_status(:bridge_link, health)
+    end
+
+    Map.put(state, :pub_key, key)
+  end
+
+  defp broadcast_status(kind, health) do
+    Phoenix.PubSub.broadcast(
+      Isthmus.PubSub,
+      "meshcore:status",
+      {:meshcore_status, kind, health}
+    )
+  catch
+    :error, _ -> :ok
+    :exit, _ -> :ok
   end
 
   defp ensure_ets(name) do

@@ -4,9 +4,10 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   Roles:
   - `:companion` — MeshCore Companion Radio Protocol (framed `<`/`>` DEVICE_QUERY)
-  - `:bridge_cli` — MeshCore repeater text CLI (`ver\\r`)
-  - `:bridge_packet` — sibling CDC of a detected CLI (or env override)
-  - `:meshtastic` — Meshtastic serial API (`0x94 0xC3` protobuf want_config)
+  - `:bridge_cli` — MeshCore repeater text CLI (`ver\\r` reply with `->`)
+  - `:bridge_packet` — sibling CDC of a detected CLI, or `0xC0 0x3E` island-bridge framing
+  - `:meshtastic` — Meshtastic serial API (FromRadio, including the boot
+    `:rebooted` frame and the `MESHTASTIC` banner; not a ToRadio echo)
   - `:rnode` — Reticulum RNode KISS detect (`FEND CMD_DETECT DETECT_RESP`)
 
   Environment variables override detection when set:
@@ -22,6 +23,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   require Logger
 
+  alias Isthmus.Networks.MeshCore.BridgeFrame
   alias Isthmus.Networks.MeshCore.Ports
   alias Isthmus.Networks.MeshCore.Protocol
   alias Isthmus.Networks.Meshtastic.Protocol, as: MeshtasticProtocol
@@ -32,6 +34,11 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   @probe_timeout_ms 500
   @meshtastic_probe_ms 2_000
   @open_timeout_ms 1_500
+  # Opening a CP210x/CH340 pulses DTR and resets ESP32. The radio emits a
+  # FromRadio `:rebooted` frame plus the boot banner during that window.
+  @uart_boot_ms 2_000
+  @acm_idle_ms 400
+  @write_timeout_ms 400
 
   @type role :: :companion | :bridge_cli | :bridge_packet | :meshtastic | :rnode
   @type assignment :: %{
@@ -151,16 +158,20 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   end
 
   @doc false
-  def keep_still_attached(roles, previous, present)
-      when is_map(roles) and is_map(previous) do
+  def keep_still_attached(roles, previous, present, opts \\ [])
+      when is_map(roles) and is_map(previous) and is_list(opts) do
     present = MapSet.new(present)
+    # Ports we did not re-probe stay classified. A port that was probed and
+    # came back unknown must not keep a stale MeshCore island assignment —
+    # the same Wio USB identity is used by Meshtastic.
+    skipped = MapSet.new(Keyword.get(opts, :skip_paths, MapSet.to_list(present)))
 
     roles =
       roles
-      |> restore_singletons(previous, present)
-      |> restore_port_list(:meshtastic_ports, previous, present)
-      |> restore_port_list(:companion_ports, previous, present)
-      |> restore_port_list(:rnode_ports, previous, present)
+      |> restore_singletons(previous, present, skipped)
+      |> restore_port_list(:meshtastic_ports, previous, present, skipped)
+      |> restore_port_list(:companion_ports, previous, present, skipped)
+      |> restore_port_list(:rnode_ports, previous, present, skipped)
 
     roles
     |> Map.put(
@@ -229,6 +240,13 @@ defmodule Isthmus.Networks.MeshCore.Discover do
                   {Map.put(acc, :bridge_cli, %{path: port.path, source: :detected, detail: port}),
                    MapSet.put(claimed, port.path)}
 
+                :bridge_packet ->
+                  Logger.info("MeshCore discover: #{port.path} -> bridge_packet")
+
+                  entry = %{path: port.path, source: :detected, detail: port}
+
+                  {Map.put_new(acc, :bridge_packet, entry), MapSet.put(claimed, port.path)}
+
                 :meshtastic ->
                   Logger.info("MeshCore discover: #{port.path} -> meshtastic")
                   entry = %{path: port.path, source: :detected, detail: port}
@@ -252,7 +270,13 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       |> put_role(:companion, env_companion, detected[:companion], :env)
       |> put_role(:bridge_cli, env_cli, detected[:bridge_cli], :env)
       |> put_role(:meshtastic, env_meshtastic, detected[:meshtastic], :env)
-      |> maybe_packet(env_packet, detected[:bridge_cli], by_path, claimed)
+      |> maybe_packet(
+        env_packet,
+        detected[:bridge_cli],
+        by_path,
+        claimed,
+        detected[:bridge_packet]
+      )
 
     roles
     |> Map.put(
@@ -304,6 +328,10 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     _ =
       try do
         Isthmus.Networks.MeshCore.Companion.disconnect_unidentified()
+        Isthmus.Networks.Meshtastic.Companion.disconnect_unidentified()
+        # Do not drop a Discover-assigned island CLI just because `get radio`
+        # has not parsed yet. That used to free Wio ports stolen as MeshCore
+        # by USB identity; it now leaves a real bridge sitting Offline.
       catch
         :exit, _ -> :ok
       end
@@ -316,7 +344,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       state.opts
       |> Keyword.put(:skip_paths, skip)
       |> scan()
-      |> keep_still_attached(state.roles, present)
+      |> keep_still_attached(state.roles, present, skip_paths: skip)
 
     publish(state, roles)
     Logger.info("MeshCore discover refresh: #{format_roles(roles)}")
@@ -331,11 +359,17 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   defp put_role(roles, role, _env, detected, _), do: Map.put(roles, role, detected)
 
-  defp maybe_packet(roles, env_packet, _cli, _by_path, _claimed) when is_binary(env_packet) do
+  defp maybe_packet(roles, env_packet, _cli, _by_path, _claimed, _probed)
+       when is_binary(env_packet) do
     Map.put(roles, :bridge_packet, %{path: env_packet, source: :env, detail: nil})
   end
 
-  defp maybe_packet(roles, _env, %{path: cli_path, detail: detail}, by_path, claimed) do
+  defp maybe_packet(roles, _env, _cli, _by_path, _claimed, %{path: path} = probed)
+       when is_binary(path) do
+    Map.put(roles, :bridge_packet, probed)
+  end
+
+  defp maybe_packet(roles, _env, %{path: cli_path, detail: detail}, by_path, claimed, _probed) do
     case sibling_packet_path(cli_path, detail, by_path, claimed) do
       nil ->
         roles
@@ -349,7 +383,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end
   end
 
-  defp maybe_packet(roles, _, _, _, _), do: roles
+  defp maybe_packet(roles, _, _, _, _, _), do: roles
 
   defp sibling_packet_path(cli_path, detail, by_path, claimed) do
     serial = detail && detail.serial_number
@@ -380,8 +414,54 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end
   end
 
+  # Same USB identity (Seeed Wio Tracker L1) is used by Meshtastic firmware
+  # and by MeshCore island-bridge firmware. Identity alone is not a role.
+  @doc false
+  def ambiguous_nrf_board?(port) when is_map(port) do
+    desc =
+      [port[:description], port[:manufacturer]]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" ")
+      |> String.downcase()
+
+    cond do
+      String.contains?(desc, "boot") ->
+        false
+
+      port[:vendor_id] == 0x2886 and port[:product_id] == 0x1667 ->
+        true
+
+      String.contains?(desc, "wio tracker") ->
+        true
+
+      true ->
+        false
+    end
+  end
+
+  def ambiguous_nrf_board?(_), do: false
+
+  # CP210x / CH340 / FTDI / Espressif native USB: MeshCore companion *or*
+  # Meshtastic. `ver\r` first desyncs the protobuf parser the same way it
+  # does on the Wio.
+  @usb_uart_vids [0x10C4, 0x1A86, 0x0403, 0x303A]
+
+  @doc false
+  def serial_firmware_ambiguous?(port) when is_map(port) do
+    ambiguous_nrf_board?(port) or usb_uart_bridge?(port)
+  end
+
+  def serial_firmware_ambiguous?(_), do: false
+
+  defp usb_uart_bridge?(port) when is_map(port) do
+    vid = port[:vendor_id]
+    is_integer(vid) and vid in @usb_uart_vids
+  end
+
+  defp usb_uart_bridge?(_), do: false
+
   defp acm_like?(path) do
-    String.contains?(path, "ttyACM") or String.contains?(path, "usbmodem")
+    Isthmus.Networks.Uart.acm?(path)
   end
 
   defp next_acm_sibling(path) do
@@ -394,39 +474,52 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end
   end
 
-  defp default_probe(path, _meta) do
+  defp default_probe(path, meta) do
     Application.ensure_all_started(:circuits_uart)
-    Process.flag(:trap_exit, true)
+    prev_trap = Process.flag(:trap_exit, true)
 
-    case Circuits.UART.start_link() do
-      {:ok, uart} ->
-        result =
-          case open_with_timeout(uart, path, @open_timeout_ms) do
-            :ok ->
-              classify_port(uart)
+    try do
+      case Circuits.UART.start_link() do
+        {:ok, uart} ->
+          try do
+            case open_with_timeout(uart, path, @open_timeout_ms) do
+              :ok ->
+                Isthmus.Networks.Uart.prepare(uart, path)
+                sibling = hold_pair_sibling(path, meta)
 
-            {:error, reason} ->
-              Logger.warning("MeshCore discover: open #{path} failed: #{inspect(reason)}")
+                try do
+                  classify_port(uart, meta)
+                after
+                  Isthmus.Networks.Uart.release(sibling)
+                end
+
+              {:error, reason} ->
+                Logger.warning("MeshCore discover: open #{path} failed: #{inspect(reason)}")
+                :unknown
+            end
+          catch
+            :exit, reason ->
+              Logger.warning("MeshCore discover: probe #{path} UART exited: #{inspect(reason)}")
+
               :unknown
+          after
+            Isthmus.Networks.Uart.release(uart)
+
+            receive do
+              {:EXIT, ^uart, _} -> :ok
+            after
+              200 -> :ok
+            end
           end
 
-        Process.exit(uart, :kill)
-
-        receive do
-          {:EXIT, ^uart, _} -> :ok
-        after
-          200 -> :ok
-        end
-
-        result
-
-      {:error, _} ->
-        :unknown
+        {:error, _} ->
+          :unknown
+      end
+    after
+      Process.flag(:trap_exit, prev_trap)
     end
   rescue
     _ -> :unknown
-  catch
-    :exit, _ -> :unknown
   end
 
   defp open_with_timeout(uart, path, ms) do
@@ -439,12 +532,8 @@ defmodule Isthmus.Networks.MeshCore.Discover do
           try do
             # Leave DTR/RTS clear so ESP32 boards behind CP210x/CH340 do not
             # reset into the bootloader for the whole probe window.
-            Circuits.UART.open(uart, path,
-              speed: @baud,
-              active: false,
-              rs232_dtr: false,
-              rs232_rts: false
-            )
+            # DTR is applied after open via Uart.prepare/2 (not an open option).
+            Circuits.UART.open(uart, path, speed: @baud, active: false)
           catch
             :exit, reason -> {:error, {:exit, reason}}
           end
@@ -461,57 +550,95 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end
   end
 
-  defp classify_port(uart) do
-    _ = Circuits.UART.flush(uart)
-
-    # Send both handshakes up front. MeshCore replies with `>` frames; Meshtastic
-    # with `0x94 0xC3`. Do not flush between stages — delayed FromRadio after an
-    # ESP32 boot must still be visible. Prefer Meshtastic when both appear.
-    companion_frame = Protocol.encode_usb_frame(Protocol.device_query_frame())
-    nonce = :rand.uniform(0x7FFF_FFFE) + 1
-    meshtastic_frame = MeshtasticProtocol.want_config_frame(nonce)
-    _ = Circuits.UART.write(uart, companion_frame)
-    _ = Circuits.UART.write(uart, meshtastic_frame)
-
-    {kind, acc} = read_until_kind(uart, @probe_timeout_ms, <<>>)
+  defp classify_port(uart, meta) do
+    # Do not flush. Opening CP210x/CH340 pulses DTR and the ESP32 Meshtastic
+    # firmware immediately sends FromRadio `:rebooted` plus the boot banner.
+    # Flushing that away leaves want_config landing in the ROM bootloader.
+    idle_ms = if usb_uart_bridge?(meta), do: @uart_boot_ms, else: @acm_idle_ms
+    {kind, acc} = read_until_kind(uart, idle_ms, <<>>)
 
     case kind do
-      :meshtastic ->
-        :meshtastic
-
-      :companion ->
-        :companion
+      kind when kind in [:companion, :bridge_cli, :bridge_packet, :meshtastic] ->
+        kind
 
       _ ->
-        _ = Circuits.UART.write(uart, MeshtasticProtocol.want_config_frame(nonce))
+        classify_after_idle(uart, acc, meta)
+    end
+  end
+
+  defp classify_after_idle(uart, acc, meta) do
+    if serial_firmware_ambiguous?(meta) do
+      # `ver\r` first desyncs Meshtastic's protobuf parser on boards that also
+      # run MeshCore. Ask for FromRadio first; recover a CLI line with `\rver\r`
+      # only if that stays quiet.
+      nonce = :rand.uniform(0x7FFF_FFFE) + 1
+      _ = probe_write(uart, MeshtasticProtocol.want_config_frame(nonce))
+      {kind, acc} = read_until_kind(uart, @meshtastic_probe_ms, acc)
+
+      case kind do
+        kind when kind in [:companion, :bridge_cli, :bridge_packet, :meshtastic] ->
+          kind
+
+        _ ->
+          classify_after_initial(uart, acc, nonce)
+      end
+    else
+      # Repeater CLI first. Binary MeshCore/Meshtastic probes fill the 160-byte
+      # command buffer and get echoed; `ver` must land on a clean line.
+      _ = probe_write(uart, "ver\r")
+      {kind, acc} = read_until_kind(uart, @probe_timeout_ms, acc)
+
+      case kind do
+        kind when kind in [:companion, :bridge_cli, :bridge_packet, :meshtastic] ->
+          kind
+
+        _ ->
+          classify_after_initial(uart, acc, nil)
+      end
+    end
+  end
+
+  defp classify_after_initial(uart, acc, nonce) do
+    companion_frame = Protocol.encode_usb_frame(Protocol.device_query_frame())
+    nonce = nonce || :rand.uniform(0x7FFF_FFFE) + 1
+    meshtastic_frame = MeshtasticProtocol.want_config_frame(nonce)
+    _ = probe_write(uart, companion_frame)
+    _ = probe_write(uart, meshtastic_frame)
+    _ = probe_write(uart, "\rver\r")
+
+    {kind, acc} = read_until_kind(uart, @probe_timeout_ms, acc)
+
+    case kind do
+      kind when kind in [:companion, :bridge_cli, :bridge_packet, :meshtastic] ->
+        kind
+
+      _ ->
+        _ = probe_write(uart, MeshtasticProtocol.want_config_frame(nonce))
         {kind, acc} = read_until_kind(uart, @meshtastic_probe_ms, acc)
 
         case kind do
-          :meshtastic ->
-            :meshtastic
-
-          :companion ->
-            :companion
+          kind when kind in [:companion, :bridge_cli, :bridge_packet, :meshtastic] ->
+            kind
 
           _ ->
-            _ = Circuits.UART.write(uart, RNode.detect_frame())
+            _ = probe_write(uart, RNode.detect_frame())
 
             {rnode?, acc} =
               read_until_pred(uart, &RNode.detect_response?/1, @probe_timeout_ms, acc)
 
             cond do
-              classify_probe_buffer(acc) == :meshtastic ->
-                :meshtastic
+              classified = classified_role(acc) ->
+                classified
 
               rnode? ->
                 :rnode
 
               true ->
-                _ = Circuits.UART.write(uart, "ver\r")
+                _ = probe_write(uart, "ver\r")
                 {cli?, acc} = read_until_pred(uart, &cli_response?/1, @probe_timeout_ms, acc)
 
                 cond do
-                  classify_probe_buffer(acc) == :meshtastic -> :meshtastic
+                  classified = classified_role(acc) -> classified
                   cli? -> :bridge_cli
                   true -> :unknown
                 end
@@ -520,16 +647,73 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end
   end
 
-  @doc false
-  def classify_probe_buffer(data) when is_binary(data) do
-    cond do
-      meshtastic_response?(data) -> :meshtastic
-      companion_response?(data) -> :companion
-      true -> :unknown
+  defp probe_write(uart, data) do
+    Circuits.UART.write(uart, data, @write_timeout_ms)
+  catch
+    :exit, reason -> {:error, {:exit, reason}}
+  end
+
+  defp hold_pair_sibling(path, meta) do
+    serial = meta[:serial_number]
+
+    if ambiguous_nrf_board?(meta) and is_binary(serial) and serial != "" do
+      case pair_sibling_path(path, serial) do
+        nil ->
+          nil
+
+        sibling_path ->
+          case Circuits.UART.start_link() do
+            {:ok, uart} ->
+              case open_with_timeout(uart, sibling_path, 800) do
+                :ok ->
+                  Isthmus.Networks.Uart.prepare(uart, sibling_path)
+                  uart
+
+                _ ->
+                  Isthmus.Networks.Uart.release(uart)
+                  nil
+              end
+
+            _ ->
+              nil
+          end
+      end
     end
   end
 
+  defp pair_sibling_path(path, serial) do
+    Enum.find_value(Circuits.UART.enumerate(), fn {name, other} ->
+      other = other || %{}
+      p = uart_dev_path(name)
+
+      if p != path and other[:serial_number] == serial and acm_like?(p) do
+        p
+      end
+    end)
+  end
+
+  defp uart_dev_path(name) do
+    name = to_string(name)
+    if String.starts_with?(name, "/"), do: name, else: "/dev/#{name}"
+  end
+
+  @doc false
+  def classify_probe_buffer(data) when is_binary(data), do: classified_role(data) || :unknown
+
   def classify_probe_buffer(_), do: :unknown
+
+  defp classified_role(data) when is_binary(data) do
+    cond do
+      companion_response?(data) -> :companion
+      cli_response?(data) -> :bridge_cli
+      bridge_packet_response?(data) -> :bridge_packet
+      meshtastic_response?(data) -> :meshtastic
+      meshtastic_boot_banner?(data) -> :meshtastic
+      true -> nil
+    end
+  end
+
+  defp classified_role(_), do: nil
 
   @doc false
   def cli_probe_reply?(data), do: cli_response?(data)
@@ -548,17 +732,29 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       (String.contains?(down, "v1.") or
          String.contains?(down, "build:") or
          String.contains?(down, "firmware") or
-         String.contains?(down, "ver"))
+         String.contains?(down, "ver") or
+         String.contains?(down, "unknown command") or
+         Regex.match?(~r/\d+\.\d+/, down))
   end
 
   defp cli_response?(_), do: false
 
+  defp bridge_packet_response?(data) when is_binary(data) do
+    {packets, _, _} = BridgeFrame.decode(data)
+    packets != []
+  end
+
   defp meshtastic_response?(data) when is_binary(data) do
-    # A complete `0x94 0xC3` frame is unique to the Meshtastic serial API.
-    # Early FromRadio types (metadata, log_record) are not in our protobuf
-    # subset but still prove the radio is Meshtastic.
     {frames, _} = MeshtasticProtocol.decode_stream(data)
-    frames != []
+    Enum.any?(frames, &MeshtasticProtocol.probe_from_radio?/1)
+  end
+
+  defp meshtastic_boot_banner?(data) when is_binary(data) do
+    down = String.downcase(data)
+
+    String.contains?(down, "meshtastic") or
+      String.contains?(data, "E S H T") or
+      String.contains?(down, "booted, wake cause")
   end
 
   defp read_until_kind(uart, timeout_ms, acc) do
@@ -568,14 +764,14 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   defp do_read_until_kind(uart, deadline, acc) do
     remaining = deadline - System.monotonic_time(:millisecond)
-    kind = classify_probe_buffer(acc)
+    kind = classified_role(acc)
 
     cond do
-      kind in [:meshtastic, :companion] ->
+      kind in [:companion, :bridge_cli, :bridge_packet, :meshtastic] ->
         {kind, acc}
 
       remaining <= 0 ->
-        {kind, acc}
+        {:unknown, acc}
 
       true ->
         chunk =
@@ -785,7 +981,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   @singleton_roles [:companion, :bridge_cli, :bridge_packet, :meshtastic, :rnode]
 
-  defp restore_singletons(roles, previous, present) do
+  defp restore_singletons(roles, previous, present, skipped) do
     Enum.reduce(@singleton_roles, roles, fn role, acc ->
       prev = previous[role]
 
@@ -794,6 +990,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
           acc
 
         is_map(prev) and is_binary(prev[:path]) and MapSet.member?(present, prev.path) and
+          MapSet.member?(skipped, prev.path) and
             not MapSet.member?(assigned_paths(acc), prev.path) ->
           Map.put(acc, role, prev)
 
@@ -803,7 +1000,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end)
   end
 
-  defp restore_port_list(roles, key, previous, present) do
+  defp restore_port_list(roles, key, previous, present, skipped) do
     current = roles[key] || []
     taken = assigned_paths(roles)
 
@@ -812,7 +1009,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       |> Enum.filter(fn
         %{path: path} ->
           is_binary(path) and MapSet.member?(present, path) and
-            not MapSet.member?(taken, path)
+            MapSet.member?(skipped, path) and not MapSet.member?(taken, path)
 
         _ ->
           false

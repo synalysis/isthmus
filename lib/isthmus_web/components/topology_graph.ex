@@ -142,7 +142,7 @@ defmodule IsthmusWeb.TopologyGraph do
         text-anchor="middle"
         class="fill-base-content/70 text-[17px]"
       >
-        {@node.meta.kind}{channel_suffix(@node.meta.channel_idx)}
+        {@node.meta.kind}{channel_suffix(@node.meta)}
       </text>
     </g>
     """
@@ -253,8 +253,15 @@ defmodule IsthmusWeb.TopologyGraph do
           <dd :if={@detail.slug not in [nil, ""]} class="col-span-2 font-mono">
             @{@detail.slug}
           </dd>
-          <dt :if={@detail.channel_idx} class="opacity-60">MC slot</dt>
-          <dd :if={@detail.channel_idx} class="col-span-2 font-mono">{@detail.channel_idx}</dd>
+          <%= if @detail[:channels] not in [nil, []] do %>
+            <dt class="opacity-60">Radio slots</dt>
+            <dd class="col-span-2 font-mono space-y-0.5">
+              <div :for={ch <- @detail.channels}>{ch.label}</div>
+            </dd>
+          <% else %>
+            <dt :if={@detail.channel_idx} class="opacity-60">MC slot</dt>
+            <dd :if={@detail.channel_idx} class="col-span-2 font-mono">{@detail.channel_idx}</dd>
+          <% end %>
         </dl>
       <% end %>
 
@@ -442,8 +449,10 @@ defmodule IsthmusWeb.TopologyGraph do
     if selected in [edge.from, edge.to], do: nil, else: "opacity-30"
   end
 
-  defp channel_suffix(nil), do: ""
-  defp channel_suffix(idx), do: " · ch #{idx}"
+  defp channel_suffix(%{channel_caption: caption}) when is_binary(caption) and caption != "",
+    do: " · #{caption}"
+
+  defp channel_suffix(_), do: ""
 
   defp truncate(nil, _), do: ""
 

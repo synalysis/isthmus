@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "isthmus": {
+      "command": "python3",
+      "args": ["${workspaceFolder}/bin/isthmus-mcp-stdio"],
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
+      }
+    }
+  }
+}

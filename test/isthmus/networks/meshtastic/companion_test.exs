@@ -3,6 +3,10 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
 
   alias Isthmus.Networks.Meshtastic.Companion
 
+  test "disconnect_unidentified is a no-op when no radio is online" do
+    assert :ok = Companion.disconnect_unidentified()
+  end
+
   test "health is disabled when no Meshtastic radio is detected" do
     health = Companion.health()
     assert health.status == :disabled

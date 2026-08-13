@@ -76,22 +76,26 @@ export ISTHMUS_MCP_TOKEN=a-long-random-secret
 # ISTHMUS_MCP_ENABLED=false
 ```
 
-2. Restart Isthmus. Streamable HTTP is at `http://127.0.0.1:4000/mcp` (`PORT` from `bin/dev`).
+2. Restart Isthmus. Streamable HTTP is at `http://127.0.0.1:4567/mcp` (`PORT` from `.env` / `bin/dev`).
 
-3. Point Cursor (or any MCP client) at that URL with `Authorization: Bearer <token>`. Example `mcp.json`:
+3. Point an MCP client at that URL with `Authorization: Bearer <token>`. **Cursor 3.15** cannot `fetch` loopback HTTP from its MCP helper (`ECONNREFUSED 127.0.0.1` in a few milliseconds while `curl` works). Use the stdio bridge in `.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "isthmus": {
-      "url": "http://127.0.0.1:4000/mcp",
-      "headers": {
-        "Authorization": "Bearer a-long-random-secret"
+      "command": "python3",
+      "args": ["${workspaceFolder}/bin/isthmus-mcp-stdio"],
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "PYTHONUNBUFFERED": "1"
       }
     }
   }
 }
 ```
+
+The bridge POSTs JSON-RPC to the running Phoenix app (`PORT` + `ISTHMUS_MCP_TOKEN` from `.env`). Other clients can still use Streamable HTTP directly.
 
 Without `ISTHMUS_MCP_TOKEN` the endpoint returns 401. Vault secrets, nsecs, channel PSKs, and relay auth secrets are never exposed. Groups can be identified by UUID or display name (e.g. `Lobby`).
 
@@ -199,10 +203,11 @@ When a bridge group is linked to one or more Meshtastic radios (`group_radio_cha
 
 - Inbound channel messages fan out to all attached Nostr / RNS / MeshCore members
 - Inbound traffic from other networks is also posted to **each** linked Meshtastic companion
+- Admin → **Topology** draws one channel edge per radio (slot + device), not a single cached index
 
 Channel PSKs are stored encrypted. Isthmus auto-creates in slots **1–7** only (never overwrites PRIMARY or occupied slots).
 
-USB ports are classified by handshake (MeshCore companion and Meshtastic `want_config` in the same window, then RNode, then repeater CLI). Several Meshtastic USB companions can be connected at once; pin only to choose which radio is listed as **primary**. Link the **same group** on each companion’s slot table to use both as gateways.
+USB ports are classified by handshake (MeshCore companion, repeater CLI `ver`, and Meshtastic `want_config`, then RNode). An echo of the Meshtastic probe is ignored so a MeshCore island-bridge repeater is not claimed as Meshtastic. The same Wio Tracker L1 USB identity is used by Meshtastic firmware, so a silent dual-CDC pair is not assumed to be MeshCore. Several Meshtastic USB companions can be connected at once; pin only to choose which radio is listed as **primary**. Link the **same group** on each companion’s slot table to use both as gateways.
 
 ```bash
 # ISTHMUS_MESHTASTIC_PORT=/dev/ttyUSB0

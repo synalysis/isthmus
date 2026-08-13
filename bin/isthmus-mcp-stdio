@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Stdio ↔ Streamable HTTP bridge for Isthmus MCP.
+
+Cursor 3.15's HTTP MCP client uses Electron fetch, which cannot connect to
+127.0.0.1 (ECONNREFUSED in ~3ms while curl on the same host succeeds). Stdio
+is spawned as a normal process and POSTs JSON-RPC to the running Phoenix app.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import urllib.error
+import urllib.request
+
+def mcp_url() -> str:
+    explicit = os.environ.get("ISTHMUS_MCP_URL", "").strip()
+    if explicit:
+        return explicit
+    port = os.environ.get("PORT", "4567").strip() or "4567"
+    return f"http://127.0.0.1:{port}/mcp"
+
+
+def token() -> str:
+    return os.environ.get("ISTHMUS_MCP_TOKEN", "").strip()
+
+
+def sse_payload(raw: bytes) -> bytes:
+    last = b""
+    for line in raw.splitlines():
+        if line.startswith(b"data:"):
+            last = line[5:].strip()
+    return last or raw
+
+
+def post(body: bytes, session_id: str | None) -> tuple[bytes, str | None, int]:
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    bearer = token()
+    if bearer:
+        headers["Authorization"] = f"Bearer {bearer}"
+    if session_id:
+        headers["Mcp-Session-Id"] = session_id
+
+    req = urllib.request.Request(mcp_url(), data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            payload = resp.read()
+            ctype = resp.headers.get("Content-Type", "")
+            if "text/event-stream" in ctype:
+                payload = sse_payload(payload)
+            return payload, resp.headers.get("Mcp-Session-Id") or session_id, resp.status
+    except urllib.error.HTTPError as exc:
+        payload = exc.read()
+        sys.stderr.write(f"isthmus-mcp-stdio: HTTP {exc.code} {payload[:400]!r}\n")
+        return payload, session_id, exc.code
+
+
+def rpc_error(msg_id, message: str) -> dict:
+    return {
+        "jsonrpc": "2.0",
+        "id": msg_id,
+        "error": {"code": -32000, "message": message},
+    }
+
+
+def write_stdout(obj) -> None:
+    sys.stdout.write(json.dumps(obj, separators=(",", ":")) + "\n")
+    sys.stdout.flush()
+
+
+def main() -> int:
+    session_id = None
+    for raw in sys.stdin:
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError as exc:
+            write_stdout(rpc_error(None, f"invalid JSON: {exc}"))
+            continue
+
+        msg_id = msg.get("id")
+        try:
+            payload, session_id, status = post(line.encode(), session_id)
+        except Exception as exc:
+            if msg_id is not None:
+                write_stdout(rpc_error(msg_id, f"{type(exc).__name__}: {exc}"))
+            else:
+                sys.stderr.write(f"isthmus-mcp-stdio: {exc}\n")
+            continue
+
+        if msg_id is None:
+            continue
+
+        text = payload.decode("utf-8", "replace").strip()
+        if not text:
+            write_stdout(rpc_error(msg_id, f"empty HTTP {status} from {mcp_url()}"))
+            continue
+
+        try:
+            write_stdout(json.loads(text))
+        except json.JSONDecodeError:
+            write_stdout(rpc_error(msg_id, f"non-JSON HTTP {status}: {text[:200]}"))
+
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except BrokenPipeError:
+        raise SystemExit(0)

@@ -15,7 +15,7 @@ defmodule Isthmus.Topology do
   alias Isthmus.Announce.Sightings
   alias Isthmus.Networks.Health
   alias Isthmus.Registrations
-  alias Isthmus.Registrations.{IdentityLeg, RegistrationGroup}
+  alias Isthmus.Registrations.{GroupRadioChannel, IdentityLeg, RegistrationGroup}
   alias Isthmus.Tunnel
   alias Isthmus.Tunnel.Peer
 
@@ -174,6 +174,8 @@ defmodule Isthmus.Topology do
     groups
     |> Enum.with_index()
     |> Enum.map(fn {group, idx} ->
+      links = radio_links(group)
+
       %{
         id: group_id(group),
         kind: :group,
@@ -186,6 +188,8 @@ defmodule Isthmus.Topology do
           slug: Registrations.token_slug(group.display_name),
           channel_idx: group.meshcore_channel_idx,
           meshtastic_channel_idx: group.meshtastic_channel_idx,
+          channel_caption: channel_caption(links),
+          channels: Enum.map(links, &channel_summary/1),
           legs: Enum.map(group.legs, &leg_summary/1)
         }
       }
@@ -243,50 +247,33 @@ defmodule Isthmus.Topology do
     end)
   end
 
-  # A group with a MeshCore or Meshtastic channel slot bridges group chat on
-  # that slot even when it holds no identity leg on that network.
+  # One edge per radio link. Slot numbers are local to each companion, so a
+  # group can sit on two Meshtastic (or MeshCore) devices at once.
   defp channel_edges(groups) do
-    meshcore =
-      groups
-      |> Enum.filter(&(&1.meshcore_channel_idx != nil))
-      |> Enum.map(fn group ->
+    Enum.flat_map(groups, fn group ->
+      links = radio_links(group)
+      counts = Enum.frequencies_by(links, & &1.network)
+
+      Enum.map(links, fn link ->
+        distinguish? = Map.get(counts, link.network, 1) > 1
+
         %{
-          id: "channel:#{group.id}",
+          id: channel_edge_id(group, link),
           type: :channel,
           from: group_id(group),
-          to: network_id("meshcore"),
+          to: network_id(link.network),
           role: "channel",
-          network: "meshcore",
-          ref: "ch #{group.meshcore_channel_idx}",
+          network: link.network,
+          ref: channel_ref(link, distinguish?),
           external?: false,
           dashed?: false,
           path_state: nil,
-          channel_idx: group.meshcore_channel_idx,
+          channel_idx: link.channel_idx,
+          device_id: link.device_id,
           offset: 0
         }
       end)
-
-    meshtastic =
-      groups
-      |> Enum.filter(&(&1.meshtastic_channel_idx != nil))
-      |> Enum.map(fn group ->
-        %{
-          id: "channel:meshtastic:#{group.id}",
-          type: :channel,
-          from: group_id(group),
-          to: network_id("meshtastic"),
-          role: "channel",
-          network: "meshtastic",
-          ref: "ch #{group.meshtastic_channel_idx}",
-          external?: false,
-          dashed?: false,
-          path_state: nil,
-          channel_idx: group.meshtastic_channel_idx,
-          offset: 0
-        }
-      end)
-
-    meshcore ++ meshtastic
+    end)
   end
 
   # Path state only applies to external Reticulum legs the bridge must reach.
@@ -390,6 +377,7 @@ defmodule Isthmus.Topology do
       slug: meta.slug,
       status: meta.status,
       channel_idx: meta.channel_idx,
+      channels: meta[:channels] || [],
       legs: meta.legs
     }
   end
@@ -506,16 +494,108 @@ defmodule Isthmus.Topology do
   end
 
   defp networks_from_channels(groups) do
-    Enum.flat_map(groups, fn group ->
-      Enum.reject(
-        [
-          group.meshcore_channel_idx && "meshcore",
-          group.meshtastic_channel_idx && "meshtastic"
-        ],
-        &is_nil/1
-      )
-    end)
+    groups
+    |> Enum.flat_map(&radio_links/1)
+    |> Enum.map(& &1.network)
     |> Enum.uniq()
+  end
+
+  defp radio_links(%{radio_channels: channels}) when is_list(channels) do
+    channels
+    |> Enum.filter(&(&1.network in ["meshcore", "meshtastic"] and is_integer(&1.channel_idx)))
+    |> Enum.sort_by(&{&1.network, &1.channel_idx, &1.device_id || ""})
+  end
+
+  defp radio_links(group), do: legacy_radio_links(group)
+
+  defp legacy_radio_links(group) do
+    []
+    |> maybe_legacy_link("meshcore", group.meshcore_channel_idx, group.meshcore_channel_device_id)
+    |> maybe_legacy_link(
+      "meshtastic",
+      group.meshtastic_channel_idx,
+      group.meshtastic_channel_device_id
+    )
+  end
+
+  defp maybe_legacy_link(acc, network, idx, device_id) when is_integer(idx) do
+    acc ++
+      [
+        %GroupRadioChannel{
+          network: network,
+          channel_idx: idx,
+          device_id: device_id
+        }
+      ]
+  end
+
+  defp maybe_legacy_link(acc, _network, _idx, _device_id), do: acc
+
+  defp channel_edge_id(_group, %{id: id}) when is_binary(id), do: "channel:#{id}"
+
+  defp channel_edge_id(group, %{network: "meshcore"}), do: "channel:#{group.id}"
+
+  defp channel_edge_id(group, %{network: network}), do: "channel:#{network}:#{group.id}"
+
+  defp channel_ref(link, true) do
+    case short_device_id(link.device_id) do
+      nil -> "ch #{link.channel_idx}"
+      short -> "ch #{link.channel_idx} · #{short}"
+    end
+  end
+
+  defp channel_ref(link, _distinguish?), do: "ch #{link.channel_idx}"
+
+  defp channel_caption([]), do: nil
+
+  defp channel_caption([%{network: _net, channel_idx: idx}]) do
+    "ch #{idx}"
+  end
+
+  defp channel_caption(links) do
+    links
+    |> Enum.map(fn link ->
+      prefix =
+        case link.network do
+          "meshcore" -> "MC"
+          "meshtastic" -> "MT"
+          other -> other
+        end
+
+      "#{prefix} #{link.channel_idx}"
+    end)
+    |> Enum.join(", ")
+  end
+
+  defp channel_summary(link) do
+    %{
+      network: link.network,
+      channel_idx: link.channel_idx,
+      device_id: link.device_id,
+      label: radio_slot_label(link)
+    }
+  end
+
+  defp radio_slot_label(link) do
+    parts = [network_label(link.network), "ch #{link.channel_idx}"]
+
+    case short_device_id(link.device_id) do
+      nil -> Enum.join(parts, " · ")
+      short -> Enum.join(parts ++ [short], " · ")
+    end
+  end
+
+  defp short_device_id(nil), do: nil
+  defp short_device_id(""), do: nil
+
+  defp short_device_id(id) when is_binary(id) do
+    last = id |> String.split(":") |> List.last()
+
+    cond do
+      last in [nil, ""] -> nil
+      String.length(last) <= 8 -> last
+      true -> String.slice(last, -8, 8)
+    end
   end
 
   defp networks_from_peers(peers) do
@@ -564,7 +644,7 @@ defmodule Isthmus.Topology do
       %{key: "primary", label: "Primary (owner identity)"},
       %{key: "member", label: "Member (attached peer)"},
       %{key: "proxy", label: "Proxy (Isthmus-owned)"},
-      %{key: "channel", label: "MeshCore channel slot"},
+      %{key: "channel", label: "Radio channel slot"},
       %{key: "payload", label: "Tunnel payload"},
       %{key: "carrier", label: "Tunnel carrier"}
     ]

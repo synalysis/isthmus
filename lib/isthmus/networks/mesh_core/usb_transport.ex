@@ -6,17 +6,13 @@ defmodule Isthmus.Networks.MeshCore.USBTransport do
   def connect(%{port: port} = _opts) when is_binary(port) do
     case Circuits.UART.start_link() do
       {:ok, uart} ->
-        case Circuits.UART.open(uart, port,
-               speed: 115_200,
-               active: true,
-               rs232_dtr: false,
-               rs232_rts: false
-             ) do
+        case Circuits.UART.open(uart, port, speed: 115_200, active: true) do
           :ok ->
+            Isthmus.Networks.Uart.prepare(uart, port)
             {:ok, %{type: :usb, uart: uart, port: port}}
 
           {:error, reason} ->
-            Process.exit(uart, :normal)
+            Isthmus.Networks.Uart.release(uart)
             {:error, reason}
         end
 
@@ -32,7 +28,7 @@ defmodule Isthmus.Networks.MeshCore.USBTransport do
 
   @impl true
   def close(%{uart: uart}) do
-    _ = Circuits.UART.close(uart)
+    Isthmus.Networks.Uart.release(uart)
     :ok
   end
 

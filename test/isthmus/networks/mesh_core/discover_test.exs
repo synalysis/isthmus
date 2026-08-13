@@ -53,6 +53,119 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
     assert roles.bridge_packet.source == :detected
   end
 
+  test "silent dual-CDC Wio is not assumed to be a MeshCore island" do
+    roles =
+      Discover.scan(
+        enumerate: fn -> fake_ports() end,
+        probe: fn _, _ -> :unknown end,
+        env: fn _ -> nil end
+      )
+
+    refute Map.has_key?(roles, :bridge_cli)
+    refute Map.has_key?(roles, :bridge_packet)
+    refute Map.has_key?(roles, :meshtastic)
+  end
+
+  test "silent dual-CDC heuristic does not steal a Meshtastic Wio port" do
+    roles =
+      Discover.scan(
+        enumerate: fn -> fake_ports() end,
+        probe: fn
+          "/dev/ttyACM0", _ -> :meshtastic
+          "/dev/ttyACM1", _ -> :unknown
+          _, _ -> :unknown
+        end,
+        env: fn _ -> nil end
+      )
+
+    assert roles.meshtastic.path == "/dev/ttyACM0"
+    refute Map.has_key?(roles, :bridge_cli)
+  end
+
+  test "bootloader CDC is not treated as an island bridge" do
+    ports = %{
+      "ttyACM0" => %{
+        description: "T1000-E-BOOT",
+        manufacturer: "Adafruit",
+        serial_number: "BOOT1",
+        vendor_id: 0x239A,
+        product_id: 0x8029
+      },
+      "ttyACM1" => %{
+        description: "T1000-E-BOOT",
+        manufacturer: "Adafruit",
+        serial_number: "BOOT1",
+        vendor_id: 0x239A,
+        product_id: 0x8029
+      }
+    }
+
+    roles =
+      Discover.scan(
+        enumerate: fn -> ports end,
+        probe: fn _, _ -> :unknown end,
+        env: fn _ -> nil end
+      )
+
+    refute Map.has_key?(roles, :bridge_cli)
+    refute Map.has_key?(roles, :bridge_packet)
+  end
+
+  test "Wio Tracker L1 USB identity is shared by Meshtastic and MeshCore firmware" do
+    wio = %{
+      description: "Seeed Wio Tracker L1",
+      manufacturer: "Seeed Studio",
+      vendor_id: 0x2886,
+      product_id: 0x1667
+    }
+
+    assert Discover.ambiguous_nrf_board?(wio)
+
+    refute Discover.ambiguous_nrf_board?(%{
+             description: "Heltec",
+             vendor_id: 0x303A,
+             product_id: 0x1001
+           })
+
+    refute Discover.ambiguous_nrf_board?(%{
+             description: "T1000-E-BOOT",
+             vendor_id: 0x239A,
+             product_id: 0x8029
+           })
+
+    assert Discover.serial_firmware_ambiguous?(%{
+             description: "CP2102 USB to UART Bridge Controller",
+             vendor_id: 0x10C4,
+             product_id: 0xEA60
+           })
+
+    assert Discover.serial_firmware_ambiguous?(wio)
+
+    refute Discover.serial_firmware_ambiguous?(%{
+             description: "T1000-E-BOOT",
+             vendor_id: 0x239A,
+             product_id: 0x8029
+           })
+  end
+
+  test "keeps a probed island-bridge packet port even when the CLI sibling would also match" do
+    probe = fn
+      "/dev/ttyACM0", _ -> :bridge_cli
+      "/dev/ttyACM1", _ -> :bridge_packet
+      _, _ -> :unknown
+    end
+
+    roles =
+      Discover.scan(
+        enumerate: fn -> fake_ports() end,
+        probe: probe,
+        env: fn _ -> nil end
+      )
+
+    assert roles.bridge_cli.path == "/dev/ttyACM0"
+    assert roles.bridge_packet.path == "/dev/ttyACM1"
+  end
+
   test "env overrides win over detection" do
     probe = fn
       "/dev/ttyACM0", _ -> :bridge_cli
@@ -356,6 +469,26 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
     assert Enum.map(restored.companion_ports, & &1.path) == ["/dev/ttyACM2"]
   end
 
+  test "keep_still_attached does not restore Meshtastic when the same port is now a MeshCore bridge" do
+    previous = %{
+      meshtastic: %{path: "/dev/ttyACM0", source: :detected, detail: nil},
+      meshtastic_ports: [%{path: "/dev/ttyACM0", source: :detected, detail: nil}]
+    }
+
+    current = %{
+      bridge_cli: %{path: "/dev/ttyACM0", source: :detected, detail: nil},
+      bridge_packet: %{path: "/dev/ttyACM1", source: :detected, detail: nil}
+    }
+
+    restored =
+      Discover.keep_still_attached(current, previous, ["/dev/ttyACM0", "/dev/ttyACM1"])
+
+    refute Map.has_key?(restored, :meshtastic)
+    refute Enum.any?(restored[:meshtastic_ports] || [], &(&1.path == "/dev/ttyACM0"))
+    assert restored.bridge_cli.path == "/dev/ttyACM0"
+    assert restored.bridge_packet.path == "/dev/ttyACM1"
+  end
+
   test "keep_still_attached does not restore MeshCore when the same port is now Meshtastic" do
     previous = %{
       companion: %{path: "/dev/ttyUSB0", source: :detected, detail: nil},
@@ -375,26 +508,91 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
     assert Enum.map(restored.meshtastic_ports, & &1.path) == ["/dev/ttyUSB0"]
   end
 
+  test "keep_still_attached does not restore a MeshCore island that was re-probed" do
+    previous = %{
+      bridge_cli: %{path: "/dev/ttyACM0", source: :detected, detail: nil},
+      bridge_packet: %{path: "/dev/ttyACM1", source: :detected, detail: nil}
+    }
+
+    restored =
+      Discover.keep_still_attached(
+        %{meshtastic_ports: []},
+        previous,
+        ["/dev/ttyACM0", "/dev/ttyACM1"],
+        skip_paths: []
+      )
+
+    refute Map.has_key?(restored, :bridge_cli)
+    refute Map.has_key?(restored, :bridge_packet)
+  end
+
   test "classify_probe_buffer ignores ESP32 boot noise that looks like DEVICE_INFO" do
     boot = "rst:0x1 (POWERON_RESET),boot:0x13\r\n>" <> <<1::little-16, 13>>
     assert Discover.classify_probe_buffer(boot) == :unknown
+  end
+
+  test "classify_probe_buffer ignores an echoed Meshtastic want_config ToRadio" do
+    echo = MeshtasticProtocol.want_config_frame(0xDEADBEEF)
+    assert Discover.classify_probe_buffer(echo) == :unknown
+  end
+
+  test "classify_probe_buffer prefers MeshCore CLI over an echoed want_config" do
+    echo = MeshtasticProtocol.want_config_frame(1)
+    cli = echo <> "-> v1.8.1 firmware\r\n"
+    assert Discover.classify_probe_buffer(cli) == :bridge_cli
+  end
+
+  test "classify_probe_buffer treats an ESP32 Meshtastic boot stream as Meshtastic" do
+    rebooted = <<0x94, 0xC3, 0x00, 0x02, 0x40, 0x01>>
+
+    interleaved =
+      "ESP-ROM:esp32s3-20210327\r\nentry 0x403c98d0\r\n" <>
+        rebooted <>
+        "\e[32mINFO  \e[0m| ??:??:?? 0 \e[32m\r\n\r\n//\\ E S H T /\\ S T / C\r\n"
+
+    assert Discover.classify_probe_buffer(rebooted) == :meshtastic
+    assert Discover.classify_probe_buffer(interleaved) == :meshtastic
+
+    banner_only =
+      "\r\n//\\ E S H T /\\ S T / C\r\nINFO  | Booted, wake cause 0 (boot count 1)\r\n"
+
+    assert Discover.classify_probe_buffer(banner_only) == :meshtastic
+
+    refute Discover.classify_probe_buffer("ESP-ROM:esp32s3-20210327\r\nload:0x3fce3808\r\n") ==
+             :meshtastic
   end
 
   test "classify_probe_buffer treats any complete Meshtastic serial frame as Meshtastic" do
     metadata = MeshtasticProtocol.encode_frame(Protobuf.encode_message_field(13, <<>>))
     log_record = MeshtasticProtocol.encode_frame(Protobuf.encode_bytes_field(6, "boot"))
 
+    my_info =
+      MeshtasticProtocol.encode_frame(
+        Protobuf.encode_message_field(3, Protobuf.encode_varint_field(1, 1))
+      )
+
     assert Discover.classify_probe_buffer(metadata) == :meshtastic
     assert Discover.classify_probe_buffer(log_record) == :meshtastic
+    assert Discover.classify_probe_buffer(my_info) == :meshtastic
   end
 
-  test "classify_probe_buffer prefers Meshtastic frames over a spurious companion decode" do
+  test "classify_probe_buffer prefers a MeshCore CLI banner over Meshtastic frames" do
+    metadata = MeshtasticProtocol.encode_frame(Protobuf.encode_message_field(13, <<>>))
+    assert Discover.classify_probe_buffer(metadata <> "-> v1.8 firmware") == :bridge_cli
+  end
+
+  test "classify_probe_buffer prefers Meshtastic FromRadio over a spurious companion decode" do
     boot = ">" <> <<1::little-16, 13>>
     inner = Protobuf.encode_varint_field(1, 0xDEADBEEF)
     payload = Protobuf.encode_message_field(3, inner)
     meshtastic = MeshtasticProtocol.encode_frame(payload)
 
     assert Discover.classify_probe_buffer(boot <> meshtastic) == :meshtastic
+  end
+
+  test "classify_probe_buffer accepts a MeshCore island-bridge packet frame" do
+    {:ok, frame} = Isthmus.Networks.MeshCore.BridgeFrame.encode(<<1, 2, 3, 4>>)
+    assert Discover.classify_probe_buffer(frame) == :bridge_packet
   end
 
   test "classify_probe_buffer accepts a real MeshCore DEVICE_INFO frame" do
@@ -409,9 +607,11 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
     refute Discover.cli_probe_reply?("v1.0 build:abc")
     assert Discover.cli_probe_reply?("-> v1.8.1 firmware")
     assert Discover.cli_probe_reply?("-> ver 1.8")
+    assert Discover.cli_probe_reply?("  -> 1.8.1")
+    assert Discover.cli_probe_reply?("ver\r\n  -> Unknown command")
   end
 
-  test "refresh keeps a Meshtastic radio when a later probe cannot reopen the port" do
+  test "refresh drops a radio when a later probe no longer classifies it" do
     {:ok, agent} = start_supervised({Agent, fn -> :meshtastic end})
     name = :"discover_keep_#{System.unique_integer([:positive])}"
 
@@ -430,7 +630,7 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
 
     :ok = Agent.update(agent, fn _ -> :unknown end)
     assert {:ok, roles} = Discover.refresh(name)
-    assert roles.meshtastic.path == "/dev/ttyUSB0"
-    assert Enum.map(roles.meshtastic_ports, & &1.path) == ["/dev/ttyUSB0"]
+    refute Map.has_key?(roles, :meshtastic)
+    assert roles.meshtastic_ports == []
   end
 end
