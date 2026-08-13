@@ -17,8 +17,10 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   alias Isthmus.Announce.Inbound
   alias Isthmus.Networks.MeshCore.Discover
+  alias Isthmus.Networks.Meshtastic.DeviceConfig
   alias Isthmus.Networks.Meshtastic.Protocol
   alias Isthmus.Networks.Meshtastic.RadioConfig
+  alias Isthmus.Networks.Meshtastic.Settings
   alias Isthmus.Networks.Meshtastic.Timezone
 
   @channels_table :isthmus_meshtastic_channels
@@ -115,6 +117,16 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     end
   end
 
+  @doc "Cached DeviceConfig from the last want_config dump."
+  def device_config(port \\ nil) do
+    key = ets_port_key(port)
+
+    case :ets.lookup(@status_table, {:device, key}) do
+      [{_, config}] when is_map(config) -> config
+      _ -> DeviceConfig.empty()
+    end
+  end
+
   def sync_channels(port \\ nil), do: GenServer.cast(target(port), :sync_channels)
   def sync_channels_async(port \\ nil), do: GenServer.cast(target(port), :sync_channels)
 
@@ -130,6 +142,16 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   def set_lora_config(params, port \\ nil) when is_map(params) do
     safe_call(port, {:set_lora_config, params}, {:error, :timeout}, 8_000)
+  end
+
+  @doc """
+  Write one or more companion setting sections (`lora`, `device`, …) then reboot.
+
+  `params` is the admin form map (`%{"lora" => …, "device" => …}`) or a
+  `Settings.cast/2` result. Omitted sections are left unchanged.
+  """
+  def set_settings(params, port \\ nil) when is_map(params) do
+    safe_call(port, {:set_settings, params}, {:error, :timeout}, 12_000)
   end
 
   @doc """
@@ -193,6 +215,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
     :ets.insert(@channels_table, {{:all, key}, []})
     :ets.insert(@status_table, {{:lora, key}, RadioConfig.empty()})
+    :ets.insert(@status_table, {{:device, key}, DeviceConfig.empty()})
 
     state = %{
       uart: nil,
@@ -204,6 +227,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
       fail_count: 0,
       channels: %{},
       lora: RadioConfig.empty(),
+      device: DeviceConfig.empty(),
       my_info: nil,
       config_nonce: nil,
       admin: nil,
@@ -314,6 +338,35 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     {:reply, {:error, :not_connected}, state}
   end
 
+  def handle_call({:set_settings, params}, from, %{status: :online, uart: uart} = state)
+      when not is_nil(uart) do
+    cond do
+      is_map(state.admin) ->
+        {:reply, {:error, :busy}, state}
+
+      true ->
+        bases = %{
+          lora: state.lora || RadioConfig.empty(),
+          device: state.device || DeviceConfig.empty()
+        }
+
+        case {state.my_info, Settings.cast(params, bases)} do
+          {%{my_node_num: num}, {:ok, settings}} when is_integer(num) and num > 0 ->
+            begin_settings_write(from, state, num, settings)
+
+          {_, {:error, reason}} ->
+            {:reply, {:error, reason}, state}
+
+          _ ->
+            {:reply, {:error, :not_ready}, state}
+        end
+    end
+  end
+
+  def handle_call({:set_settings, _}, _from, state) do
+    {:reply, {:error, :not_connected}, state}
+  end
+
   def handle_call({:set_time, tz}, from, state) do
     begin_time_sync(from, state, tz)
   end
@@ -409,7 +462,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
         persist_lora(%{state | lora: lora})
 
       {:config, {:device, device}} ->
-        publish_status(%{state | device_tzdef: device[:tzdef]})
+        persist_device(%{state | device: device})
 
       {:config, _} ->
         state
@@ -597,6 +650,19 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     end
   end
 
+  defp maybe_handle_admin(%{admin: %{kind: :set_settings} = admin} = state, pkt) do
+    case {admin.step, Protocol.parse_admin_payload(pkt.payload)} do
+      {:get_device, {:get_config_response, cfg, passkey}} ->
+        apply_device_settings_step(state, admin, cfg, passkey)
+
+      {:get_lora, {:get_config_response, _cfg, passkey}} ->
+        apply_lora_settings_step(state, admin, passkey)
+
+      _ ->
+        state
+    end
+  end
+
   defp maybe_handle_admin(%{admin: %{kind: :set_time} = admin} = state, pkt) do
     case Protocol.parse_admin_payload(pkt.payload) do
       {:get_config_response, cfg, passkey} ->
@@ -658,6 +724,109 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   defp begin_time_sync(_from, state, _tz) do
     {:reply, {:error, :not_connected}, state}
+  end
+
+  defp begin_settings_write(from, %{uart: uart} = state, num, settings) do
+    {step, type} =
+      if settings.device, do: {:get_device, :device}, else: {:get_lora, :lora}
+
+    frame = Protocol.get_config_admin_frame(num, type)
+    timer = Process.send_after(self(), :admin_timeout, @admin_timeout_ms)
+
+    case Circuits.UART.write(uart, frame) do
+      :ok ->
+        {:noreply,
+         %{
+           state
+           | admin: %{
+               kind: :set_settings,
+               step: step,
+               from: from,
+               timer: timer,
+               node_num: num,
+               device: settings.device,
+               lora: settings.lora
+             }
+         }}
+
+      {:error, reason} ->
+        Process.cancel_timer(timer)
+        {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
+    end
+  end
+
+  defp apply_device_settings_step(state, admin, cfg, passkey) do
+    if is_reference(admin.timer), do: Process.cancel_timer(admin.timer)
+
+    base =
+      case cfg do
+        {:device, %{} = device} -> device
+        _ -> DeviceConfig.empty()
+      end
+
+    device = DeviceConfig.merge(base, admin.device)
+    frame = Protocol.set_config_device_admin_frame(admin.node_num, device, passkey)
+
+    case Circuits.UART.write(state.uart, frame) do
+      :ok ->
+        state =
+          persist_device(%{
+            state
+            | device: device,
+              sent: state.sent + 1
+          })
+
+        broadcast_device(state)
+        admin = %{admin | device: device}
+
+        if admin.lora do
+          continue_settings(state, admin, :lora)
+        else
+          finish_settings(state, admin)
+        end
+
+      {:error, reason} ->
+        GenServer.reply(admin.from, {:error, reason})
+        %{state | admin: nil, last_error: inspect(reason)}
+    end
+  end
+
+  defp apply_lora_settings_step(state, admin, passkey) do
+    if is_reference(admin.timer), do: Process.cancel_timer(admin.timer)
+
+    frame = Protocol.set_config_lora_admin_frame(admin.node_num, admin.lora, passkey)
+
+    case Circuits.UART.write(state.uart, frame) do
+      :ok ->
+        state = persist_lora(%{state | lora: admin.lora, sent: state.sent + 1})
+        broadcast_lora(state)
+        finish_settings(state, admin)
+
+      {:error, reason} ->
+        GenServer.reply(admin.from, {:error, reason})
+        %{state | admin: nil, last_error: inspect(reason)}
+    end
+  end
+
+  defp continue_settings(state, admin, :lora) do
+    timer = Process.send_after(self(), :admin_timeout, @admin_timeout_ms)
+    frame = Protocol.get_config_admin_frame(admin.node_num, :lora)
+
+    case Circuits.UART.write(state.uart, frame) do
+      :ok ->
+        %{state | admin: %{admin | step: :get_lora, timer: timer}}
+
+      {:error, reason} ->
+        GenServer.reply(admin.from, {:error, reason})
+        %{state | admin: nil, last_error: inspect(reason)}
+    end
+  end
+
+  defp finish_settings(state, admin) do
+    _ = Circuits.UART.write(state.uart, Protocol.reboot_admin_frame(admin.node_num, 2))
+
+    GenServer.reply(admin.from, {:ok, %{device: state.device, lora: state.lora}})
+    %{state | admin: nil}
   end
 
   defp maybe_begin_time_sync(state) do
@@ -793,11 +962,27 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     state
   end
 
+  defp persist_device(state) do
+    device = state.device || DeviceConfig.empty()
+    :ets.insert(@status_table, {{:device, state_ets_key(state)}, device})
+    publish_status(%{state | device_tzdef: device[:tzdef] || state[:device_tzdef]})
+  end
+
   defp broadcast_lora(state) do
     Phoenix.PubSub.broadcast(
       Isthmus.PubSub,
       "meshtastic:lora",
       {:meshtastic_lora, state.lora || RadioConfig.empty(), state.port}
+    )
+
+    state
+  end
+
+  defp broadcast_device(state) do
+    Phoenix.PubSub.broadcast(
+      Isthmus.PubSub,
+      "meshtastic:device",
+      {:meshtastic_device, state.device || DeviceConfig.empty(), state.port}
     )
 
     state
@@ -866,7 +1051,12 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   defp maybe_connect(state) do
     case Circuits.UART.start_link() do
       {:ok, uart} ->
-        case Circuits.UART.open(uart, state.port, speed: @baud, active: true) do
+        case Circuits.UART.open(uart, state.port,
+               speed: @baud,
+               active: true,
+               rs232_dtr: false,
+               rs232_rts: false
+             ) do
           :ok ->
             Logger.info("Meshtastic companion online via #{state.port}")
             Process.send_after(self(), :heartbeat, @heartbeat_ms)
@@ -909,6 +1099,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
         my_info: nil,
         channels: %{},
         lora: RadioConfig.empty(),
+        device: DeviceConfig.empty(),
         device_time: nil,
         device_time_at: nil,
         time_synced_at: nil,
@@ -930,6 +1121,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
         my_info: nil,
         channels: %{},
         lora: RadioConfig.empty(),
+        device: DeviceConfig.empty(),
         device_time: nil,
         device_time_at: nil,
         time_synced_at: nil,
@@ -1024,6 +1216,8 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
       use_preset: lora[:use_preset],
       hop_limit: lora[:hop_limit],
       tx_power: lora[:tx_power],
+      buzzer_mode: (state.device || %{})[:buzzer_mode],
+      buzzer_mode_label: DeviceConfig.buzzer_label((state.device || %{})[:buzzer_mode]),
       device_time: state[:device_time],
       device_time_at: state[:device_time_at],
       time_synced_at: state[:time_synced_at],
@@ -1043,6 +1237,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     key = state_ets_key(state)
     :ets.delete(@status_table, {:health, key})
     :ets.delete(@status_table, {:lora, key})
+    :ets.delete(@status_table, {:device, key})
     :ets.delete(@channels_table, {:all, key})
     :ok
   rescue

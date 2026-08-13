@@ -3,8 +3,10 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
 
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.Meshtastic.Companion
+  alias Isthmus.Networks.Meshtastic.DeviceConfig
   alias Isthmus.Networks.Meshtastic.Devices
   alias Isthmus.Networks.Meshtastic.RadioConfig
+  alias Isthmus.Networks.Meshtastic.Settings
   alias Isthmus.QR
   alias Isthmus.Registrations
 
@@ -13,6 +15,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     if connected?(socket) do
       Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshtastic:channels")
       Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshtastic:lora")
+      Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshtastic:device")
       :timer.send_interval(5_000, self(), :refresh)
     end
 
@@ -25,12 +28,12 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
      socket
      |> assign(:page_title, "Meshtastic")
      |> assign(:channel_syncing, false)
-     |> assign(:lora_applying, false)
+     |> assign(:settings_applying, false)
      |> assign(:time_syncing_port, nil)
      |> assign(:timezone, timezone)
-     |> assign(:lora_modal_port, nil)
+     |> assign(:settings_modal_port, nil)
      |> assign(:channel_invite, nil)
-     |> assign(:lora_form, to_form(RadioConfig.empty_form_params(), as: :lora))
+     |> assign(:settings_form, to_form(Settings.to_form_params(Settings.empty()), as: :settings))
      |> refresh()}
   end
 
@@ -119,17 +122,67 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     end
   end
 
-  def handle_event("open_radio_config", %{"port" => port}, socket) do
-    lora = Companion.lora_config(port)
+  def handle_event("open_device_config", %{"port" => port}, socket) do
+    settings = %{
+      lora: Companion.lora_config(port),
+      device: Companion.device_config(port)
+    }
 
     {:noreply,
      socket
-     |> assign(:lora_modal_port, port)
-     |> assign(:lora_form, to_form(RadioConfig.to_form_params(lora), as: :lora))}
+     |> assign(:settings_modal_port, port)
+     |> assign(:settings_form, to_form(Settings.to_form_params(settings), as: :settings))}
   end
 
-  def handle_event("close_radio_config", _params, socket) do
-    {:noreply, assign(socket, :lora_modal_port, nil)}
+  def handle_event("close_device_config", _params, socket) do
+    {:noreply, assign(socket, :settings_modal_port, nil)}
+  end
+
+  def handle_event("validate_settings", %{"settings" => params}, socket) do
+    {:noreply, assign(socket, :settings_form, to_form(params, as: :settings))}
+  end
+
+  def handle_event("save_settings", %{"settings" => params} = all, socket) do
+    port = blank_port(all["port"] || socket.assigns.settings_modal_port)
+    socket = assign(socket, :settings_applying, true)
+
+    case Companion.set_settings(params, port) do
+      {:ok, applied} ->
+        {:noreply,
+         socket
+         |> assign(:settings_applying, false)
+         |> assign(:settings_modal_port, nil)
+         |> assign(:settings_form, to_form(Settings.to_form_params(applied), as: :settings))
+         |> put_flash(
+           :info,
+           "Device settings written — radio is rebooting and will reconnect shortly."
+         )
+         |> refresh()}
+
+      {:error, :not_connected} ->
+        {:noreply,
+         socket
+         |> assign(:settings_applying, false)
+         |> put_flash(:error, "Meshtastic companion offline.")}
+
+      {:error, :timeout} ->
+        {:noreply,
+         socket
+         |> assign(:settings_applying, false)
+         |> put_flash(:error, "Timed out talking to Meshtastic companion.")}
+
+      {:error, :busy} ->
+        {:noreply,
+         socket
+         |> assign(:settings_applying, false)
+         |> put_flash(:error, "Radio is busy with another admin request — try again in a moment.")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:settings_applying, false)
+         |> put_flash(:error, "Device settings failed: #{format_err(reason)}")}
+    end
   end
 
   def handle_event("assign_slot_group", params, socket) do
@@ -165,47 +218,6 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     end
   end
 
-  def handle_event("validate_lora", %{"lora" => params}, socket) do
-    {:noreply, assign(socket, :lora_form, to_form(params, as: :lora))}
-  end
-
-  def handle_event("save_lora", %{"lora" => params} = all, socket) do
-    port = blank_port(all["port"] || socket.assigns.lora_modal_port)
-    socket = assign(socket, :lora_applying, true)
-
-    case Companion.set_lora_config(params, port) do
-      {:ok, lora} ->
-        {:noreply,
-         socket
-         |> assign(:lora_applying, false)
-         |> assign(:lora_modal_port, nil)
-         |> assign(:lora_form, to_form(RadioConfig.to_form_params(lora), as: :lora))
-         |> put_flash(
-           :info,
-           "LoRa config written — radio is rebooting and will reconnect shortly."
-         )
-         |> refresh()}
-
-      {:error, :not_connected} ->
-        {:noreply,
-         socket
-         |> assign(:lora_applying, false)
-         |> put_flash(:error, "Meshtastic companion offline.")}
-
-      {:error, :timeout} ->
-        {:noreply,
-         socket
-         |> assign(:lora_applying, false)
-         |> put_flash(:error, "Timed out talking to Meshtastic companion.")}
-
-      {:error, reason} ->
-        {:noreply,
-         socket
-         |> assign(:lora_applying, false)
-         |> put_flash(:error, "LoRa config failed: #{format_err(reason)}")}
-    end
-  end
-
   def handle_event("show_channel_invite", params, socket) do
     group = Registrations.get_group!(params["id"])
     radio_id = Registrations.normalize_radio_id(params["radio_id"])
@@ -234,14 +246,11 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   end
 
   def handle_info({:meshtastic_lora, lora, port}, socket) when is_map(lora) do
-    socket =
-      if socket.assigns.lora_modal_port == port do
-        assign(socket, :lora_form, to_form(RadioConfig.to_form_params(lora), as: :lora))
-      else
-        socket
-      end
+    {:noreply, refresh_settings_form(socket, port, lora: lora)}
+  end
 
-    {:noreply, refresh(socket)}
+  def handle_info({:meshtastic_device, device, port}, socket) when is_map(device) do
+    {:noreply, refresh_settings_form(socket, port, device: device)}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
@@ -257,7 +266,22 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     |> assign(:groups, groups)
     |> assign(:bridges, bridges)
     |> assign(:devices, devices)
-    |> assign(:lora_applying, socket.assigns[:lora_applying] || false)
+    |> assign(:settings_applying, socket.assigns[:settings_applying] || false)
+  end
+
+  defp refresh_settings_form(socket, port, _overrides) do
+    socket = refresh(socket)
+
+    if socket.assigns.settings_modal_port == port do
+      settings = %{
+        lora: Companion.lora_config(port),
+        device: Companion.device_config(port)
+      }
+
+      assign(socket, :settings_form, to_form(Settings.to_form_params(settings), as: :settings))
+    else
+      socket
+    end
   end
 
   defp claim_meshtastic_slots(devices) do
@@ -576,7 +600,9 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
                       health[:use_preset],
                       do: RadioConfig.preset_label(health[:modem_preset]),
                       else: "custom LoRa"
-                    )} · hops {health[:hop_limit] || 3}
+                    )} · hops {health[:hop_limit] || 3} · {DeviceConfig.buzzer_label(
+                      health[:buzzer_mode]
+                    )}
                   </p>
                   <p
                     :if={device.active?}
@@ -635,13 +661,13 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
                   </button>
                   <button
                     class="btn btn-primary btn-sm"
-                    id={"open-lora-#{device_dom_id(device)}"}
-                    phx-click="open_radio_config"
+                    id={"open-settings-#{device_dom_id(device)}"}
+                    phx-click="open_device_config"
                     phx-value-port={device.path}
                     type="button"
                     disabled={not device.active?}
                   >
-                    Radio configuration
+                    Device settings
                   </button>
                 </div>
               </div>
@@ -805,139 +831,163 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
         </div>
 
         <div
-          :if={@lora_modal_port}
+          :if={@settings_modal_port}
           class="modal modal-open"
           role="dialog"
-          id="meshtastic-lora-modal"
+          id="meshtastic-settings-modal"
         >
-          <div class="modal-box max-w-lg">
-            <h3 class="text-lg font-semibold">Radio configuration</h3>
+          <div class="modal-box max-w-xl">
+            <h3 class="text-lg font-semibold">Device settings</h3>
             <p class="text-sm opacity-70 mt-1">
-              Region and modem preset, or explicit bandwidth / spreading factor /
-              coding rate. Apply writes LoRa config and reboots this companion.
+              Radio and device options for this companion. Apply writes config and
+              reboots the radio. More sections can be added here later.
             </p>
             <.form
-              for={@lora_form}
-              id="meshtastic-lora-form"
-              phx-change="validate_lora"
-              phx-submit="save_lora"
-              class="mt-4 space-y-3"
+              for={@settings_form}
+              id="meshtastic-settings-form"
+              phx-change="validate_settings"
+              phx-submit="save_settings"
+              class="mt-4 space-y-6"
             >
-              <input type="hidden" name="port" value={@lora_modal_port} />
-              <div class="grid gap-3 sm:grid-cols-2">
-                <.input
-                  field={@lora_form[:region]}
-                  type="select"
-                  label="Region"
-                  options={RadioConfig.region_options()}
-                  id="lora-region"
-                />
-                <.input
-                  field={@lora_form[:mode]}
-                  type="select"
-                  label="Modem"
-                  options={RadioConfig.mode_options()}
-                  id="lora-mode"
-                />
-              </div>
-              <%= if lora_mode(@lora_form) == "custom" do %>
-                <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <input type="hidden" name="port" value={@settings_modal_port} />
+              <.inputs_for :let={device} field={@settings_form[:device]}>
+                <section id="settings-device" class="space-y-3">
+                  <h4 class="text-sm font-semibold tracking-wide uppercase opacity-70">
+                    Alerts
+                  </h4>
                   <.input
-                    field={@lora_form[:bandwidth]}
+                    field={device[:buzzer_mode]}
                     type="select"
-                    label="BW (kHz)"
-                    options={[
-                      {"31.25", "31"},
-                      {"62.5", "62"},
-                      {"125", "125"},
-                      {"250", "250"},
-                      {"500", "500"}
-                    ]}
-                    id="lora-bandwidth"
+                    label="Buzzer"
+                    options={DeviceConfig.buzzer_options()}
+                    id="device-buzzer-mode"
                   />
-                  <.input
-                    field={@lora_form[:spread_factor]}
-                    type="number"
-                    label="SF"
-                    min="7"
-                    max="12"
-                    id="lora-sf"
-                  />
-                  <.input
-                    field={@lora_form[:coding_rate]}
-                    type="number"
-                    label="CR"
-                    min="5"
-                    max="8"
-                    id="lora-cr"
-                  />
-                  <.input
-                    field={@lora_form[:override_frequency]}
-                    type="text"
-                    label="Freq (MHz, optional)"
-                    placeholder="leave blank for region default"
-                    id="lora-freq"
-                  />
-                </div>
-              <% else %>
-                <.input
-                  field={@lora_form[:modem_preset]}
-                  type="select"
-                  label="Preset"
-                  options={RadioConfig.preset_options()}
-                  id="lora-preset"
-                />
-              <% end %>
-              <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                <.input
-                  field={@lora_form[:hop_limit]}
-                  type="number"
-                  label="Hop limit"
-                  min="1"
-                  max="7"
-                  id="lora-hops"
-                />
-                <.input
-                  field={@lora_form[:tx_power]}
-                  type="number"
-                  label="TX (dBm, 0 = max legal)"
-                  min="0"
-                  max="30"
-                  id="lora-tx"
-                />
-                <.input
-                  field={@lora_form[:channel_num]}
-                  type="number"
-                  label="LoRa channel #"
-                  min="0"
-                  max="83"
-                  id="lora-channel-num"
-                />
-              </div>
-              <p class="text-xs opacity-70">
-                LoRa channel # is the frequency slot inside the region, not a group chat slot.
-              </p>
+                  <p class="text-xs opacity-70 -mt-1">
+                    Onboard speaker. Disabled silences incoming-message beeps.
+                  </p>
+                </section>
+              </.inputs_for>
+              <.inputs_for :let={lora} field={@settings_form[:lora]}>
+                <section id="settings-lora" class="space-y-3">
+                  <h4 class="text-sm font-semibold tracking-wide uppercase opacity-70">
+                    Radio
+                  </h4>
+                  <div class="grid gap-3 sm:grid-cols-2">
+                    <.input
+                      field={lora[:region]}
+                      type="select"
+                      label="Region"
+                      options={RadioConfig.region_options()}
+                      id="lora-region"
+                    />
+                    <.input
+                      field={lora[:mode]}
+                      type="select"
+                      label="Modem"
+                      options={RadioConfig.mode_options()}
+                      id="lora-mode"
+                    />
+                  </div>
+                  <%= if lora_mode(lora) == "custom" do %>
+                    <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                      <.input
+                        field={lora[:bandwidth]}
+                        type="select"
+                        label="BW (kHz)"
+                        options={[
+                          {"31.25", "31"},
+                          {"62.5", "62"},
+                          {"125", "125"},
+                          {"250", "250"},
+                          {"500", "500"}
+                        ]}
+                        id="lora-bandwidth"
+                      />
+                      <.input
+                        field={lora[:spread_factor]}
+                        type="number"
+                        label="SF"
+                        min="7"
+                        max="12"
+                        id="lora-sf"
+                      />
+                      <.input
+                        field={lora[:coding_rate]}
+                        type="number"
+                        label="CR"
+                        min="5"
+                        max="8"
+                        id="lora-cr"
+                      />
+                      <.input
+                        field={lora[:override_frequency]}
+                        type="text"
+                        label="Freq (MHz, optional)"
+                        placeholder="leave blank for region default"
+                        id="lora-freq"
+                      />
+                    </div>
+                  <% else %>
+                    <.input
+                      field={lora[:modem_preset]}
+                      type="select"
+                      label="Preset"
+                      options={RadioConfig.preset_options()}
+                      id="lora-preset"
+                    />
+                  <% end %>
+                  <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    <.input
+                      field={lora[:hop_limit]}
+                      type="number"
+                      label="Hop limit"
+                      min="1"
+                      max="7"
+                      id="lora-hops"
+                    />
+                    <.input
+                      field={lora[:tx_power]}
+                      type="number"
+                      label="TX (dBm, 0 = max legal)"
+                      min="0"
+                      max="30"
+                      id="lora-tx"
+                    />
+                    <.input
+                      field={lora[:channel_num]}
+                      type="number"
+                      label="LoRa channel #"
+                      min="0"
+                      max="83"
+                      id="lora-channel-num"
+                    />
+                  </div>
+                  <p class="text-xs opacity-70">
+                    LoRa channel # is the frequency slot inside the region, not a group chat slot.
+                  </p>
+                </section>
+              </.inputs_for>
               <div class="modal-action">
                 <button
                   class="btn btn-ghost btn-sm"
                   type="button"
-                  id="close-lora-modal-btn"
-                  phx-click="close_radio_config"
+                  id="close-settings-modal-btn"
+                  phx-click="close_device_config"
                 >
                   Cancel
                 </button>
                 <button
-                  class={["btn btn-primary btn-sm", @lora_applying && "loading"]}
+                  class={["btn btn-primary btn-sm", @settings_applying && "loading"]}
                   type="submit"
-                  id="save-lora-btn"
-                  disabled={@lora_applying}
+                  id="save-settings-btn"
+                  disabled={@settings_applying}
                 >
-                  {if(@lora_applying, do: "Applying…", else: "Apply & reboot")}
+                  {if(@settings_applying, do: "Applying…", else: "Apply & reboot")}
                 </button>
               </div>
             </.form>
           </div>
-          <div class="modal-backdrop" phx-click="close_radio_config"></div>
+          <div class="modal-backdrop" phx-click="close_device_config"></div>
         </div>
       </section>
     </Layouts.app>

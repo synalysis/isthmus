@@ -105,4 +105,16 @@ defmodule Isthmus.Networks.MeshCore.ProtocolTest do
   test "parse_frame self_info too short to hold a key falls back to raw" do
     assert {:self_info, %{raw: <<1, 2>>}} = Protocol.parse_frame(<<0x05, 1, 2>>)
   end
+
+  test "companion_probe_reply? requires a plausible DEVICE_INFO payload" do
+    rest = <<3, 100, 8>> <> :binary.copy(<<0>>, 77)
+    assert Protocol.companion_probe_reply?(<<13, rest::binary>>)
+
+    # CR (0x0D) with no payload — typical ESP32 boot-log false positive
+    refute Protocol.companion_probe_reply?(<<13>>)
+    refute Protocol.companion_probe_reply?(<<13, 3, 0, 8>>)
+
+    # SELF_INFO is the APP_START reply, not DEVICE_QUERY
+    refute Protocol.companion_probe_reply?(<<5, 1, 2>>)
+  end
 end

@@ -365,6 +365,37 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  def set_meshtastic_settings(args) do
+    port = optional_text(args, :port)
+
+    device =
+      case optional_text(args, :buzzer_mode) do
+        nil -> nil
+        mode -> %{"buzzer_mode" => mode}
+      end
+
+    params =
+      %{}
+      |> then(fn p -> if device, do: Map.put(p, "device", device), else: p end)
+
+    if params == %{} do
+      {:error, "pass buzzer_mode (or another settings section)"}
+    else
+      case MeshtasticCompanion.set_settings(params, port) do
+        {:ok, applied} ->
+          {:ok,
+           %{
+             ok: true,
+             buzzer_mode: get_in(applied, [:device, :buzzer_mode]),
+             region: get_in(applied, [:lora, :region])
+           }}
+
+        {:error, reason} ->
+          {:error, format_error(reason)}
+      end
+    end
+  end
+
   def topology(_args \\ %{}) do
     {:ok, Topology.build(:all)}
   end

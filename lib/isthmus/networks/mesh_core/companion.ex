@@ -171,6 +171,38 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   @doc "Re-resolve the serial port (after Discover.refresh) and reconnect."
   def reconnect(port \\ nil), do: GenServer.cast(target(port), :reconnect)
 
+  @doc """
+  Close UART on companions that came online without a SELF_INFO handshake.
+
+  Discovery used to treat ESP32 boot noise as MeshCore, then skip that port on
+  Rescan because the UART was already held. Releasing it lets the next probe
+  classify the radio as Meshtastic.
+  """
+  def disconnect_unidentified do
+    list_health()
+    |> Enum.filter(&unidentified_companion?/1)
+    |> Enum.each(fn health ->
+      port = health[:port]
+
+      try do
+        GenServer.call(target(port), :disconnect, 2_000)
+      catch
+        :exit, _ -> :ok
+      end
+    end)
+
+    :ok
+  end
+
+  defp unidentified_companion?(health) when is_map(health) do
+    status = health[:status]
+    ref = health[:self_ref]
+
+    status in [:online, :live, :running] and (is_nil(ref) or ref == "")
+  end
+
+  defp unidentified_companion?(_), do: false
+
   defp target(nil), do: __MODULE__
   defp target(:primary), do: __MODULE__
 
@@ -250,6 +282,22 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     health = health_map(state)
     publish_status(state)
     {:reply, health, state}
+  end
+
+  def handle_call(:disconnect, _from, state) do
+    if state.transport, do: state.transport_mod.close(state.transport)
+
+    state =
+      publish_status(%{
+        state
+        | transport: nil,
+          buffer: <<>>,
+          status: :disconnected,
+          self_info: nil,
+          last_error: "released for rediscovery"
+      })
+
+    {:reply, :ok, state}
   end
 
   def handle_call(:list_channels, _from, state) do

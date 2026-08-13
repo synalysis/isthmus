@@ -2,6 +2,8 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
   use ExUnit.Case, async: true
 
   alias Isthmus.Networks.MeshCore.Discover
+  alias Isthmus.Networks.Meshtastic.Protobuf
+  alias Isthmus.Networks.Meshtastic.Protocol, as: MeshtasticProtocol
 
   defp fake_ports do
     %{
@@ -352,6 +354,61 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
 
     assert restored.companion.path == "/dev/ttyACM2"
     assert Enum.map(restored.companion_ports, & &1.path) == ["/dev/ttyACM2"]
+  end
+
+  test "keep_still_attached does not restore MeshCore when the same port is now Meshtastic" do
+    previous = %{
+      companion: %{path: "/dev/ttyUSB0", source: :detected, detail: nil},
+      companion_ports: [%{path: "/dev/ttyUSB0", source: :detected, detail: nil}]
+    }
+
+    current = %{
+      meshtastic: %{path: "/dev/ttyUSB0", source: :detected, detail: nil},
+      meshtastic_ports: [%{path: "/dev/ttyUSB0", source: :detected, detail: nil}]
+    }
+
+    restored = Discover.keep_still_attached(current, previous, ["/dev/ttyUSB0"])
+
+    refute Map.has_key?(restored, :companion)
+    assert restored.meshtastic.path == "/dev/ttyUSB0"
+    refute Enum.any?(restored[:companion_ports] || [], &(&1.path == "/dev/ttyUSB0"))
+    assert Enum.map(restored.meshtastic_ports, & &1.path) == ["/dev/ttyUSB0"]
+  end
+
+  test "classify_probe_buffer ignores ESP32 boot noise that looks like DEVICE_INFO" do
+    boot = "rst:0x1 (POWERON_RESET),boot:0x13\r\n>" <> <<1::little-16, 13>>
+    assert Discover.classify_probe_buffer(boot) == :unknown
+  end
+
+  test "classify_probe_buffer treats any complete Meshtastic serial frame as Meshtastic" do
+    metadata = MeshtasticProtocol.encode_frame(Protobuf.encode_message_field(13, <<>>))
+    log_record = MeshtasticProtocol.encode_frame(Protobuf.encode_bytes_field(6, "boot"))
+
+    assert Discover.classify_probe_buffer(metadata) == :meshtastic
+    assert Discover.classify_probe_buffer(log_record) == :meshtastic
+  end
+
+  test "classify_probe_buffer prefers Meshtastic frames over a spurious companion decode" do
+    boot = ">" <> <<1::little-16, 13>>
+    inner = Protobuf.encode_varint_field(1, 0xDEADBEEF)
+    payload = Protobuf.encode_message_field(3, inner)
+    meshtastic = MeshtasticProtocol.encode_frame(payload)
+
+    assert Discover.classify_probe_buffer(boot <> meshtastic) == :meshtastic
+  end
+
+  test "classify_probe_buffer accepts a real MeshCore DEVICE_INFO frame" do
+    rest = <<3, 100, 8>> <> :binary.copy(<<0>>, 77)
+    frame = <<13, rest::binary>>
+    buffer = <<">", byte_size(frame)::little-16, frame::binary>>
+    assert Discover.classify_probe_buffer(buffer) == :companion
+  end
+
+  test "cli_probe_reply? requires the MeshCore -> prompt, not a bare firmware token" do
+    refute Discover.cli_probe_reply?("Meshtastic firmware 2.6.0")
+    refute Discover.cli_probe_reply?("v1.0 build:abc")
+    assert Discover.cli_probe_reply?("-> v1.8.1 firmware")
+    assert Discover.cli_probe_reply?("-> ver 1.8")
   end
 
   test "refresh keeps a Meshtastic radio when a later probe cannot reopen the port" do

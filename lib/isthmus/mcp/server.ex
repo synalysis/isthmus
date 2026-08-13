@@ -201,6 +201,17 @@ defmodule Isthmus.MCP.Server do
     run(fn args, state -> reply(Tools.set_meshtastic_time(args), state) end)
   end
 
+  tool "set_meshtastic_settings",
+       "Write Meshtastic companion settings (buzzer, LoRa, …) and reboot" do
+    param(:port, :string, description: "Serial port; omit for the primary radio")
+
+    param(:buzzer_mode, :string,
+      description: "enabled | disabled | notifications_only | system_only | direct_msg_only"
+    )
+
+    run(fn args, state -> reply(Tools.set_meshtastic_settings(args), state) end)
+  end
+
   tool "topology", "Whole-bridge topology graph (groups, networks, tunnels)" do
     annotations(readOnlyHint: true)
 

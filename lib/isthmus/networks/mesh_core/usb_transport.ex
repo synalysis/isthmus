@@ -6,7 +6,12 @@ defmodule Isthmus.Networks.MeshCore.USBTransport do
   def connect(%{port: port} = _opts) when is_binary(port) do
     case Circuits.UART.start_link() do
       {:ok, uart} ->
-        case Circuits.UART.open(uart, port, speed: 115_200, active: true) do
+        case Circuits.UART.open(uart, port,
+               speed: 115_200,
+               active: true,
+               rs232_dtr: false,
+               rs232_rts: false
+             ) do
           :ok ->
             {:ok, %{type: :usb, uart: uart, port: port}}
 

@@ -204,6 +204,12 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     assert parsed.tzdef == "EST5EDT,M3.2.0,M11.1.0"
   end
 
+  test "device config roundtrip preserves buzzer_mode" do
+    device = %{Protocol.empty_device_config() | buzzer_mode: 1}
+    parsed = Protocol.parse_device_config(Protocol.encode_device_config(device))
+    assert parsed.buzzer_mode == 1
+  end
+
   test "set_config_device_admin_frame wraps DeviceConfig" do
     passkey = <<9, 8, 7>>
     device = %{Protocol.empty_device_config() | tzdef: "UTC0"}

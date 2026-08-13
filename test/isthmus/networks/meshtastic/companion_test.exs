@@ -22,6 +22,11 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
              })
   end
 
+  test "set_settings fails when disconnected" do
+    assert {:error, :not_connected} =
+             Companion.set_settings(%{"device" => %{"buzzer_mode" => "disabled"}})
+  end
+
   test "set_time fails when disconnected" do
     assert {:error, :not_connected} = Companion.set_time()
   end

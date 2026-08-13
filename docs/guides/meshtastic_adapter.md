@@ -14,7 +14,7 @@ Opaque tunnel frames still go through the in-memory `Meshtastic.Transport` until
 
 ## Companion radio
 
-USB serial is **auto-detected** at boot (and on Rescan). The probe talks MeshCore first (`<`/`>` companion frames, then repeater CLI), then Meshtastic (`0x94 0xC3` + `want_config`). Every port that answers with a parsed FromRadio frame (`my_info`, channel, or `config_complete`) is claimed as a Meshtastic companion.
+USB serial is **auto-detected** at boot (and on Rescan). The probe sends MeshCore `DEVICE_QUERY` and Meshtastic `want_config` together, then RNode, then repeater CLI. A complete `0x94 0xC3` serial frame claims the port as Meshtastic (including early `metadata` / log frames). DTR/RTS are left clear so CP210x ESP32 boards are not reset into the bootloader during the handshake.
 
 Pin only to choose which radio is **primary** when several are attached:
 
@@ -22,7 +22,7 @@ Pin only to choose which radio is **primary** when several are attached:
 # ISTHMUS_MESHTASTIC_PORT=/dev/ttyUSB0
 ```
 
-Admin → **Meshtastic** → **Rescan USB**. Each companion is a card under **Connected radios**. **Radio configuration** (LoRa region / modem) opens a modal on that card.
+Admin → **Meshtastic** → **Rescan USB**. Each companion is a card under **Connected radios**. **Device settings** (buzzer, LoRa region / modem) opens a modal on that card.
 
 Each companion:
 
@@ -31,7 +31,7 @@ Each companion:
 - Publishes inbound TEXT_MESSAGE_APP broadcasts on `"meshtastic:inbound"` as `{:meshtastic_channel, attrs}`
 - Sends group traffic with `send_channel_text/2` (broadcast on that slot)
 - Provisions secondary slots 1–7 via AdminMessage (`get_channel` then `set_channel` with session passkey)
-- Writes LoRa config (region / modem preset, or BW / SF / CR) via `get_config` then `set_config`, then reboots
+- Writes DeviceConfig (buzzer mode) and LoRa config (region / modem preset, or BW / SF / CR) via `get_config` then `set_config`, then reboots
 - Syncs host Unix time onto the radio (`AdminMessage.set_time_only`) after each config dump, and on **Sync time**. Also writes `DeviceConfig.tzdef` (POSIX timezone from the Isthmus host, or the browser zone on **Sync time**) so the OLED shows **local** time. The RTC itself stays UTC. The admin card shows the radio clock in the browser’s local timezone. Devices without GPS or an RTC otherwise sit at epoch until a client sets time. Override with `ISTHMUS_MESHTASTIC_TZ` (IANA or POSIX).
 
 Admin: `/admin/meshtastic`.
@@ -47,7 +47,7 @@ Same model as MeshCore:
 
 Slot **0** is PRIMARY (sets the radio frequency). Isthmus creates private channels in empty **secondary** slots 1–7 only. Create groups on Admin → **Groups**, then assign a group from the **Linked group** dropdown on a companion’s slot table. Slot numbers are local to each radio’s identity (Meshtastic node id / MeshCore pubkey); the same slot index on a second radio is not the same channel. The same group **can** be linked on several USB companions at once (each radio keeps its own slot + PSK). Other devices join by **name + PSK**.
 
-LoRa **region** (country / band) and **modem preset** (Long Fast, Medium Fast, …) are per companion: open **Radio configuration** on that radio’s card. Switch Modem to **Custom** for explicit bandwidth / spreading factor / coding rate and an optional override frequency. Apply writes LoRa config and reboots that companion.
+LoRa **region** (country / band) and **modem preset** (Long Fast, Medium Fast, …) are per companion: open **Device settings** on that radio’s card. The same dialog has an **Alerts** section for the onboard **buzzer** (Disabled silences incoming-message beeps). Switch Modem to **Custom** for explicit bandwidth / spreading factor / coding rate and an optional override frequency. Apply writes config and reboots that companion.
 
 When a group is linked to one or more Meshtastic radios (`group_radio_channels`):
 
@@ -64,7 +64,7 @@ When a group is linked to one or more Meshtastic radios (`group_radio_channels`)
 - [x] Channel ↔ group link + translator fan-out
 - [x] Admin page `/admin/meshtastic`
 - [x] Provision secondary slots onto existing groups
-- [x] LoRa region / modem preset / custom radio config (per-radio modal)
+- [x] Device settings dialog (buzzer + LoRa; extra DeviceConfig fields can be added as new sections)
 - [x] Multiple USB companions (primary + extras)
 - [x] NodeInfo → Admin Adverts (no MeshCore-style flood advert)
 - [x] Companion RTC / `set_time_only` + admin clock display

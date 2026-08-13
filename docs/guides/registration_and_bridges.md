@@ -180,7 +180,7 @@ Meshtastic companion radios expose **channels** over the serial API (index 0 = P
 - **Assign** an existing group to a secondary slot (Admin → **Meshtastic** → **Linked group** dropdown)
 - **Provision** a private channel onto that group when the slot is empty (slots 1–7)
 - **Link** an already-configured radio channel to a group (same dropdown)
-- **Set LoRa config** — on a companion card, **Radio configuration** opens a modal (region / modem preset, or explicit BW / SF / CR)
+- **Set LoRa config** — on a companion card, **Device settings** opens a modal (region / modem preset, or explicit BW / SF / CR, plus onboard buzzer)
 
 When a bridge group is linked to one or more Meshtastic radios (`group_radio_channels`):
 
@@ -189,7 +189,7 @@ When a bridge group is linked to one or more Meshtastic radios (`group_radio_cha
 
 Channel PSKs are stored encrypted. Isthmus auto-creates in slots **1–7** only (never overwrites PRIMARY or occupied slots).
 
-USB ports are classified by handshake (MeshCore companion / repeater CLI first, then Meshtastic `want_config`). Several Meshtastic USB companions can be connected at once; pin only to choose which radio is listed as **primary**. Link the **same group** on each companion’s slot table to use both as gateways.
+USB ports are classified by handshake (MeshCore companion and Meshtastic `want_config` in the same window, then RNode, then repeater CLI). Several Meshtastic USB companions can be connected at once; pin only to choose which radio is listed as **primary**. Link the **same group** on each companion’s slot table to use both as gateways.
 
 ```bash
 # ISTHMUS_MESHTASTIC_PORT=/dev/ttyUSB0

@@ -53,6 +53,36 @@ defmodule Isthmus.Networks.MeshCore.Protocol do
     do_decode(buffer, [])
   end
 
+  @doc """
+  True when `frame` is a DEVICE_QUERY reply with a plausible DEVICE_INFO payload.
+
+  RESP_DEVICE_INFO is code `0x0D` (CR). ESP32 boot logs often contain `>` and
+  CR, which is enough for `decode_usb_stream/1` + `parse_frame/1` to report
+  `:device_info`. SELF_INFO (`0x05`) is the APP_START reply, not DEVICE_QUERY.
+  """
+  def companion_probe_reply?(frame) when is_binary(frame) do
+    case parse_frame(frame) do
+      {:device_info, rest} -> plausible_device_info?(rest)
+      _ -> false
+    end
+  end
+
+  def companion_probe_reply?(_), do: false
+
+  # fw >= 3 DEVICE_INFO is ~80 bytes (contacts, channels, BLE pin, strings).
+  # fw 1–2 is shorter but still has the three-byte header.
+  defp plausible_device_info?(<<fw, _contacts, channels, _::binary>> = rest)
+       when fw in 3..8 and channels in 1..16 and byte_size(rest) >= 40 do
+    true
+  end
+
+  defp plausible_device_info?(<<fw, _contacts, channels, _::binary>>)
+       when fw in 1..2 and channels in 1..16 do
+    true
+  end
+
+  defp plausible_device_info?(_), do: false
+
   defp do_decode(<<">", len::little-16, frame::binary-size(len), rest::binary>>, acc) do
     do_decode(rest, [frame | acc])
   end

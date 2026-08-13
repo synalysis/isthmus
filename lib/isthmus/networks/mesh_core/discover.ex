@@ -30,6 +30,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   @table :isthmus_meshcore_discover
   @baud 115_200
   @probe_timeout_ms 500
+  @meshtastic_probe_ms 2_000
   @open_timeout_ms 1_500
 
   @type role :: :companion | :bridge_cli | :bridge_packet | :meshtastic | :rnode
@@ -300,6 +301,13 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   def handle_call(:roles, _from, state), do: {:reply, state.roles, state}
 
   def handle_call(:refresh, _from, state) do
+    _ =
+      try do
+        Isthmus.Networks.MeshCore.Companion.disconnect_unidentified()
+      catch
+        :exit, _ -> :ok
+      end
+
     claimed = claimed_serial_paths()
     present = current_serial_paths(state.opts)
     skip = Enum.uniq(List.wrap(Keyword.get(state.opts, :skip_paths, [])) ++ claimed)
@@ -398,7 +406,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
               classify_port(uart)
 
             {:error, reason} ->
-              Logger.debug("MeshCore discover: open #{path} failed: #{inspect(reason)}")
+              Logger.warning("MeshCore discover: open #{path} failed: #{inspect(reason)}")
               :unknown
           end
 
@@ -429,7 +437,14 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       spawn(fn ->
         result =
           try do
-            Circuits.UART.open(uart, path, speed: @baud, active: false)
+            # Leave DTR/RTS clear so ESP32 boards behind CP210x/CH340 do not
+            # reset into the bootloader for the whole probe window.
+            Circuits.UART.open(uart, path,
+              speed: @baud,
+              active: false,
+              rs232_dtr: false,
+              rs232_rts: false
+            )
           catch
             :exit, reason -> {:error, {:exit, reason}}
           end
@@ -449,112 +464,160 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   defp classify_port(uart) do
     _ = Circuits.UART.flush(uart)
 
-    # Companion first — framed query. A CLI port will not answer with `>` frames.
+    # Send both handshakes up front. MeshCore replies with `>` frames; Meshtastic
+    # with `0x94 0xC3`. Do not flush between stages — delayed FromRadio after an
+    # ESP32 boot must still be visible. Prefer Meshtastic when both appear.
     companion_frame = Protocol.encode_usb_frame(Protocol.device_query_frame())
+    nonce = :rand.uniform(0x7FFF_FFFE) + 1
+    meshtastic_frame = MeshtasticProtocol.want_config_frame(nonce)
     _ = Circuits.UART.write(uart, companion_frame)
+    _ = Circuits.UART.write(uart, meshtastic_frame)
 
-    case read_until(uart, &companion_response?/1, @probe_timeout_ms) do
-      true ->
+    {kind, acc} = read_until_kind(uart, @probe_timeout_ms, <<>>)
+
+    case kind do
+      :meshtastic ->
+        :meshtastic
+
+      :companion ->
         :companion
 
-      false ->
-        _ = Circuits.UART.flush(uart)
-        _ = Circuits.UART.write(uart, RNode.detect_frame())
+      _ ->
+        _ = Circuits.UART.write(uart, MeshtasticProtocol.want_config_frame(nonce))
+        {kind, acc} = read_until_kind(uart, @meshtastic_probe_ms, acc)
 
-        if read_until(uart, &RNode.detect_response?/1, @probe_timeout_ms) do
-          :rnode
-        else
-          _ = Circuits.UART.flush(uart)
-          _ = Circuits.UART.write(uart, "ver\r")
+        case kind do
+          :meshtastic ->
+            :meshtastic
 
-          if read_until(uart, &cli_response?/1, @probe_timeout_ms) do
-            :bridge_cli
-          else
-            _ = Circuits.UART.flush(uart)
-            nonce = :rand.uniform(0x7FFF_FFFE) + 1
-            _ = Circuits.UART.write(uart, MeshtasticProtocol.want_config_frame(nonce))
+          :companion ->
+            :companion
 
-            if read_until(uart, &meshtastic_response?/1, @probe_timeout_ms) do
-              :meshtastic
-            else
-              :unknown
+          _ ->
+            _ = Circuits.UART.write(uart, RNode.detect_frame())
+
+            {rnode?, acc} =
+              read_until_pred(uart, &RNode.detect_response?/1, @probe_timeout_ms, acc)
+
+            cond do
+              classify_probe_buffer(acc) == :meshtastic ->
+                :meshtastic
+
+              rnode? ->
+                :rnode
+
+              true ->
+                _ = Circuits.UART.write(uart, "ver\r")
+                {cli?, acc} = read_until_pred(uart, &cli_response?/1, @probe_timeout_ms, acc)
+
+                cond do
+                  classify_probe_buffer(acc) == :meshtastic -> :meshtastic
+                  cli? -> :bridge_cli
+                  true -> :unknown
+                end
             end
-          end
         end
     end
   end
 
-  defp companion_response?(data) when is_binary(data) do
-    # Require a decoded companion frame. Do NOT treat a bare ">" as success —
-    # MeshCore CLI replies use "->" and would false-positive as companions.
-    {frames, _} = Protocol.decode_usb_stream(data)
-
-    Enum.any?(frames, fn frame ->
-      case Protocol.parse_frame(frame) do
-        {:device_info, _} -> true
-        {:self_info, _} -> true
-        _ -> false
-      end
-    end)
+  @doc false
+  def classify_probe_buffer(data) when is_binary(data) do
+    cond do
+      meshtastic_response?(data) -> :meshtastic
+      companion_response?(data) -> :companion
+      true -> :unknown
+    end
   end
 
-  defp companion_response?(_), do: false
+  def classify_probe_buffer(_), do: :unknown
+
+  @doc false
+  def cli_probe_reply?(data), do: cli_response?(data)
+
+  defp companion_response?(data) when is_binary(data) do
+    {frames, _} = Protocol.decode_usb_stream(data)
+    Enum.any?(frames, &Protocol.companion_probe_reply?/1)
+  end
 
   defp cli_response?(data) when is_binary(data) do
+    # MeshCore repeater CLI prefixes replies with "->". Bare tokens like
+    # "firmware" appear in Meshtastic logs and protobuf dumps.
     down = String.downcase(data)
 
-    String.contains?(down, "v1.") or
-      String.contains?(down, "build:") or
-      String.contains?(down, "firmware") or
-      (String.contains?(down, "->") and String.contains?(down, "v"))
+    String.contains?(down, "->") and
+      (String.contains?(down, "v1.") or
+         String.contains?(down, "build:") or
+         String.contains?(down, "firmware") or
+         String.contains?(down, "ver"))
   end
 
   defp cli_response?(_), do: false
 
   defp meshtastic_response?(data) when is_binary(data) do
+    # A complete `0x94 0xC3` frame is unique to the Meshtastic serial API.
+    # Early FromRadio types (metadata, log_record) are not in our protobuf
+    # subset but still prove the radio is Meshtastic.
     {frames, _} = MeshtasticProtocol.decode_stream(data)
-
-    Enum.any?(frames, fn payload ->
-      case MeshtasticProtocol.parse_frame(payload) do
-        {:my_info, _} -> true
-        {:node_info, _} -> true
-        {:channel, _} -> true
-        {:config, _} -> true
-        {:config_complete, _} -> true
-        {:packet, _} -> true
-        :rebooted -> true
-        _ -> false
-      end
-    end)
+    frames != []
   end
 
-  defp meshtastic_response?(_), do: false
-
-  defp read_until(uart, pred, timeout_ms) do
+  defp read_until_kind(uart, timeout_ms, acc) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_read_until(uart, pred, deadline, <<>>)
+    do_read_until_kind(uart, deadline, acc)
   end
 
-  defp do_read_until(uart, pred, deadline, acc) do
+  defp do_read_until_kind(uart, deadline, acc) do
     remaining = deadline - System.monotonic_time(:millisecond)
+    kind = classify_probe_buffer(acc)
 
-    if remaining <= 0 do
-      pred.(acc)
-    else
-      chunk =
-        case Circuits.UART.read(uart, min(remaining, 200)) do
-          {:ok, data} when is_binary(data) -> data
-          _ -> <<>>
-        end
+    cond do
+      kind in [:meshtastic, :companion] ->
+        {kind, acc}
 
-      acc = acc <> chunk
+      remaining <= 0 ->
+        {kind, acc}
 
-      if chunk != "" and pred.(acc) do
-        true
-      else
-        if chunk == "", do: Process.sleep(40)
-        do_read_until(uart, pred, deadline, acc)
-      end
+      true ->
+        chunk =
+          case Circuits.UART.read(uart, min(max(remaining, 1), 200)) do
+            {:ok, data} when is_binary(data) -> data
+            _ -> <<>>
+          end
+
+        acc = acc <> chunk
+
+        if chunk == "" and remaining > 0, do: Process.sleep(min(40, remaining))
+        do_read_until_kind(uart, deadline, acc)
+    end
+  end
+
+  defp read_until_pred(uart, pred, timeout_ms, acc) do
+    deadline = System.monotonic_time(:millisecond) + timeout_ms
+    do_read_until_pred(uart, pred, deadline, acc)
+  end
+
+  defp do_read_until_pred(uart, pred, deadline, acc) do
+    remaining = deadline - System.monotonic_time(:millisecond)
+    matched? = pred.(acc)
+
+    cond do
+      remaining <= 0 ->
+        {matched?, acc}
+
+      matched? ->
+        {true, acc}
+
+      true ->
+        chunk =
+          case Circuits.UART.read(uart, min(max(remaining, 1), 200)) do
+            {:ok, data} when is_binary(data) -> data
+            _ -> <<>>
+          end
+
+        acc = acc <> chunk
+
+        if chunk == "" and remaining > 0, do: Process.sleep(min(40, remaining))
+        do_read_until_pred(uart, pred, deadline, acc)
     end
   end
 
@@ -610,6 +673,8 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       end
     end
 
+    reconnect_disconnected_meshcore_extras()
+
     if Code.ensure_loaded?(Isthmus.Networks.Meshtastic.Supervisor) and
          function_exported?(Isthmus.Networks.Meshtastic.Supervisor, :sync, 0) do
       try do
@@ -620,6 +685,23 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end
 
     :ok
+  end
+
+  defp reconnect_disconnected_meshcore_extras do
+    primary = Isthmus.Networks.MeshCore.Discover.resolve_port(:companion)
+
+    Isthmus.Networks.MeshCore.Companion.list_health()
+    |> Enum.each(fn health ->
+      port = health[:port]
+
+      if is_binary(port) and port != "" and port != primary and
+           health[:primary?] != true and
+           health[:status] in [:disconnected, :error] do
+        Isthmus.Networks.MeshCore.Companion.reconnect(port)
+      end
+    end)
+  rescue
+    _ -> :ok
   end
 
   defp first_present(list) do
@@ -711,7 +793,8 @@ defmodule Isthmus.Networks.MeshCore.Discover do
         match?(%{path: _}, acc[role]) ->
           acc
 
-        is_map(prev) and is_binary(prev[:path]) and MapSet.member?(present, prev.path) ->
+        is_map(prev) and is_binary(prev[:path]) and MapSet.member?(present, prev.path) and
+            not MapSet.member?(assigned_paths(acc), prev.path) ->
           Map.put(acc, role, prev)
 
         true ->
@@ -722,26 +805,42 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   defp restore_port_list(roles, key, previous, present) do
     current = roles[key] || []
-
-    current_paths =
-      MapSet.new(current, fn
-        %{path: path} -> path
-        path when is_binary(path) -> path
-        _ -> nil
-      end)
+    taken = assigned_paths(roles)
 
     extra =
       (previous[key] || [])
       |> Enum.filter(fn
         %{path: path} ->
           is_binary(path) and MapSet.member?(present, path) and
-            not MapSet.member?(current_paths, path)
+            not MapSet.member?(taken, path)
 
         _ ->
           false
       end)
 
     Map.put(roles, key, current ++ extra)
+  end
+
+  defp assigned_paths(roles) when is_map(roles) do
+    roles
+    |> Enum.flat_map(fn
+      {:errors, _} ->
+        []
+
+      {_key, %{path: path}} when is_binary(path) and path != "" ->
+        [path]
+
+      {_key, list} when is_list(list) ->
+        Enum.flat_map(list, fn
+          %{path: path} when is_binary(path) and path != "" -> [path]
+          path when is_binary(path) and path != "" -> [path]
+          _ -> []
+        end)
+
+      _ ->
+        []
+    end)
+    |> MapSet.new()
   end
 
   defp current_serial_paths(opts) do
@@ -757,8 +856,9 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       try do
         Isthmus.Networks.MeshCore.Companion.list_health()
         |> Enum.map(fn
-          %{status: status, port: port}
-          when status in [:online, :live, :running] and is_binary(port) and port != "" ->
+          %{status: status, port: port, self_ref: ref}
+          when status in [:online, :live, :running] and is_binary(port) and port != "" and
+                 is_binary(ref) and ref != "" ->
             port
 
           _ ->

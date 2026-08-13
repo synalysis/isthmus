@@ -31,6 +31,8 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
     refute has_element?(view, "#channel-bridge-detail")
     refute has_element?(view, "#companion-status")
     refute has_element?(view, "#reconnect-meshtastic-btn")
+    refute has_element?(view, "#meshtastic-settings-modal")
+    refute has_element?(view, "#meshtastic-settings-form")
     refute has_element?(view, "#meshtastic-lora-modal")
     refute has_element?(view, "#meshtastic-lora-form")
     refute has_element?(view, "#meshtastic-invite-modal")
