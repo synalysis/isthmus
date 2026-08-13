@@ -148,7 +148,7 @@ view _ =
                         , Tw.raw "text-[1.08rem] max-w-[36ch]"
                         ]
                     ]
-                    [ Html.text "Self-host a gateway that tunnels and translates across MeshCore, Reticulum, and Nostr — so the net you know can reach the ones you don't." ]
+                    [ Html.text "Self-host a gateway that tunnels and translates across MeshCore, Meshtastic, Reticulum, and Nostr — so the net you know can reach the ones you don't." ]
                 , Html.div
                     [ Attr.class "rise-in rise-in-delay-3"
                     , classes [ Tw.flex, Tw.flex_wrap, Tw.gap s3 ]
@@ -161,7 +161,7 @@ view _ =
         , Ui.section
             [ Ui.kicker "For protocol people"
             , Ui.sectionTitle "You already speak one of these."
-            , Ui.sectionLede "Isthmus is for operators who live on MeshCore, Reticulum/LXMF, or Nostr and want a reliable bridge — not another siloed chat app."
+            , Ui.sectionLede "Isthmus is for operators who live on MeshCore, Meshtastic, Reticulum/LXMF, or Nostr and want a reliable bridge — not another siloed chat app."
             , Html.div
                 [ classes
                     [ Tw.grid
@@ -177,7 +177,7 @@ view _ =
                     Route.Path.HowItWorks
                     "Read the model"
                     , teaser "Networks"
-                        "MeshCore, Reticulum, and Nostr — dedicated guides for each leg of the bridge."
+                        "MeshCore, Meshtastic, Reticulum, and Nostr — dedicated guides for each leg of the bridge."
                         Route.Path.Networks
                         "Explore networks"
                 , teaser "Self-host"

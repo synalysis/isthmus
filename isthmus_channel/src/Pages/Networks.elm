@@ -62,7 +62,7 @@ view _ =
     { title = "Networks"
     , body =
         [ Ui.pageHero "Networks"
-            "Three live legs. Pick the stack you know, then see how Isthmus joins it to the others."
+            "Four live legs. Pick the stack you know, then see how Isthmus joins it to the others."
         , Html.section
             [ classes [ Tw.pt s6, Tw.pb s10 ] ]
             [ Ui.container []
@@ -70,7 +70,7 @@ view _ =
                     [ classes
                         [ Tw.grid
                         , Tw.gap s10
-                        , md [ Tw.grid_cols_3, Tw.gap s8 ]
+                        , md [ Tw.grid_cols_2, Tw.gap s8 ]
                         ]
                     ]
                     [ protocol "RF mesh"
@@ -79,6 +79,12 @@ view _ =
                         Route.Path.Meshcore
                         "https://meshcore.io"
                         "meshcore.io"
+                    , protocol "RF mesh"
+                        "Meshtastic"
+                        "USB companions; private channels linked to bridge groups."
+                        Route.Path.Meshtastic
+                        "https://meshtastic.org"
+                        "meshtastic.org"
                     , protocol "Encrypted mesh"
                         "Reticulum / LXMF"
                         "Isthmus-owned destinations that LXMF clients can message."

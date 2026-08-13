@@ -61,14 +61,14 @@ view _ =
     { title = "How it works"
     , body =
         [ Ui.pageHero "How it works"
-            "Isthmus is a self-hosted gateway that can tunnel traffic between mesh islands and translate messages across MeshCore, Reticulum, and Nostr."
+            "Isthmus is a self-hosted gateway that can tunnel traffic between mesh islands and translate messages across MeshCore, Meshtastic, Reticulum, and Nostr."
         , Html.section
             [ classes [ Tw.pt s6, Tw.pb s10 ] ]
             [ Ui.container []
                 [ Ui.prose
                     [ Html.h2 [] [ Html.text "The idea in plain terms" ]
                     , Html.p []
-                        [ Html.text "Think of three kinds of network that normally stay apart: radios talking MeshCore, encrypted Reticulum/LXMF peers, and Nostr apps that store notes and messages on relays. Isthmus sits where those worlds can meet — on a computer "
+                        [ Html.text "Think of a few kinds of network that normally stay apart: radios talking MeshCore or Meshtastic, encrypted Reticulum/LXMF peers, and Nostr apps that store notes and messages on relays. Isthmus sits where those worlds can meet — on a computer "
                         , Html.strong [] [ Html.text "you" ]
                         , Html.text " run — and either carries packets unchanged or rewrites messages so they can be delivered on another network."
                         ]
@@ -80,9 +80,9 @@ view _ =
                             [ Html.strong [ classes [ Tw.text_simple ink ] ] [ Html.text "Pick what you need." ]
                             ]
                         , Html.ul [ classes [ Tw.m s0, Tw.pl s5 ] ]
-                            [ Html.li [] [ Html.text "Same protocol, far apart → tunnels" ]
+                            [ Html.li [] [ Html.text "Same protocol, far apart → tunnels (MeshCore island bridges today)" ]
                             , Html.li [] [ Html.text "One identity that should appear on other nets → registration" ]
-                            , Html.li [] [ Html.text "People who already have accounts, chatting across nets → bridge groups" ]
+                            , Html.li [] [ Html.text "People who already have accounts, chatting across nets → bridge groups (including Meshtastic / MeshCore channels)" ]
                             , Html.li [] [ Html.text "Running and watching the gateway → the web operator UI" ]
                             ]
                         ]
@@ -114,7 +114,7 @@ view _ =
                     , Html.p []
                         [ Html.text "Use a bridge group when everyone "
                         , Html.strong [] [ Html.text "already" ]
-                        , Html.text " has working identities and you only need them in the same conversation across networks. You attach real Nostr accounts, MeshCore contacts, and Reticulum destinations. Isthmus does not invent new keys for those people; it fans messages among the members you attached."
+                        , Html.text " has working identities and you only need them in the same conversation across networks. You attach real Nostr accounts, MeshCore contacts, Reticulum destinations, and — for Meshtastic — a private channel slot on a USB companion. Isthmus does not invent new keys for those people; it fans messages among the members you attached."
                         ]
                     , Html.p []
                         [ Html.text "Same translation rule as registration: crossing protocols means the gateway sees the clear message long enough to re-encrypt it for each other network."
@@ -172,6 +172,8 @@ view _ =
                         [ Html.a [ Route.Path.href Route.Path.Networks ] [ Html.text "Networks overview" ]
                         , Html.text " · "
                         , Html.a [ Route.Path.href Route.Path.Meshcore ] [ Html.text "MeshCore" ]
+                        , Html.text " · "
+                        , Html.a [ Route.Path.href Route.Path.Meshtastic ] [ Html.text "Meshtastic" ]
                         , Html.text " · "
                         , Html.a [ Route.Path.href Route.Path.Reticulum ] [ Html.text "Reticulum" ]
                         , Html.text " · "

@@ -63,7 +63,7 @@ view _ =
     { title = "Self-host"
     , body =
         [ Ui.pageHero "Self-host"
-            "Run Isthmus where your radios and peers live. Start with a Nostr identity for login, then attach MeshCore and Reticulum as you need them."
+            "Run Isthmus where your radios and peers live. Start with a Nostr identity for login, then attach MeshCore, Meshtastic, and Reticulum as you need them."
         , Html.section
             [ classes [ Tw.pt s6, Tw.pb s10 ] ]
             [ Ui.container []
@@ -198,7 +198,26 @@ docker compose up --build"""
                                 , Docs.meshcoreBridgeFirmwareBuild "build and flash guide"
                                 ]
                             ]
-                        , Html.h2 [] [ Html.text "7. Reticulum / LXMF" ]
+                        , Html.h2 [] [ Html.text "7. Attach Meshtastic hardware" ]
+                        , Html.p []
+                            [ Html.text "Stock Meshtastic companions over USB serial ("
+                            , Html.a [ Route.Path.href Route.Path.Meshtastic ] [ Html.text "Meshtastic overview" ]
+                            , Html.text "):"
+                            ]
+                        , Html.ul []
+                            [ Html.li []
+                                [ Html.text "Plug in the radio; Isthmus auto-detects it, or pin "
+                                , Html.code [] [ Html.text "ISTHMUS_MESHTASTIC_PORT" ]
+                                ]
+                            , Html.li []
+                                [ Html.text "Admin → Meshtastic — Rescan, LoRa region / modem, link a private slot (1–7) to a bridge group"
+                                ]
+                            , Html.li []
+                                [ Html.text "Invite other Meshtastic devices with the channel URL from the group. Details: "
+                                , Docs.meshtasticAdapter "Meshtastic adapter guide"
+                                ]
+                            ]
+                        , Html.h2 [] [ Html.text "8. Reticulum / LXMF" ]
                         , Html.p []
                             [ Html.text "Install the sidecar deps ("
                             , Html.code [] [ Html.text "pip install -r sidecar/requirements.txt" ]
@@ -232,7 +251,7 @@ docker compose up --build"""
                                 , Html.li [] [ Html.text "Admin npub allowlist" ]
                                 , Html.li [] [ Html.text "Vault + cookie secrets" ]
                                 , Html.li [] [ Html.text "Persistent database path" ]
-                                , Html.li [] [ Html.text "USB companion port (if RF)" ]
+                                , Html.li [] [ Html.text "USB companion port (MeshCore and/or Meshtastic)" ]
                                 , Html.li [] [ Html.text "LXMF reachability for clients (e.g. MeshChatX)" ]
                                 ]
                             ]
@@ -241,6 +260,7 @@ docker compose up --build"""
                             , Html.ul [ classes [ Tw.m s0, Tw.pl s5, Tw.text_simple ink_soft ] ]
                                 [ Html.li [] [ Html.a [ Route.Path.href Route.Path.Nostr ] [ Html.text "Nostr" ] ]
                                 , Html.li [ classes [ Tw.mt s1 ] ] [ Html.a [ Route.Path.href Route.Path.Meshcore ] [ Html.text "MeshCore" ] ]
+                                , Html.li [ classes [ Tw.mt s1 ] ] [ Html.a [ Route.Path.href Route.Path.Meshtastic ] [ Html.text "Meshtastic" ] ]
                                 , Html.li [ classes [ Tw.mt s1 ] ] [ Html.a [ Route.Path.href Route.Path.Reticulum ] [ Html.text "Reticulum" ] ]
                                 ]
                             ]
@@ -250,6 +270,7 @@ docker compose up --build"""
                                 [ Html.li [] [ Docs.registrationAndBridges "Registration and bridges" ]
                                 , Html.li [ classes [ Tw.mt s1 ] ] [ Docs.meshcoreIslandBridge "MeshCore island bridge" ]
                                 , Html.li [ classes [ Tw.mt s1 ] ] [ Docs.meshcoreBridgeFirmwareBuild "MeshCore bridge firmware build" ]
+                                , Html.li [ classes [ Tw.mt s1 ] ] [ Docs.meshtasticAdapter "Meshtastic adapter" ]
                                 , Html.li [ classes [ Tw.mt s1 ] ] [ Docs.reticulum "Reticulum / LXMF" ]
                                 ]
                             ]

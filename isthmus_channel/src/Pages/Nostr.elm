@@ -123,7 +123,7 @@ view _ =
                         , Html.strong [] [ Html.text "sign in" ]
                         , Html.text ", how admins are allowlisted ("
                         , Html.code [] [ Html.text "ISTHMUS_ADMIN_NPUBS" ]
-                        , Html.text "), and a first-class messaging leg: DMs through a relay pool can cross into MeshCore and LXMF via registration or bridge groups."
+                        , Html.text "), and a first-class messaging leg: DMs through a relay pool can cross into MeshCore, Meshtastic channels, and LXMF via registration or bridge groups."
                         ]
                     , Html.h2 [] [ Html.text "Login with a signer extension" ]
                     , Html.p []

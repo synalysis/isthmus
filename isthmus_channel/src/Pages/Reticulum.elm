@@ -121,7 +121,7 @@ view _ =
                         ]
                     , Html.ul []
                         [ Html.li [] [ Html.text "Reticulum as primary — mint Nostr and MeshCore proxies" ]
-                        , Html.li [] [ Html.text "Attach an LXMF destination to a bridge group — fan-out without minting keys for that member" ]
+                        , Html.li [] [ Html.text "Attach an LXMF destination to a bridge group — fan-out without minting keys for that member (including Meshtastic / MeshCore channel legs)" ]
                         , Html.li [] [ Html.text "Optional opaque RNS tunnels (for example RNS carried over MeshCore) when you need transport, not only DMs" ]
                         ]
                     , Html.h2 [] [ Html.text "Running the sidecar" ]

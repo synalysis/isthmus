@@ -2,6 +2,7 @@ module Components.Docs exposing
     ( meshcoreBridgeFirmwareBuild
     , meshcoreFork
     , meshcoreIslandBridge
+    , meshtasticAdapter
     , registrationAndBridges
     , reticulum
     )
@@ -48,6 +49,11 @@ meshcoreIslandBridge label =
 reticulum : String -> Html msg
 reticulum label =
     link "docs/guides/reticulum.md" label
+
+
+meshtasticAdapter : String -> Html msg
+meshtasticAdapter label =
+    link "docs/guides/meshtastic_adapter.md" label
 
 
 registrationAndBridges : String -> Html msg

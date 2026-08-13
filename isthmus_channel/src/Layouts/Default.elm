@@ -189,6 +189,7 @@ siteHeader current =
                 ]
                 [ navLink current Route.Path.HowItWorks "How it works"
                 , navLink current Route.Path.Meshcore "MeshCore"
+                , navLink current Route.Path.Meshtastic "Meshtastic"
                 , navLink current Route.Path.Reticulum "Reticulum"
                 , navLink current Route.Path.Nostr "Nostr"
                 , Html.a
@@ -274,6 +275,8 @@ siteFooter =
             [ Html.p [ classes [ Tw.m s0 ] ]
                 [ Html.text "A narrow passage between "
                 , Html.strong [ classes [ Tw.font_display, Tw.font_semibold, Tw.text_simple ink ] ] [ Html.text "MeshCore" ]
+                , Html.text ", "
+                , Html.strong [ classes [ Tw.font_display, Tw.font_semibold, Tw.text_simple ink ] ] [ Html.text "Meshtastic" ]
                 , Html.text ", "
                 , Html.strong [ classes [ Tw.font_display, Tw.font_semibold, Tw.text_simple ink ] ] [ Html.text "Reticulum" ]
                 , Html.text ", and "
