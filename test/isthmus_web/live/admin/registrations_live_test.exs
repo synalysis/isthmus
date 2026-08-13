@@ -78,6 +78,19 @@ defmodule IsthmusWeb.Admin.RegistrationsLiveTest do
     assert has_element?(view, "#toggle-show-revoked", "Hide revoked")
   end
 
+  test "manage opens the selected group's members", %{conn: conn, group: group} do
+    {:ok, view, _html} = live(conn, ~p"/admin/registrations")
+
+    refute has_element?(view, "#manage-group-modal")
+    refute has_element?(view, "#bridge-members-table")
+
+    view |> element("#manage-group-#{group.id}") |> render_click()
+
+    assert has_element?(view, "#manage-group-modal")
+    assert has_element?(view, "#bridge-members-table")
+    assert has_element?(view, "#manage-group-modal", "Camp")
+  end
+
   test "attaching a reticulum member closes the modal and lists the member",
        %{conn: conn, group: group} do
     ref = String.duplicate("cd", 16)
@@ -93,7 +106,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLiveTest do
 
     refute has_element?(view, "#attach-member-modal")
     assert render(view) =~ "Member attached."
-    assert has_element?(view, "#bridge-members-table", "external")
+    assert has_element?(view, "#manage-group-modal #bridge-members-table", "external")
   end
 
   test "minted Nostr proxy is labelled proxy, attached Reticulum is external",
@@ -108,6 +121,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLiveTest do
     assert rns
 
     {:ok, view, _html} = live(conn, ~p"/admin/registrations")
+    view |> element("#manage-group-#{group.id}") |> render_click()
 
     assert has_element?(view, "#member-#{nostr.id}-role", "proxy")
     assert has_element?(view, "#member-#{rns.id}-role", "external")
@@ -123,7 +137,15 @@ defmodule IsthmusWeb.Admin.RegistrationsLiveTest do
     refute html =~ "MC ch"
     assert has_element?(view, "#group-#{group.id}-chip-meshcore-ch", "meshcore/ch 2")
     assert has_element?(view, "#group-#{group.id}-chip-meshtastic-ch", "meshtastic/ch 3")
-    assert has_element?(view, "#member-channel-meshcore", "channel slot 2")
-    assert has_element?(view, "#member-channel-meshtastic", "channel slot 3")
+
+    view |> element("#manage-group-#{group.id}") |> render_click()
+
+    group = Registrations.get_group!(group.id)
+    mc = Enum.find(group.radio_channels, &(&1.network == "meshcore"))
+    mt = Enum.find(group.radio_channels, &(&1.network == "meshtastic"))
+    assert mc
+    assert mt
+    assert has_element?(view, "#member-channel-#{mc.id}", "channel slot 2")
+    assert has_element?(view, "#member-channel-#{mt.id}", "channel slot 3")
   end
 end

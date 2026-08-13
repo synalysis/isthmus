@@ -13,14 +13,16 @@ defmodule Isthmus.Registrations do
   alias Isthmus.Networks.Meshtastic.Protocol, as: MeshtasticProtocol
   alias Isthmus.Nostr.Bech32
   alias Isthmus.Policy
-  alias Isthmus.Registrations.{IdentityLeg, RegistrationGroup}
+  alias Isthmus.Registrations.{GroupRadioChannel, IdentityLeg, RegistrationGroup}
   alias Isthmus.Repo
   alias Isthmus.Vault
+
+  @group_preloads [:legs, :radio_channels]
 
   def list_all do
     RegistrationGroup
     |> order_by([g], desc: g.inserted_at)
-    |> preload(:legs)
+    |> preload(^@group_preloads)
     |> Repo.all()
   end
 
@@ -28,7 +30,7 @@ defmodule Isthmus.Registrations do
     RegistrationGroup
     |> where([g], g.kind == ^kind)
     |> order_by([g], desc: g.inserted_at)
-    |> preload(:legs)
+    |> preload(^@group_preloads)
     |> Repo.all()
   end
 
@@ -38,7 +40,7 @@ defmodule Isthmus.Registrations do
     RegistrationGroup
     |> where([g], g.owner_pubkey_hex == ^hex and g.status != "revoked")
     |> order_by([g], desc: g.inserted_at)
-    |> preload(:legs)
+    |> preload(^@group_preloads)
     |> Repo.all()
   end
 
@@ -50,13 +52,13 @@ defmodule Isthmus.Registrations do
       [g],
       g.owner_pubkey_hex == ^hex and g.status == "active" and g.kind == "registration"
     )
-    |> preload(:legs)
+    |> preload(^@group_preloads)
     |> Repo.one()
   end
 
   def get_group!(id) do
     RegistrationGroup
-    |> preload(:legs)
+    |> preload(^@group_preloads)
     |> Repo.get!(id)
   end
 
@@ -68,7 +70,7 @@ defmodule Isthmus.Registrations do
     from(g in RegistrationGroup,
       join: l in assoc(g, :legs),
       where: g.status == "active" and l.network == ^network and l.identity_ref == ^ref,
-      preload: [:legs],
+      preload: ^@group_preloads,
       limit: 1
     )
     |> Repo.one()
@@ -301,44 +303,61 @@ defmodule Isthmus.Registrations do
 
   def detach_member(_), do: {:error, :not_a_member}
 
-  @doc "Find active bridge/registration group linked to a MeshCore channel index."
-  def find_by_meshcore_channel(idx) when is_integer(idx) do
-    from(g in RegistrationGroup,
-      where: g.status == "active" and g.meshcore_channel_idx == ^idx,
-      preload: [:legs],
-      limit: 1
-    )
-    |> Repo.one()
+  @doc "Radio channel links on a group for `:meshcore` or `:meshtastic`."
+  def radio_links(group, network)
+
+  def radio_links(%RegistrationGroup{radio_channels: channels}, network) when is_list(channels) do
+    net = to_string(network)
+
+    channels
+    |> Enum.filter(&(&1.network == net))
+    |> Enum.sort_by(&{&1.inserted_at, &1.id})
   end
 
-  @doc "Link a MeshCore channel slot to a bridge group (stores encrypted secret)."
-  def link_meshcore_channel(%RegistrationGroup{kind: "bridge"} = group, idx, secret_hex)
-      when is_integer(idx) and idx in 0..7 and is_binary(secret_hex) do
-    with :ok <- ensure_channel_idx_free(idx),
+  def radio_links(%RegistrationGroup{} = group, network) do
+    group |> Repo.preload(:radio_channels) |> radio_links(network)
+  end
+
+  def radio_links(_, _), do: []
+
+  @doc "The channel link for a radio on this group, if any."
+  def radio_link(group, network, device_id) do
+    device_id = normalize_radio_id(device_id)
+    links = radio_links(group, network)
+
+    if is_binary(device_id) do
+      Enum.find(links, &(normalize_radio_id(&1.device_id) == device_id))
+    else
+      Enum.find(links, &is_nil(normalize_radio_id(&1.device_id))) || List.first(links)
+    end
+  end
+
+  @doc "Find active bridge/registration group linked to a MeshCore channel on a radio."
+  def find_by_meshcore_channel(idx, device_id \\ nil)
+
+  def find_by_meshcore_channel(idx, device_id) when is_integer(idx) do
+    find_group_by_radio_link("meshcore", idx, normalize_radio_id(device_id))
+  end
+
+  @doc "Link a MeshCore channel slot on a specific radio to a bridge group."
+  def link_meshcore_channel(group, idx, secret_hex, opts \\ [])
+
+  def link_meshcore_channel(%RegistrationGroup{kind: "bridge"} = group, idx, secret_hex, opts)
+      when is_integer(idx) and idx in 0..7 and is_binary(secret_hex) and is_list(opts) do
+    device_id = normalize_radio_id(Keyword.get(opts, :device_id))
+
+    with :ok <- ensure_radio_slot_free("meshcore", idx, device_id, group.id),
          {:ok, enc} <- Vault.encrypt(%{"secret_hex" => String.downcase(secret_hex)}) do
-      group
-      |> RegistrationGroup.changeset(%{
-        meshcore_channel_idx: idx,
-        meshcore_channel_secret_enc: enc
-      })
-      |> Repo.update()
-      |> case do
-        {:ok, _} -> {:ok, get_group!(group.id)}
-        err -> err
-      end
+      upsert_radio_link(group, "meshcore", idx, enc, device_id)
     end
   end
 
-  def link_meshcore_channel(%RegistrationGroup{}, _, _), do: {:error, :not_a_bridge_group}
+  def link_meshcore_channel(%RegistrationGroup{}, _, _, _), do: {:error, :not_a_bridge_group}
 
-  def unlink_meshcore_channel(%RegistrationGroup{} = group) do
-    group
-    |> RegistrationGroup.changeset(%{meshcore_channel_idx: nil, meshcore_channel_secret_enc: nil})
-    |> Repo.update()
-    |> case do
-      {:ok, _} -> {:ok, get_group!(group.id)}
-      err -> err
-    end
+  def unlink_meshcore_channel(group, opts \\ [])
+
+  def unlink_meshcore_channel(%RegistrationGroup{} = group, opts) when is_list(opts) do
+    delete_radio_links(group, "meshcore", Keyword.get(opts, :device_id))
   end
 
   @doc """
@@ -349,12 +368,14 @@ defmodule Isthmus.Registrations do
   def provision_meshcore_channel(%RegistrationGroup{kind: "bridge"} = group, opts) do
     name = Keyword.get(opts, :name) || group.display_name || "Channel"
     requested = Keyword.get(opts, :idx)
+    port = Keyword.get(opts, :port)
+    device_id = meshcore_radio_id(port)
 
-    with :ok <- companion_online(),
-         :ok <- ensure_group_meshcore_free(group),
-         {:ok, idx} <- pick_meshcore_slot(requested),
-         {:ok, channel} <- Companion.set_channel(idx, name, nil) do
-      link_meshcore_channel(group, idx, channel.secret_hex)
+    with :ok <- companion_online(port),
+         :ok <- ensure_group_radio_free(group, "meshcore", device_id),
+         {:ok, idx} <- pick_meshcore_slot(requested, port),
+         {:ok, channel} <- Companion.set_channel(idx, name, nil, port) do
+      link_meshcore_channel(group, idx, channel.secret_hex, device_id: device_id)
     end
   end
 
@@ -366,86 +387,76 @@ defmodule Isthmus.Registrations do
   Returns name + secret (for the app's "secret key" join) and a
   `meshcore://channel/add?...` URI (for QR / paste).
   """
-  def meshcore_channel_invite(
-        %RegistrationGroup{
-          kind: "bridge",
-          status: "active",
-          meshcore_channel_idx: idx,
-          meshcore_channel_secret_enc: enc
-        } = group
-      )
-      when is_integer(idx) and is_binary(enc) do
-    case Vault.decrypt(enc) do
-      {:ok, material} when is_map(material) ->
-        secret_hex =
-          case Map.get(material, "secret_hex") || Map.get(material, :secret_hex) do
-            s when is_binary(s) and s != "" -> String.downcase(s)
-            _ -> nil
-          end
+  def meshcore_channel_invite(group, opts \\ [])
 
-        if secret_hex do
-          name = channel_invite_name(group, idx)
-          uri = "meshcore://channel/add?name=#{URI.encode_www_form(name)}&secret=#{secret_hex}"
+  def meshcore_channel_invite(%RegistrationGroup{kind: "bridge", status: "active"} = group, opts)
+      when is_list(opts) do
+    link = radio_link(group, "meshcore", Keyword.get(opts, :device_id))
 
-          {:ok,
-           %{
-             slot: idx,
-             name: name,
-             secret_hex: secret_hex,
-             uri: uri
-           }}
-        else
-          {:error, :invite_unavailable}
+    case link do
+      %{channel_idx: idx, secret_enc: enc} when is_integer(idx) and is_binary(enc) ->
+        case Vault.decrypt(enc) do
+          {:ok, material} when is_map(material) ->
+            secret_hex =
+              case Map.get(material, "secret_hex") || Map.get(material, :secret_hex) do
+                s when is_binary(s) and s != "" -> String.downcase(s)
+                _ -> nil
+              end
+
+            if secret_hex do
+              name = channel_invite_name(group, idx)
+
+              uri =
+                "meshcore://channel/add?name=#{URI.encode_www_form(name)}&secret=#{secret_hex}"
+
+              {:ok,
+               %{
+                 slot: idx,
+                 name: name,
+                 secret_hex: secret_hex,
+                 uri: uri
+               }}
+            else
+              {:error, :invite_unavailable}
+            end
+
+          _ ->
+            {:error, :invite_unavailable}
         end
 
       _ ->
-        {:error, :invite_unavailable}
+        {:error, :no_channel_linked}
     end
   end
 
-  def meshcore_channel_invite(%RegistrationGroup{}), do: {:error, :no_channel_linked}
+  def meshcore_channel_invite(%RegistrationGroup{}, _), do: {:error, :no_channel_linked}
 
-  @doc "Find active group linked to a Meshtastic channel index."
-  def find_by_meshtastic_channel(idx) when is_integer(idx) do
-    from(g in RegistrationGroup,
-      where: g.status == "active" and g.meshtastic_channel_idx == ^idx,
-      preload: [:legs],
-      limit: 1
-    )
-    |> Repo.one()
+  @doc "Find active group linked to a Meshtastic channel on a radio."
+  def find_by_meshtastic_channel(idx, device_id \\ nil)
+
+  def find_by_meshtastic_channel(idx, device_id) when is_integer(idx) do
+    find_group_by_radio_link("meshtastic", idx, normalize_radio_id(device_id))
   end
 
-  @doc "Link a Meshtastic channel slot to a bridge group (stores encrypted PSK)."
-  def link_meshtastic_channel(%RegistrationGroup{kind: "bridge"} = group, idx, psk_hex)
-      when is_integer(idx) and idx in 0..7 and is_binary(psk_hex) do
-    with :ok <- ensure_meshtastic_channel_idx_free(idx),
+  @doc "Link a Meshtastic channel slot on a specific radio to a bridge group."
+  def link_meshtastic_channel(group, idx, psk_hex, opts \\ [])
+
+  def link_meshtastic_channel(%RegistrationGroup{kind: "bridge"} = group, idx, psk_hex, opts)
+      when is_integer(idx) and idx in 0..7 and is_binary(psk_hex) and is_list(opts) do
+    device_id = normalize_radio_id(Keyword.get(opts, :device_id))
+
+    with :ok <- ensure_radio_slot_free("meshtastic", idx, device_id, group.id),
          {:ok, enc} <- Vault.encrypt(%{"psk_hex" => String.downcase(psk_hex)}) do
-      group
-      |> RegistrationGroup.changeset(%{
-        meshtastic_channel_idx: idx,
-        meshtastic_channel_psk_enc: enc
-      })
-      |> Repo.update()
-      |> case do
-        {:ok, _} -> {:ok, get_group!(group.id)}
-        err -> err
-      end
+      upsert_radio_link(group, "meshtastic", idx, enc, device_id)
     end
   end
 
-  def link_meshtastic_channel(%RegistrationGroup{}, _, _), do: {:error, :not_a_bridge_group}
+  def link_meshtastic_channel(%RegistrationGroup{}, _, _, _), do: {:error, :not_a_bridge_group}
 
-  def unlink_meshtastic_channel(%RegistrationGroup{} = group) do
-    group
-    |> RegistrationGroup.changeset(%{
-      meshtastic_channel_idx: nil,
-      meshtastic_channel_psk_enc: nil
-    })
-    |> Repo.update()
-    |> case do
-      {:ok, _} -> {:ok, get_group!(group.id)}
-      err -> err
-    end
+  def unlink_meshtastic_channel(group, opts \\ [])
+
+  def unlink_meshtastic_channel(%RegistrationGroup{} = group, opts) when is_list(opts) do
+    delete_radio_links(group, "meshtastic", Keyword.get(opts, :device_id))
   end
 
   @doc """
@@ -459,12 +470,13 @@ defmodule Isthmus.Registrations do
 
     requested = Keyword.get(opts, :idx)
     port = Keyword.get(opts, :port)
+    device_id = meshtastic_radio_id(port)
 
     with :ok <- meshtastic_companion_online(port),
-         :ok <- ensure_group_meshtastic_free(group),
+         :ok <- ensure_group_radio_free(group, "meshtastic", device_id),
          {:ok, idx} <- pick_meshtastic_slot(requested, port),
          {:ok, channel} <- MeshtasticCompanion.set_channel(idx, name, nil, port) do
-      link_meshtastic_channel(group, idx, channel.psk_hex)
+      link_meshtastic_channel(group, idx, channel.psk_hex, device_id: device_id)
     end
   end
 
@@ -475,52 +487,58 @@ defmodule Isthmus.Registrations do
 
   Returns name + PSK and a `https://meshtastic.org/e/#…?add=true` URI.
   """
+  def meshtastic_channel_invite(group, opts \\ [])
+
   def meshtastic_channel_invite(
-        %RegistrationGroup{
-          kind: "bridge",
-          status: "active",
-          meshtastic_channel_idx: idx,
-          meshtastic_channel_psk_enc: enc
-        } = group
+        %RegistrationGroup{kind: "bridge", status: "active"} = group,
+        opts
       )
-      when is_integer(idx) and is_binary(enc) do
-    case Vault.decrypt(enc) do
-      {:ok, material} when is_map(material) ->
-        psk_hex =
-          case Map.get(material, "psk_hex") || Map.get(material, :psk_hex) do
-            s when is_binary(s) and s != "" -> String.downcase(s)
-            _ -> nil
-          end
+      when is_list(opts) do
+    link = radio_link(group, "meshtastic", Keyword.get(opts, :device_id))
 
-        if psk_hex do
-          name = meshtastic_channel_invite_name(group, idx)
-          cached = MeshtasticCompanion.get_channel(idx)
+    case link do
+      %{channel_idx: idx, secret_enc: enc} when is_integer(idx) and is_binary(enc) ->
+        case Vault.decrypt(enc) do
+          {:ok, material} when is_map(material) ->
+            psk_hex =
+              case Map.get(material, "psk_hex") || Map.get(material, :psk_hex) do
+                s when is_binary(s) and s != "" -> String.downcase(s)
+                _ -> nil
+              end
 
-          ch = %{
-            index: idx,
-            name: name,
-            psk_hex: psk_hex,
-            channel_id: cached && cached[:channel_id]
-          }
+            if psk_hex do
+              name = meshtastic_channel_invite_name(group, idx)
+              cached = MeshtasticCompanion.get_channel(idx)
 
-          {:ok,
-           %{
-             slot: idx,
-             name: name,
-             psk_hex: psk_hex,
-             secret_hex: psk_hex,
-             uri: MeshtasticProtocol.channel_invite_uri(ch)
-           }}
-        else
-          {:error, :invite_unavailable}
+              ch = %{
+                index: idx,
+                name: name,
+                psk_hex: psk_hex,
+                channel_id: cached && cached[:channel_id]
+              }
+
+              {:ok,
+               %{
+                 slot: idx,
+                 name: name,
+                 psk_hex: psk_hex,
+                 secret_hex: psk_hex,
+                 uri: MeshtasticProtocol.channel_invite_uri(ch)
+               }}
+            else
+              {:error, :invite_unavailable}
+            end
+
+          _ ->
+            {:error, :invite_unavailable}
         end
 
       _ ->
-        {:error, :invite_unavailable}
+        {:error, :no_channel_linked}
     end
   end
 
-  def meshtastic_channel_invite(%RegistrationGroup{}), do: {:error, :no_channel_linked}
+  def meshtastic_channel_invite(%RegistrationGroup{}, _), do: {:error, :no_channel_linked}
 
   defp channel_invite_name(group, idx) do
     case Companion.get_channel(idx) do
@@ -547,7 +565,8 @@ defmodule Isthmus.Registrations do
          {:ok, channel} <- Companion.set_channel(idx, name, nil),
          {:ok, group} <-
            create_bridge_group(owner_hex, Map.merge(Map.new(attrs), %{display_name: name})),
-         {:ok, group} <- link_meshcore_channel(group, idx, channel.secret_hex),
+         {:ok, group} <-
+           link_meshcore_channel(group, idx, channel.secret_hex, device_id: meshcore_radio_id()),
          {:ok, group} <- ensure_bridge_rns_proxy(group),
          {:ok, group} <- ensure_nostr_proxy(group),
          {:ok, group} <- ensure_meshcore_proxy(group) do
@@ -567,7 +586,10 @@ defmodule Isthmus.Registrations do
          {:ok, channel} <- MeshtasticCompanion.set_channel(idx, name, nil, port),
          {:ok, group} <-
            create_bridge_group(owner_hex, Map.merge(Map.new(attrs), %{display_name: name})),
-         {:ok, group} <- link_meshtastic_channel(group, idx, channel.psk_hex),
+         {:ok, group} <-
+           link_meshtastic_channel(group, idx, channel.psk_hex,
+             device_id: meshtastic_radio_id(port)
+           ),
          {:ok, group} <- ensure_bridge_rns_proxy(group),
          {:ok, group} <- ensure_nostr_proxy(group),
          {:ok, group} <- ensure_meshcore_proxy(group) do
@@ -742,8 +764,8 @@ defmodule Isthmus.Registrations do
     Enum.uniq_by(proxy_pairs ++ service_pair, fn {pk, _} -> pk end)
   end
 
-  defp companion_online do
-    case Companion.health() do
+  defp companion_online(port \\ nil) do
+    case Companion.health(port) do
       %{status: :online} -> :ok
       _ -> {:error, :not_connected}
     end
@@ -766,9 +788,15 @@ defmodule Isthmus.Registrations do
         status: "revoked",
         meshcore_channel_idx: nil,
         meshcore_channel_secret_enc: nil,
+        meshcore_channel_device_id: nil,
         meshtastic_channel_idx: nil,
-        meshtastic_channel_psk_enc: nil
+        meshtastic_channel_psk_enc: nil,
+        meshtastic_channel_device_id: nil
       })
+    )
+    |> Ecto.Multi.delete_all(
+      :radio_channels,
+      from(c in GroupRadioChannel, where: c.registration_group_id == ^group.id)
     )
     |> Ecto.Multi.delete_all(
       :legs,
@@ -1181,44 +1209,241 @@ defmodule Isthmus.Registrations do
     end
   end
 
-  defp ensure_channel_idx_free(idx) do
-    case find_by_meshcore_channel(idx) do
-      nil -> :ok
-      _ -> {:error, :channel_already_linked}
+  defp find_group_by_radio_link(network, idx, device_id) do
+    query =
+      from(c in GroupRadioChannel,
+        join: g in assoc(c, :registration_group),
+        where: g.status == "active" and c.network == ^network and c.channel_idx == ^idx,
+        select: g.id,
+        limit: 1
+      )
+
+    query =
+      if is_binary(device_id) do
+        from([c, g] in query, where: c.device_id == ^device_id)
+      else
+        from([c, g] in query, where: is_nil(c.device_id))
+      end
+
+    case Repo.one(query) do
+      nil -> nil
+      id -> get_group!(id)
     end
   end
 
-  defp ensure_meshtastic_channel_idx_free(idx) do
-    case find_by_meshtastic_channel(idx) do
-      nil -> :ok
-      _ -> {:error, :channel_already_linked}
+  defp ensure_radio_slot_free(network, idx, device_id, group_id) do
+    case find_group_by_radio_link(network, idx, device_id) do
+      nil ->
+        :ok
+
+      %{id: existing_id} ->
+        if to_string(existing_id) == to_string(group_id) do
+          :ok
+        else
+          {:error, :channel_already_linked}
+        end
     end
   end
 
-  defp first_empty_private_channel_slot do
-    first_empty_slot(Companion.list_channels())
+  defp ensure_group_radio_free(group, network, device_id) do
+    case radio_link(group, network, device_id) do
+      nil -> :ok
+      _ -> {:error, :already_linked}
+    end
   end
 
-  defp ensure_group_meshcore_free(%RegistrationGroup{meshcore_channel_idx: nil}), do: :ok
-  defp ensure_group_meshcore_free(_), do: {:error, :already_linked}
+  defp upsert_radio_link(group, network, idx, enc, device_id) do
+    attrs = %{
+      registration_group_id: group.id,
+      network: network,
+      device_id: device_id,
+      channel_idx: idx,
+      secret_enc: enc
+    }
 
-  defp pick_meshcore_slot(nil), do: first_empty_private_channel_slot()
+    result =
+      (existing_radio_row(group.id, network, device_id) || %GroupRadioChannel{})
+      |> GroupRadioChannel.changeset(attrs)
+      |> Repo.insert_or_update()
 
-  defp pick_meshcore_slot(idx) when is_integer(idx) and idx in 1..7 do
-    case Enum.find(Companion.list_channels(), &(&1.index == idx)) do
+    case result do
+      {:ok, _} ->
+        _ = sync_group_channel_cache(group.id)
+        {:ok, get_group!(group.id)}
+
+      {:error, %Ecto.Changeset{} = changeset} ->
+        if unique_constraint_error?(changeset) do
+          {:error, :channel_already_linked}
+        else
+          {:error, changeset}
+        end
+    end
+  end
+
+  defp existing_radio_row(group_id, network, device_id) do
+    scoped =
+      from(c in GroupRadioChannel,
+        where: c.registration_group_id == ^group_id and c.network == ^network
+      )
+
+    scoped =
+      if is_binary(device_id) do
+        from(c in scoped, where: c.device_id == ^device_id)
+      else
+        from(c in scoped, where: is_nil(c.device_id))
+      end
+
+    case Repo.one(scoped) do
+      %GroupRadioChannel{} = row ->
+        row
+
+      nil when is_binary(device_id) ->
+        from(c in GroupRadioChannel,
+          where:
+            c.registration_group_id == ^group_id and c.network == ^network and
+              is_nil(c.device_id),
+          limit: 1
+        )
+        |> Repo.one()
+
+      nil ->
+        nil
+    end
+  end
+
+  defp delete_radio_links(group, network, device_id) do
+    query =
+      from(c in GroupRadioChannel,
+        where: c.registration_group_id == ^group.id and c.network == ^network
+      )
+
+    query =
+      case normalize_radio_id(device_id) do
+        id when is_binary(id) -> from(c in query, where: c.device_id == ^id)
+        _ -> query
+      end
+
+    Repo.delete_all(query)
+    _ = sync_group_channel_cache(group.id)
+    {:ok, get_group!(group.id)}
+  end
+
+  defp sync_group_channel_cache(group_id) do
+    group =
+      RegistrationGroup
+      |> Repo.get!(group_id)
+      |> Repo.preload(:radio_channels)
+
+    mc = List.first(radio_links(group, "meshcore"))
+    mt = List.first(radio_links(group, "meshtastic"))
+
+    group
+    |> RegistrationGroup.changeset(%{
+      meshcore_channel_idx: mc && mc.channel_idx,
+      meshcore_channel_secret_enc: mc && mc.secret_enc,
+      meshcore_channel_device_id: mc && mc.device_id,
+      meshtastic_channel_idx: mt && mt.channel_idx,
+      meshtastic_channel_psk_enc: mt && mt.secret_enc,
+      meshtastic_channel_device_id: mt && mt.device_id
+    })
+    |> Repo.update()
+  end
+
+  defp unique_constraint_error?(%Ecto.Changeset{errors: errors}) do
+    Enum.any?(errors, fn {_field, {_msg, opts}} -> opts[:constraint] == :unique end)
+  end
+
+  @doc "Normalize a radio identity (Meshtastic node id or MeshCore pubkey)."
+  def normalize_radio_id(nil), do: nil
+  def normalize_radio_id(""), do: nil
+
+  def normalize_radio_id(id) when is_binary(id) do
+    id = id |> String.trim() |> String.trim_leading("!") |> String.downcase()
+    if id == "", do: nil, else: id
+  end
+
+  def normalize_radio_id(_), do: nil
+
+  @doc """
+  Bind legacy slot-only channel links to a radio that actually has those slots occupied.
+
+  Slot numbers are local to each radio; an unscoped `channel_idx` must not display
+  or route on a different device.
+  """
+  def claim_unscoped_radio_channel(network, device_id, occupied_idxs)
+
+  def claim_unscoped_radio_channel(network, device_id, occupied_idxs)
+      when network in [:meshcore, :meshtastic] and is_list(occupied_idxs) do
+    device_id = normalize_radio_id(device_id)
+    idxs = Enum.filter(occupied_idxs, &(&1 in 1..7))
+    net = to_string(network)
+
+    if is_binary(device_id) and idxs != [] do
+      unscoped =
+        from(c in GroupRadioChannel,
+          where: c.network == ^net and is_nil(c.device_id) and c.channel_idx in ^idxs
+        )
+        |> Repo.all()
+
+      Enum.each(unscoped, fn row ->
+        conflict =
+          Repo.one(
+            from(c in GroupRadioChannel,
+              where:
+                c.network == ^net and c.device_id == ^device_id and
+                  c.channel_idx == ^row.channel_idx,
+              limit: 1
+            )
+          )
+
+        if is_nil(conflict) do
+          case row
+               |> GroupRadioChannel.changeset(%{device_id: device_id})
+               |> Repo.update() do
+            {:ok, _} -> sync_group_channel_cache(row.registration_group_id)
+            {:error, _} -> :ok
+          end
+        end
+      end)
+    end
+
+    :ok
+  end
+
+  def claim_unscoped_radio_channel(_, _, _), do: :ok
+
+  defp meshcore_radio_id(port \\ nil) do
+    case Companion.health(port) do
+      %{self_ref: id} -> normalize_radio_id(id)
+      _ -> nil
+    end
+  end
+
+  defp meshtastic_radio_id(port) do
+    case MeshtasticCompanion.health(port) do
+      %{node_id: id} -> normalize_radio_id(id)
+      _ -> nil
+    end
+  end
+
+  defp first_empty_private_channel_slot(port \\ nil) do
+    first_empty_slot(Companion.list_channels(port))
+  end
+
+  defp pick_meshcore_slot(nil, port), do: first_empty_private_channel_slot(port)
+
+  defp pick_meshcore_slot(idx, port) when is_integer(idx) and idx in 1..7 do
+    case Enum.find(Companion.list_channels(port), &(&1.index == idx)) do
       %{empty?: false} -> {:error, :slot_occupied}
       _ -> {:ok, idx}
     end
   end
 
-  defp pick_meshcore_slot(_), do: {:error, :invalid_slot}
+  defp pick_meshcore_slot(_, _), do: {:error, :invalid_slot}
 
   defp first_empty_meshtastic_channel_slot(port) do
     first_empty_slot(MeshtasticCompanion.list_channels(port))
   end
-
-  defp ensure_group_meshtastic_free(%RegistrationGroup{meshtastic_channel_idx: nil}), do: :ok
-  defp ensure_group_meshtastic_free(_), do: {:error, :already_linked}
 
   defp pick_meshtastic_slot(nil, port), do: first_empty_meshtastic_channel_slot(port)
 

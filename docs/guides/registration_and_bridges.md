@@ -100,16 +100,16 @@ MeshCore companion radios support **channels** — shared-secret group chat slot
 - **Link** an already-configured radio channel to a group (same dropdown)
 - **Set radio config** — on a companion or island tunnel radio card, **Radio configuration** opens a modal
 
-When a bridge group has `meshcore_channel_idx` set:
+When a bridge group is linked to a MeshCore channel (`group_radio_channels`, network `meshcore`):
 
 - Inbound channel messages fan out to all attached Nostr / RNS / MeshCore DM members
-- Inbound traffic from other networks is also posted to that MeshCore channel
+- Inbound traffic from other networks is also posted to **each** linked MeshCore companion
 
 Channel secrets are stored encrypted in the database. Isthmus auto-creates in slots **1–7** only (never overwrites occupied slots).
 
 ### Invite a second MeshCore device
 
-Isthmus talks to **one** USB companion (the gateway radio). Other MeshCore devices join the same private channel via the MeshCore app — they do not need USB to Isthmus.
+Isthmus talks to USB **companion** radios on Admin → **MeshCore**. Several companions can be plugged in at once; pin only to choose which radio is **primary**. Link the same group on each companion’s slot table to use both as gateways. Other MeshCore devices join the same private channel via the MeshCore app — they do not need USB to Isthmus.
 
 1. Admin → **MeshCore** → on a companion card, pick a group in a slot’s **Linked group** dropdown
 2. Click **Invite** on that row
@@ -134,14 +134,14 @@ Meshtastic companion radios expose **channels** over the serial API (index 0 = P
 - **Link** an already-configured radio channel to a group (same dropdown)
 - **Set LoRa config** — on a companion card, **Radio configuration** opens a modal (region / modem preset, or explicit BW / SF / CR)
 
-When a bridge group has `meshtastic_channel_idx` set:
+When a bridge group is linked to one or more Meshtastic radios (`group_radio_channels`):
 
 - Inbound channel messages fan out to all attached Nostr / RNS / MeshCore members
-- Inbound traffic from other networks is also posted to that Meshtastic channel
+- Inbound traffic from other networks is also posted to **each** linked Meshtastic companion
 
 Channel PSKs are stored encrypted. Isthmus auto-creates in slots **1–7** only (never overwrites PRIMARY or occupied slots).
 
-USB ports are classified by handshake (MeshCore companion / repeater CLI first, then Meshtastic `want_config`). Several Meshtastic USB companions can be connected at once; pin only to choose the **primary** radio (used for group fan-out):
+USB ports are classified by handshake (MeshCore companion / repeater CLI first, then Meshtastic `want_config`). Several Meshtastic USB companions can be connected at once; pin only to choose which radio is listed as **primary**. Link the **same group** on each companion’s slot table to use both as gateways.
 
 ```bash
 # ISTHMUS_MESHTASTIC_PORT=/dev/ttyUSB0
@@ -149,7 +149,7 @@ USB ports are classified by handshake (MeshCore companion / repeater CLI first, 
 
 ### Invite a second Meshtastic device
 
-Isthmus talks to USB **companion** radios on Admin → **Meshtastic**. Other Meshtastic devices (phones, standalone nodes) join the same channel via the Meshtastic app.
+Isthmus talks to USB **companion** radios on Admin → **Meshtastic**. Plug in another companion and assign the same group on that radio’s slot table if you want a second gateway. Other Meshtastic devices (phones, standalone nodes) join the RF channel via the Meshtastic app.
 
 1. Admin → **Meshtastic** → on a companion card, pick a group in a slot’s **Linked group** dropdown
 2. Click **Invite** on that row

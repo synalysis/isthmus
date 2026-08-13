@@ -2,6 +2,10 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   @moduledoc """
   MeshCore companion client.
 
+  The named process owns the primary port (`ISTHMUS_MESHCORE_PORT` or the first
+  detected companion). Extra USB companions are started via `MeshCore.Supervisor`
+  and addressed by port.
+
   Transport selection via `ISTHMUS_MESHCORE_TRANSPORT` (`usb` default, `ble` stub):
   - USB: auto-detected by `Discover`, or pin with `ISTHMUS_MESHCORE_PORT`
   - BLE: `ISTHMUS_MESHCORE_BLE_ADDRESS=<mac>` (not implemented yet — see `BLETransport`)
@@ -22,6 +26,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   @channels_table :isthmus_meshcore_channels
   @status_table :isthmus_meshcore_status
+  @registry Isthmus.Networks.MeshCore.Registry
+  @max_channel_slots 8
   @max_channel_slots 8
   # Per-slot wait; overall deadline must cover worst case (all slots timing out).
   @channel_step_ms 1_000
@@ -31,11 +37,50 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
   end
 
-  def health do
-    case :ets.lookup(@status_table, :health) do
-      [{:health, health}] -> health
-      _ -> safe_call(:health, %{status: :unknown, last_error: "companion not ready"}, 500)
+  def via(port) when is_binary(port) do
+    {:via, Registry, {@registry, port}}
+  end
+
+  def health(port \\ nil) do
+    key = ets_port_key(port)
+
+    case :ets.lookup(@status_table, {:health, key}) do
+      [{_, health}] ->
+        health
+
+      _ ->
+        safe_call(:health, %{status: :unknown, last_error: "companion not ready"}, 500, port)
     end
+  end
+
+  @doc "Health maps for every companion process (primary + extras)."
+  def list_health do
+    @status_table
+    |> :ets.match({{:health, :_}, :"$1"})
+    |> List.flatten()
+    |> Enum.filter(&is_map/1)
+    |> Enum.sort_by(&{if(&1[:primary?], do: 0, else: 1), &1[:port] || ""})
+  rescue
+    _ ->
+      [health()]
+  end
+
+  @doc "Serial port owned by the companion with this public key, if any."
+  def port_for_radio_id(nil), do: nil
+
+  def port_for_radio_id(id) when is_binary(id) do
+    want = id |> String.trim() |> String.downcase()
+
+    list_health()
+    |> Enum.find_value(fn health ->
+      have =
+        case health[:self_ref] do
+          ref when is_binary(ref) -> String.downcase(ref)
+          _ -> nil
+        end
+
+      if have == want and is_binary(health[:port]) and health[:port] != "", do: health[:port]
+    end)
   end
 
   def list_contacts, do: safe_call(:list_contacts, [], 1_000)
@@ -43,49 +88,49 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def sync_contacts, do: GenServer.cast(__MODULE__, :sync_contacts)
 
   @doc "Non-blocking read of cached channel slots (ETS)."
-  def list_channels do
-    case :ets.lookup(@channels_table, :all) do
-      [{:all, channels}] when is_list(channels) -> channels
+  def list_channels(port \\ nil) do
+    case :ets.lookup(@channels_table, {:all, ets_port_key(port)}) do
+      [{_, channels}] when is_list(channels) -> channels
       _ -> []
     end
+  rescue
+    _ -> []
   end
 
-  def get_channel(idx) when is_integer(idx) do
-    case :ets.lookup(@channels_table, idx) do
-      [{^idx, channel}] -> channel
+  def get_channel(idx, port \\ nil) when is_integer(idx) do
+    case :ets.lookup(@channels_table, {idx, ets_port_key(port)}) do
+      [{_, channel}] -> channel
       _ -> nil
     end
+  rescue
+    _ -> nil
   end
 
-  def sync_channels, do: GenServer.cast(__MODULE__, :sync_channels)
+  def sync_channels(port \\ nil), do: GenServer.cast(target(port), :sync_channels)
 
   @doc """
   Request a channel sync. Returns immediately; result broadcast on
-  PubSub topic `\"meshcore:channels\"` as `{:meshcore_channels, channels}`.
+  PubSub topic `"meshcore:channels"` as `{:meshcore_channels, channels, port}`.
   """
-  def sync_channels_async, do: GenServer.cast(__MODULE__, :sync_channels)
+  def sync_channels_async(port \\ nil), do: GenServer.cast(target(port), :sync_channels)
 
-  def sync_channels_now(timeout \\ 8_000) do
-    safe_call(:sync_channels_now, {:error, :timeout}, timeout)
+  def sync_channels_now(timeout \\ 8_000, port \\ nil) do
+    safe_call(:sync_channels_now, {:error, :timeout}, timeout, port)
   end
 
-  def set_channel(idx, name, secret \\ nil) when is_integer(idx) and is_binary(name) do
-    safe_call({:set_channel, idx, name, secret}, {:error, :timeout}, 3_000)
+  def set_channel(idx, name, secret \\ nil, port \\ nil)
+      when is_integer(idx) and is_binary(name) do
+    safe_call({:set_channel, idx, name, secret}, {:error, :timeout}, 3_000, port)
   end
 
   @doc "Empty a private slot on the companion (blank name, zero secret)."
-  def clear_channel(idx) when is_integer(idx) and idx in 1..7 do
-    set_channel(idx, "", <<0::128>>)
+  def clear_channel(idx, port \\ nil) when is_integer(idx) and idx in 1..7 do
+    set_channel(idx, "", <<0::128>>, port)
   end
 
-  def send_channel_text(idx, text) when is_integer(idx) and is_binary(text) do
-    safe_call({:send_channel_text, idx, text}, {:error, :timeout}, 3_000)
-  end
-
-  defp safe_call(request, fallback, timeout) do
-    GenServer.call(__MODULE__, request, timeout)
-  catch
-    :exit, _ -> fallback
+  def send_channel_text(idx, text, port \\ nil)
+      when is_integer(idx) and is_binary(text) do
+    safe_call({:send_channel_text, idx, text}, {:error, :timeout}, 3_000, port)
   end
 
   def send_raw(payload, opts \\ %{}) when is_binary(payload) do
@@ -101,50 +146,83 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   @doc "Apply radio frequency / bandwidth / SF / CR on the companion."
-  def set_radio_params(params) when is_map(params) do
+  def set_radio_params(params, port \\ nil) when is_map(params) do
     with {:ok, normalized} <- RadioParams.cast(params) do
-      safe_call({:set_radio_params, normalized}, {:error, :timeout}, 5_000)
+      safe_call({:set_radio_params, normalized}, {:error, :timeout}, 5_000, port)
     end
   end
 
   @doc "Apply TX power (dBm) on the companion."
-  def set_tx_power(tx) when is_integer(tx) and tx in 0..22 do
-    safe_call({:set_tx_power, tx}, {:error, :timeout}, 5_000)
+  def set_tx_power(tx, port \\ nil)
+
+  def set_tx_power(tx, port) when is_integer(tx) and tx in 0..22 do
+    safe_call({:set_tx_power, tx}, {:error, :timeout}, 5_000, port)
   end
 
-  def set_tx_power(tx) when is_integer(tx), do: {:error, "TX power must be 0–22 dBm"}
+  def set_tx_power(tx, _port) when is_integer(tx), do: {:error, "TX power must be 0–22 dBm"}
 
-  def set_tx_power(tx) when is_binary(tx) do
+  def set_tx_power(tx, port) when is_binary(tx) do
     case Integer.parse(String.trim(tx)) do
-      {n, _} -> set_tx_power(n)
+      {n, _} -> set_tx_power(n, port)
       :error -> {:error, "invalid tx power"}
     end
   end
 
   @doc "Re-resolve the serial port (after Discover.refresh) and reconnect."
-  def reconnect, do: GenServer.cast(__MODULE__, :reconnect)
+  def reconnect(port \\ nil), do: GenServer.cast(target(port), :reconnect)
+
+  defp target(nil), do: __MODULE__
+  defp target(:primary), do: __MODULE__
+
+  defp target(port) when is_binary(port) do
+    primary = Discover.resolve_port(:companion)
+    if port == primary, do: __MODULE__, else: via(port)
+  end
+
+  defp ets_port_key(nil), do: Discover.resolve_port(:companion) || :none
+  defp ets_port_key(:primary), do: Discover.resolve_port(:companion) || :none
+  defp ets_port_key(port) when is_binary(port) and port != "", do: port
+  defp ets_port_key(_), do: :none
+
+  defp safe_call(request, fallback, timeout, port \\ nil) do
+    GenServer.call(target(port), request, timeout)
+  catch
+    :exit, _ -> fallback
+  end
 
   @impl true
   def init(opts) do
+    Process.flag(:trap_exit, true)
     ensure_ets(@channels_table)
     ensure_ets(@status_table)
-    :ets.insert(@channels_table, {:all, []})
+
+    fixed_port? = Keyword.get(opts, :fixed_port, false)
 
     transport_kind =
-      case System.get_env("ISTHMUS_MESHCORE_TRANSPORT", "usb") |> String.downcase() do
-        "ble" -> :ble
-        _ -> :usb
+      cond do
+        fixed_port? ->
+          :usb
+
+        true ->
+          case System.get_env("ISTHMUS_MESHCORE_TRANSPORT", "usb") |> String.downcase() do
+            "ble" -> :ble
+            _ -> :usb
+          end
       end
 
     port =
       Keyword.get(opts, :port) ||
         if(transport_kind == :usb, do: Discover.resolve_port(:companion), else: nil)
 
+    key = if is_binary(port) and port != "", do: port, else: :none
+    :ets.insert(@channels_table, {{:all, key}, []})
+
     state = %{
       transport_kind: transport_kind,
       transport_mod: if(transport_kind == :ble, do: BLETransport, else: USBTransport),
       transport: nil,
       port: port,
+      fixed_port: fixed_port?,
       ble_address: System.get_env("ISTHMUS_MESHCORE_BLE_ADDRESS"),
       buffer: <<>>,
       status: :disconnected,
@@ -354,6 +432,20 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   @impl true
+  def handle_cast(:reconnect, %{fixed_port: true} = state) do
+    if state.transport, do: state.transport_mod.close(state.transport)
+
+    state = %{
+      state
+      | transport: nil,
+        buffer: <<>>,
+        status: :disconnected,
+        self_info: nil
+    }
+
+    {:noreply, maybe_connect(state)}
+  end
+
   def handle_cast(:reconnect, state) do
     if state.transport, do: state.transport_mod.close(state.transport)
 
@@ -469,6 +561,25 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
+  @impl true
+  def terminate(_reason, state) do
+    if state.transport, do: state.transport_mod.close(state.transport)
+    if state[:fixed_port], do: drop_ets(state)
+    :ok
+  end
+
+  defp drop_ets(state) do
+    key = ets_port_key(state.port)
+    :ets.delete(@status_table, {:health, key})
+    :ets.delete(@channels_table, {:all, key})
+
+    Enum.each(0..(@max_channel_slots - 1), fn idx ->
+      :ets.delete(@channels_table, {idx, key})
+    end)
+  rescue
+    _ -> :ok
+  end
+
   defp apply_frame(frame, state) do
     case Protocol.parse_frame(frame) do
       {:raw_data, payload} ->
@@ -541,7 +652,10 @@ defmodule Isthmus.Networks.MeshCore.Companion do
            %{
              channel_idx: msg.channel_idx,
              body: sanitize_text(msg.body),
-             meta: Map.take(msg, [:timestamp, :txt_type, :snr])
+             meta:
+               Map.merge(Map.take(msg, [:timestamp, :txt_type, :snr]), %{
+                 radio_id: get_in(state, [:self_info, :public_key])
+               })
            }}
         )
 
@@ -815,7 +929,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       Phoenix.PubSub.broadcast(
         Isthmus.PubSub,
         "meshcore:channels",
-        {:meshcore_channels, channels}
+        {:meshcore_channels, channels, state.port}
       )
     end
 
@@ -900,10 +1014,11 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   defp persist_channels(state) do
     channels = cached_channel_list(state)
-    :ets.insert(@channels_table, {:all, channels})
+    key = ets_port_key(state.port)
+    :ets.insert(@channels_table, {{:all, key}, channels})
 
     Enum.each(channels, fn ch ->
-      :ets.insert(@channels_table, {ch.index, ch})
+      :ets.insert(@channels_table, {{ch.index, key}, ch})
     end)
 
     state
@@ -928,12 +1043,13 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       sf: info[:sf],
       cr: info[:cr],
       tx_power: info[:tx_power],
-      max_tx_power: info[:max_tx_power]
+      max_tx_power: info[:max_tx_power],
+      primary?: state[:fixed_port] != true
     }
   end
 
   defp publish_status(state) do
-    :ets.insert(@status_table, {:health, health_map(state)})
+    :ets.insert(@status_table, {{:health, ets_port_key(state.port)}, health_map(state)})
     state
   end
 

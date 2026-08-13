@@ -94,8 +94,10 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     first_present([env.("ISTHMUS_MESHTASTIC_PORT"), role(:meshtastic, name)])
   end
 
-  @doc "All Meshtastic companion ports (env pin first, then every detected radio)."
-  def resolve_ports(:meshtastic, opts \\ []) do
+  @doc "All companion ports (env pin first, then every detected radio)."
+  def resolve_ports(role, opts \\ [])
+
+  def resolve_ports(:meshtastic, opts) do
     env = Keyword.get(opts, :env, &System.get_env/1)
     name = Keyword.get(opts, :discover, __MODULE__)
     env_port = blank_to_nil(env.("ISTHMUS_MESHTASTIC_PORT"))
@@ -115,6 +117,26 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     |> Enum.uniq()
   end
 
+  def resolve_ports(:companion, opts) do
+    env = Keyword.get(opts, :env, &System.get_env/1)
+    name = Keyword.get(opts, :discover, __MODULE__)
+    env_port = blank_to_nil(env.("ISTHMUS_MESHCORE_PORT"))
+    roles = roles(name)
+
+    detected =
+      (roles[:companion_ports] || [])
+      |> Enum.map(fn
+        %{path: path} -> path
+        path when is_binary(path) -> path
+        _ -> nil
+      end)
+      |> Enum.filter(&(is_binary(&1) and &1 != ""))
+
+    [env_port, role(:companion, name) | detected]
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+  end
+
   @doc "Re-scan serial ports and notify link processes to reconnect."
   def refresh(name \\ __MODULE__) do
     case safe_call(name, :refresh, {:error, :not_started}, 15_000) do
@@ -125,6 +147,29 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       other ->
         other
     end
+  end
+
+  @doc false
+  def keep_still_attached(roles, previous, present)
+      when is_map(roles) and is_map(previous) do
+    present = MapSet.new(present)
+
+    roles =
+      roles
+      |> restore_singletons(previous, present)
+      |> restore_port_list(:meshtastic_ports, previous, present)
+      |> restore_port_list(:companion_ports, previous, present)
+      |> restore_port_list(:rnode_ports, previous, present)
+
+    roles
+    |> Map.put(
+      :meshtastic_ports,
+      merge_port_list(roles[:meshtastic_ports], roles[:meshtastic])
+    )
+    |> Map.put(
+      :companion_ports,
+      merge_port_list(roles[:companion_ports], roles[:companion])
+    )
   end
 
   @doc """
@@ -155,50 +200,51 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     Logger.info("MeshCore discover: probing #{length(ports)} port(s)")
 
     {detected, claimed} =
-      Enum.reduce(ports, {%{meshtastic_ports: [], rnode_ports: []}, MapSet.new()}, fn port,
-                                                                                      {acc,
-                                                                                       claimed} ->
-        cond do
-          MapSet.member?(claimed, port.path) ->
-            {acc, claimed}
+      Enum.reduce(
+        ports,
+        {%{meshtastic_ports: [], rnode_ports: [], companion_ports: []}, MapSet.new()},
+        fn port, {acc, claimed} ->
+          cond do
+            MapSet.member?(claimed, port.path) ->
+              {acc, claimed}
 
-          env_companion == port.path or env_cli == port.path or env_packet == port.path ->
-            {acc, MapSet.put(claimed, port.path)}
+            env_companion == port.path or env_cli == port.path or env_packet == port.path ->
+              {acc, MapSet.put(claimed, port.path)}
 
-          env_meshtastic == port.path ->
-            entry = %{path: port.path, source: :env, detail: port}
-            {add_meshtastic(acc, entry), MapSet.put(claimed, port.path)}
+            env_meshtastic == port.path ->
+              entry = %{path: port.path, source: :env, detail: port}
+              {add_meshtastic(acc, entry), MapSet.put(claimed, port.path)}
 
-          true ->
-            case probe.(port.path, port) do
-              :companion ->
-                Logger.info("MeshCore discover: #{port.path} -> companion")
+            true ->
+              case probe.(port.path, port) do
+                :companion ->
+                  Logger.info("MeshCore discover: #{port.path} -> companion")
+                  entry = %{path: port.path, source: :detected, detail: port}
+                  {add_companion(acc, entry), MapSet.put(claimed, port.path)}
 
-                {Map.put(acc, :companion, %{path: port.path, source: :detected, detail: port}),
-                 MapSet.put(claimed, port.path)}
+                :bridge_cli ->
+                  Logger.info("MeshCore discover: #{port.path} -> bridge_cli")
 
-              :bridge_cli ->
-                Logger.info("MeshCore discover: #{port.path} -> bridge_cli")
+                  {Map.put(acc, :bridge_cli, %{path: port.path, source: :detected, detail: port}),
+                   MapSet.put(claimed, port.path)}
 
-                {Map.put(acc, :bridge_cli, %{path: port.path, source: :detected, detail: port}),
-                 MapSet.put(claimed, port.path)}
+                :meshtastic ->
+                  Logger.info("MeshCore discover: #{port.path} -> meshtastic")
+                  entry = %{path: port.path, source: :detected, detail: port}
+                  {add_meshtastic(acc, entry), MapSet.put(claimed, port.path)}
 
-              :meshtastic ->
-                Logger.info("MeshCore discover: #{port.path} -> meshtastic")
-                entry = %{path: port.path, source: :detected, detail: port}
-                {add_meshtastic(acc, entry), MapSet.put(claimed, port.path)}
+                :rnode ->
+                  Logger.info("MeshCore discover: #{port.path} -> rnode")
+                  entry = %{path: port.path, source: :detected, detail: port}
+                  {add_rnode(acc, entry), MapSet.put(claimed, port.path)}
 
-              :rnode ->
-                Logger.info("MeshCore discover: #{port.path} -> rnode")
-                entry = %{path: port.path, source: :detected, detail: port}
-                {add_rnode(acc, entry), MapSet.put(claimed, port.path)}
-
-              other ->
-                Logger.debug("MeshCore discover: #{port.path} -> #{inspect(other)}")
-                {acc, claimed}
-            end
+                other ->
+                  Logger.debug("MeshCore discover: #{port.path} -> #{inspect(other)}")
+                  {acc, claimed}
+              end
+          end
         end
-      end)
+      )
 
     roles =
       %{}
@@ -210,7 +256,11 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     roles
     |> Map.put(
       :meshtastic_ports,
-      merge_meshtastic_ports(detected[:meshtastic_ports], roles[:meshtastic])
+      merge_port_list(detected[:meshtastic_ports], roles[:meshtastic])
+    )
+    |> Map.put(
+      :companion_ports,
+      merge_port_list(detected[:companion_ports], roles[:companion])
     )
     |> Map.put(:rnode_ports, detected[:rnode_ports] || [])
     |> maybe_primary_rnode(detected[:rnode])
@@ -250,7 +300,16 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   def handle_call(:roles, _from, state), do: {:reply, state.roles, state}
 
   def handle_call(:refresh, _from, state) do
-    roles = scan(state.opts)
+    claimed = claimed_serial_paths()
+    present = current_serial_paths(state.opts)
+    skip = Enum.uniq(List.wrap(Keyword.get(state.opts, :skip_paths, [])) ++ claimed)
+
+    roles =
+      state.opts
+      |> Keyword.put(:skip_paths, skip)
+      |> scan()
+      |> keep_still_attached(state.roles, present)
+
     publish(state, roles)
     Logger.info("MeshCore discover refresh: #{format_roles(roles)}")
     {:reply, {:ok, roles}, %{state | roles: roles}}
@@ -542,6 +601,15 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       end
     end
 
+    if Code.ensure_loaded?(Isthmus.Networks.MeshCore.Supervisor) and
+         function_exported?(Isthmus.Networks.MeshCore.Supervisor, :sync, 0) do
+      try do
+        Isthmus.Networks.MeshCore.Supervisor.sync()
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
     if Code.ensure_loaded?(Isthmus.Networks.Meshtastic.Supervisor) and
          function_exported?(Isthmus.Networks.Meshtastic.Supervisor, :sync, 0) do
       try do
@@ -569,6 +637,13 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     formatted =
       roles
       |> Enum.flat_map(fn
+        {:companion_ports, list} when is_list(list) ->
+          Enum.map(list, fn
+            %{path: path, source: source} -> "companion=#{path}(#{source})"
+            _ -> nil
+          end)
+          |> Enum.reject(&is_nil/1)
+
         {:meshtastic_ports, list} when is_list(list) ->
           Enum.map(list, fn
             %{path: path, source: source} -> "meshtastic=#{path}(#{source})"
@@ -583,6 +658,9 @@ defmodule Isthmus.Networks.MeshCore.Discover do
           end)
           |> Enum.reject(&is_nil/1)
 
+        {:companion, _} ->
+          []
+
         {:rnode, _} ->
           []
 
@@ -594,6 +672,14 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       end)
 
     if formatted == [], do: "(none)", else: Enum.join(formatted, " ")
+  end
+
+  defp add_companion(acc, entry) do
+    acc
+    |> Map.update(:companion_ports, [entry], fn list ->
+      if Enum.any?(list, &(&1.path == entry.path)), do: list, else: list ++ [entry]
+    end)
+    |> Map.put_new(:companion, entry)
   end
 
   defp add_meshtastic(acc, entry) do
@@ -615,7 +701,126 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   defp maybe_primary_rnode(roles, nil), do: roles
   defp maybe_primary_rnode(roles, entry), do: Map.put_new(roles, :rnode, entry)
 
-  defp merge_meshtastic_ports(detected, primary) do
+  @singleton_roles [:companion, :bridge_cli, :bridge_packet, :meshtastic, :rnode]
+
+  defp restore_singletons(roles, previous, present) do
+    Enum.reduce(@singleton_roles, roles, fn role, acc ->
+      prev = previous[role]
+
+      cond do
+        match?(%{path: _}, acc[role]) ->
+          acc
+
+        is_map(prev) and is_binary(prev[:path]) and MapSet.member?(present, prev.path) ->
+          Map.put(acc, role, prev)
+
+        true ->
+          acc
+      end
+    end)
+  end
+
+  defp restore_port_list(roles, key, previous, present) do
+    current = roles[key] || []
+
+    current_paths =
+      MapSet.new(current, fn
+        %{path: path} -> path
+        path when is_binary(path) -> path
+        _ -> nil
+      end)
+
+    extra =
+      (previous[key] || [])
+      |> Enum.filter(fn
+        %{path: path} ->
+          is_binary(path) and MapSet.member?(present, path) and
+            not MapSet.member?(current_paths, path)
+
+        _ ->
+          false
+      end)
+
+    Map.put(roles, key, current ++ extra)
+  end
+
+  defp current_serial_paths(opts) do
+    enumerate = Keyword.get(opts, :enumerate, &Circuits.UART.enumerate/0)
+    env = Keyword.get(opts, :env, &System.get_env/1)
+
+    Ports.list(enumerate: enumerate, configured: env.("ISTHMUS_MESHCORE_PORT"))
+    |> Enum.map(& &1.path)
+  end
+
+  defp claimed_serial_paths do
+    meshcore =
+      try do
+        Isthmus.Networks.MeshCore.Companion.list_health()
+        |> Enum.map(fn
+          %{status: status, port: port}
+          when status in [:online, :live, :running] and is_binary(port) and port != "" ->
+            port
+
+          _ ->
+            nil
+        end)
+      catch
+        :exit, _ ->
+          Enum.map(
+            [
+              Isthmus.Networks.MeshCore.Companion,
+              Isthmus.Networks.MeshCore.BridgeCLI,
+              Isthmus.Networks.MeshCore.BridgeLink
+            ],
+            &online_adapter_port/1
+          )
+      end
+
+    meshcore_links =
+      Enum.map(
+        [
+          Isthmus.Networks.MeshCore.BridgeCLI,
+          Isthmus.Networks.MeshCore.BridgeLink
+        ],
+        &online_adapter_port/1
+      )
+
+    meshtastic =
+      try do
+        Isthmus.Networks.Meshtastic.Companion.list_health()
+        |> Enum.map(fn
+          %{status: status, port: port}
+          when status in [:online, :live, :running] and is_binary(port) and port != "" ->
+            port
+
+          _ ->
+            nil
+        end)
+      catch
+        :exit, _ -> []
+      end
+
+    Enum.uniq(
+      Enum.filter(meshcore ++ meshcore_links ++ meshtastic, &(is_binary(&1) and &1 != ""))
+    )
+  end
+
+  defp online_adapter_port(mod) do
+    try do
+      case mod.health() do
+        %{status: status, port: port}
+        when status in [:online, :live, :running] and is_binary(port) and port != "" ->
+          port
+
+        _ ->
+          nil
+      end
+    catch
+      :exit, _ -> nil
+    end
+  end
+
+  defp merge_port_list(detected, primary) do
     list = detected || []
 
     case primary do

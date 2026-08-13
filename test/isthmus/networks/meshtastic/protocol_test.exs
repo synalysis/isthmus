@@ -180,6 +180,80 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     assert Protobuf.varint(admin, 5) == 5
   end
 
+  test "get_config_admin_frame requests DEVICE_CONFIG" do
+    frame = Protocol.get_config_admin_frame(0xABCD, :device)
+    assert <<0x94, 0xC3, len::big-16, payload::binary-size(len)>> = frame
+    fields = Protobuf.decode(payload)
+    packet = Protocol.parse_mesh_packet(Protobuf.bytes(fields, 1))
+    admin = Protobuf.decode(packet.payload)
+    # AdminMessage.get_config_request = 5, ConfigType.DEVICE_CONFIG = 0
+    assert Protobuf.varint(admin, 5) == 0
+  end
+
+  test "device config roundtrip preserves role and tzdef" do
+    device = %{
+      Protocol.empty_device_config()
+      | role: 2,
+        node_info_broadcast_secs: 900,
+        tzdef: "EST5EDT,M3.2.0,M11.1.0"
+    }
+
+    parsed = Protocol.parse_device_config(Protocol.encode_device_config(device))
+    assert parsed.role == 2
+    assert parsed.node_info_broadcast_secs == 900
+    assert parsed.tzdef == "EST5EDT,M3.2.0,M11.1.0"
+  end
+
+  test "set_config_device_admin_frame wraps DeviceConfig" do
+    passkey = <<9, 8, 7>>
+    device = %{Protocol.empty_device_config() | tzdef: "UTC0"}
+    frame = Protocol.set_config_device_admin_frame(0x1234, device, passkey)
+    assert <<0x94, 0xC3, len::big-16, payload::binary-size(len)>> = frame
+    fields = Protobuf.decode(payload)
+    packet = Protocol.parse_mesh_packet(Protobuf.bytes(fields, 1))
+    admin = Protobuf.decode(packet.payload)
+    assert Protobuf.bytes(admin, 101) == passkey
+    config = Protobuf.decode(Protobuf.bytes(admin, 34))
+    parsed = Protocol.parse_device_config(Protobuf.bytes(config, 1))
+    assert parsed.tzdef == "UTC0"
+  end
+
+  test "get_config_admin_frame requests POSITION_CONFIG" do
+    frame = Protocol.get_config_admin_frame(0xABCD, :position)
+    assert <<0x94, 0xC3, len::big-16, payload::binary-size(len)>> = frame
+    fields = Protobuf.decode(payload)
+    packet = Protocol.parse_mesh_packet(Protobuf.bytes(fields, 1))
+    admin = Protobuf.decode(packet.payload)
+    # AdminMessage.get_config_request = 5, ConfigType.POSITION_CONFIG = 1
+    assert Protobuf.varint(admin, 5) == 1
+  end
+
+  test "set_time_admin_frame encodes Unix seconds and session passkey" do
+    passkey = <<1, 2, 3, 4>>
+    unix = 1_700_000_000
+    frame = Protocol.set_time_admin_frame(0x1234, unix, passkey)
+    assert <<0x94, 0xC3, len::big-16, payload::binary-size(len)>> = frame
+    fields = Protobuf.decode(payload)
+    packet = Protocol.parse_mesh_packet(Protobuf.bytes(fields, 1))
+    assert packet.portnum == Protocol.port_admin()
+    admin = Protobuf.decode(packet.payload)
+    # AdminMessage.set_time_only = 43 (fixed32)
+    assert Protobuf.field(admin, 43) == unix
+    assert Protobuf.bytes(admin, 101) == passkey
+  end
+
+  test "parse_position reads Position.time" do
+    payload = Protobuf.encode_fixed32_field(4, 1_700_000_123)
+    assert Protocol.parse_position(payload).time == 1_700_000_123
+    assert Protocol.parse_position(<<>>).time == 0
+  end
+
+  test "parse_telemetry_time reads Telemetry.time" do
+    payload = Protobuf.encode_fixed32_field(1, 1_700_000_456)
+    assert Protocol.parse_telemetry_time(payload) == 1_700_000_456
+    assert Protocol.parse_telemetry_time(<<>>) == 0
+  end
+
   test "parse_node_id accepts bang-prefixed hex" do
     assert {:ok, 0xDEADBEEF} = Protocol.parse_node_id("!deadbeef")
     assert {:ok, 0xDEADBEEF} = Protocol.parse_node_id("DEADBEEF")
@@ -195,7 +269,9 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     inner =
       Protobuf.encode_varint_field(1, 0xAABBCCDD) <>
         Protobuf.encode_message_field(2, user) <>
-        Protobuf.encode_float_field(4, 8.5)
+        Protobuf.encode_float_field(4, 8.5) <>
+        Protobuf.encode_fixed32_field(5, 1_700_000_001) <>
+        Protobuf.encode_message_field(3, Protobuf.encode_fixed32_field(4, 1_700_000_002))
 
     payload = Protobuf.encode_message_field(4, inner)
     assert {:node_info, info} = Protocol.parse_frame(payload)
@@ -204,6 +280,8 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     assert info.name == "Trail Node"
     assert info.short_name == "TN"
     assert_in_delta info.snr, 8.5, 0.01
+    assert info.last_heard == 1_700_000_001
+    assert info.position_time == 1_700_000_002
   end
 
   test "parse_user prefers long_name then short_name" do

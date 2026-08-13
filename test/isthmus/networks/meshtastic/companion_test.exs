@@ -22,6 +22,10 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
              })
   end
 
+  test "set_time fails when disconnected" do
+    assert {:error, :not_connected} = Companion.set_time()
+  end
+
   test "clear_channel fails when disconnected" do
     assert {:error, :not_connected} = Companion.clear_channel(2)
   end

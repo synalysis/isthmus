@@ -16,11 +16,18 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
       :timer.send_interval(5_000, self(), :refresh)
     end
 
+    timezone =
+      if connected?(socket) do
+        get_connect_params(socket)["timezone"]
+      end
+
     {:ok,
      socket
      |> assign(:page_title, "Meshtastic")
      |> assign(:channel_syncing, false)
      |> assign(:lora_applying, false)
+     |> assign(:time_syncing_port, nil)
+     |> assign(:timezone, timezone)
      |> assign(:lora_modal_port, nil)
      |> assign(:channel_invite, nil)
      |> assign(:lora_form, to_form(RadioConfig.empty_form_params(), as: :lora))
@@ -57,27 +64,55 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
      |> refresh()}
   end
 
+  def handle_event("sync_time", %{"port" => port}, socket) do
+    socket = assign(socket, :time_syncing_port, port)
+
+    case Companion.set_time(port, tz: socket.assigns[:timezone]) do
+      :ok ->
+        {:noreply,
+         socket
+         |> assign(:time_syncing_port, nil)
+         |> put_flash(:info, "Synced time and timezone to the radio.")
+         |> refresh()}
+
+      {:error, :not_connected} ->
+        {:noreply,
+         socket
+         |> assign(:time_syncing_port, nil)
+         |> put_flash(:error, "Meshtastic companion offline.")}
+
+      {:error, :busy} ->
+        {:noreply,
+         socket
+         |> assign(:time_syncing_port, nil)
+         |> put_flash(:error, "Radio is busy with another admin request — try again in a moment.")}
+
+      {:error, :timeout} ->
+        {:noreply,
+         socket
+         |> assign(:time_syncing_port, nil)
+         |> put_flash(:error, "Timed out setting radio time.")}
+
+      {:error, :not_ready} ->
+        {:noreply,
+         socket
+         |> assign(:time_syncing_port, nil)
+         |> put_flash(:error, "Radio identity unknown — wait for node id, then retry.")}
+
+      {:error, reason} ->
+        {:noreply,
+         socket
+         |> assign(:time_syncing_port, nil)
+         |> put_flash(:error, "Could not set radio time: #{inspect(reason)}")}
+    end
+  end
+
   def handle_event("rescan_devices", _params, socket) do
     case Discover.refresh() do
-      {:ok, roles} ->
-        n = length(roles[:meshtastic_ports] || [])
+      {:ok, _roles} ->
+        socket = refresh(socket)
 
-        msg =
-          cond do
-            n > 1 ->
-              "Rescanned — #{n} Meshtastic companions."
-
-            n == 1 ->
-              "Rescanned — Meshtastic companion on #{hd(roles[:meshtastic_ports]).path}."
-
-            match?(%{path: _}, roles[:meshtastic]) ->
-              "Rescanned — Meshtastic companion on #{roles[:meshtastic].path}."
-
-            true ->
-              "Rescanned — no Meshtastic companion found."
-          end
-
-        {:noreply, socket |> put_flash(:info, msg) |> refresh()}
+        {:noreply, put_flash(socket, :info, meshtastic_rescan_flash(socket.assigns.devices))}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Rescan failed: #{inspect(reason)}")}
@@ -100,19 +135,24 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   def handle_event("assign_slot_group", params, socket) do
     idx = parse_slot(params["channel_idx"])
     port = blank_port(params["port"])
+    radio_id = Registrations.normalize_radio_id(params["radio_id"])
     group_id = String.trim(to_string(params["group_id"] || ""))
-    current = linked_group(socket.assigns.groups, idx)
+    current = linked_group(socket.assigns.groups, idx, radio_id)
 
     cond do
       idx not in 1..7 ->
         {:noreply,
          put_flash(socket, :error, "Pick a secondary slot (1–7). Slot 0 is PRIMARY / frequency.")}
 
+      is_nil(radio_id) ->
+        {:noreply,
+         put_flash(socket, :error, "Radio identity unknown — wait for node id, then retry.")}
+
       group_id == "" and is_nil(current) ->
         {:noreply, socket}
 
       group_id == "" ->
-        unlink_slot(socket, current, port)
+        unlink_slot(socket, current, port, radio_id)
 
       current && current.id == group_id ->
         {:noreply, socket}
@@ -121,7 +161,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
         provision_channel(socket, Registrations.get_group!(group_id), idx: idx, port: port)
 
       true ->
-        link_occupied_slot(socket, group_id, idx, port, current)
+        link_occupied_slot(socket, group_id, idx, port, radio_id, current)
     end
   end
 
@@ -166,10 +206,11 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     end
   end
 
-  def handle_event("show_channel_invite", %{"id" => id}, socket) do
-    group = Registrations.get_group!(id)
+  def handle_event("show_channel_invite", params, socket) do
+    group = Registrations.get_group!(params["id"])
+    radio_id = Registrations.normalize_radio_id(params["radio_id"])
 
-    case Registrations.meshtastic_channel_invite(group) do
+    case Registrations.meshtastic_channel_invite(group, device_id: radio_id) do
       {:ok, invite} ->
         {:noreply, assign(socket, :channel_invite, invite)}
 
@@ -206,14 +247,45 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp refresh(socket) do
+    devices = Devices.inventory()
+    claim_meshtastic_slots(devices)
+
     groups = Registrations.list_all()
     bridges = Enum.filter(groups, &(&1.kind == "bridge" and &1.status == "active"))
 
     socket
     |> assign(:groups, groups)
     |> assign(:bridges, bridges)
-    |> assign(:devices, Devices.inventory())
+    |> assign(:devices, devices)
     |> assign(:lora_applying, socket.assigns[:lora_applying] || false)
+  end
+
+  defp claim_meshtastic_slots(devices) do
+    Enum.each(devices, fn device ->
+      radio_id = meshtastic_radio_id(device)
+      occupied = occupied_slot_indexes(device.channels)
+
+      if radio_id && occupied != [] do
+        Registrations.claim_unscoped_radio_channel(:meshtastic, radio_id, occupied)
+      end
+    end)
+  end
+
+  defp meshtastic_rescan_flash(devices) when is_list(devices) do
+    found = Enum.filter(devices, &(is_binary(&1.path) and &1.path != ""))
+    online = Enum.filter(found, & &1.active?)
+    shown = if online == [], do: found, else: online
+
+    case shown do
+      [] ->
+        "Rescanned — no Meshtastic companion found."
+
+      [one] ->
+        "Rescanned — Meshtastic companion on #{one.path}."
+
+      many ->
+        "Rescanned — #{length(many)} Meshtastic companions."
+    end
   end
 
   defp provision_channel(socket, group, opts) do
@@ -232,7 +304,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
          |> assign(:channel_invite, nil)
          |> put_flash(
            :info,
-           "Private Meshtastic channel created on slot #{linked.meshtastic_channel_idx}."
+           "Private Meshtastic channel created on slot #{Keyword.get(opts, :idx) || linked.meshtastic_channel_idx}."
          )
          |> refresh()}
 
@@ -246,7 +318,8 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
         {:noreply, put_flash(socket, :error, "That slot is already configured on the radio.")}
 
       {:error, :already_linked} ->
-        {:noreply, put_flash(socket, :error, "This group already has a Meshtastic channel.")}
+        {:noreply,
+         put_flash(socket, :error, "This group already has a Meshtastic channel on this radio.")}
 
       {:error, :timeout} ->
         {:noreply, put_flash(socket, :error, "Timed out talking to Meshtastic companion.")}
@@ -256,17 +329,24 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     end
   end
 
-  defp unlink_slot(socket, group, port) do
-    idx = group.meshtastic_channel_idx
+  defp unlink_slot(socket, group, port, radio_id) do
+    link = Registrations.radio_link(group, "meshtastic", radio_id)
+    idx = link && link.channel_idx
 
     case clear_radio_slot(idx, port) do
       :ok ->
-        finish_unlink(socket, group, "Channel unlinked and slot #{idx} cleared on the radio.")
+        finish_unlink(
+          socket,
+          group,
+          radio_id,
+          "Channel unlinked and slot #{idx} cleared on the radio."
+        )
 
       {:error, :not_connected} ->
         finish_unlink(
           socket,
           group,
+          radio_id,
           "Channel unlinked. Companion offline — the radio slot was not cleared."
         )
 
@@ -285,35 +365,29 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
 
   defp clear_radio_slot(_, _), do: :ok
 
-  defp finish_unlink(socket, group, message) do
-    case Registrations.unlink_meshtastic_channel(group) do
-      {:ok, _} ->
-        {:noreply,
-         socket
-         |> assign(:channel_invite, nil)
-         |> put_flash(:info, message)
-         |> refresh()}
+  defp finish_unlink(socket, group, radio_id, message) do
+    {:ok, _} = Registrations.unlink_meshtastic_channel(group, device_id: radio_id)
 
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Unlink failed: #{inspect(reason)}")}
-    end
+    {:noreply,
+     socket
+     |> assign(:channel_invite, nil)
+     |> put_flash(:info, message)
+     |> refresh()}
   end
 
-  defp link_occupied_slot(socket, group_id, idx, port, current) do
+  defp link_occupied_slot(socket, group_id, idx, port, radio_id, current) do
     group = Registrations.get_group!(group_id)
 
-    with :ok <- maybe_unlink(current),
+    with :ok <- maybe_unlink(current, radio_id),
          %{psk_hex: psk} when is_binary(psk) and psk != "" <- Companion.get_channel(idx, port),
-         {:ok, _} <- Registrations.link_meshtastic_channel(group, idx, psk) do
+         {:ok, _} <-
+           Registrations.link_meshtastic_channel(group, idx, psk, device_id: radio_id) do
       {:noreply,
        socket
        |> assign(:channel_invite, nil)
        |> put_flash(:info, "Channel #{idx} linked to #{group.display_name}.")
        |> refresh()}
     else
-      {:error, :unlink_failed, reason} ->
-        {:noreply, put_flash(socket, :error, "Unlink failed: #{inspect(reason)}")}
-
       nil ->
         {:noreply, put_flash(socket, :error, "Channel not in companion cache — sync first.")}
 
@@ -332,13 +406,11 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     end
   end
 
-  defp maybe_unlink(nil), do: :ok
+  defp maybe_unlink(nil, _), do: :ok
 
-  defp maybe_unlink(group) do
-    case Registrations.unlink_meshtastic_channel(group) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, :unlink_failed, reason}
-    end
+  defp maybe_unlink(group, radio_id) do
+    {:ok, _} = Registrations.unlink_meshtastic_channel(group, device_id: radio_id)
+    :ok
   end
 
   defp parse_slot(idx) when is_integer(idx), do: idx
@@ -364,6 +436,21 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
 
   defp device_dom_id(device), do: "meshtastic-device-#{port_dom_key(device.path || device.id)}"
 
+  defp radio_clock_at(health) when is_map(health) do
+    case health[:device_time_now] || health[:device_time] do
+      unix when is_integer(unix) and unix > 0 ->
+        case DateTime.from_unix(unix) do
+          {:ok, dt} -> dt
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  defp radio_clock_at(_), do: nil
+
   defp empty_channel?(channels, idx) do
     case Enum.find(channels, &(&1.index == idx)) do
       %{empty?: true} -> true
@@ -382,14 +469,31 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     end
   end
 
-  defp linked_group(groups, idx) do
-    Enum.find(groups, &(&1.status == "active" and &1.meshtastic_channel_idx == idx))
+  defp linked_group(_groups, _idx, nil), do: nil
+
+  defp linked_group(groups, idx, radio_id) do
+    Enum.find(groups, fn g ->
+      g.status == "active" and
+        match?(%{channel_idx: ^idx}, Registrations.radio_link(g, "meshtastic", radio_id))
+    end)
   end
 
-  defp assignable_groups(bridges, idx) do
+  defp assignable_groups(bridges, idx, radio_id) do
     Enum.filter(bridges, fn g ->
-      is_nil(g.meshtastic_channel_idx) or g.meshtastic_channel_idx == idx
+      case Registrations.radio_link(g, "meshtastic", radio_id) do
+        nil -> true
+        %{channel_idx: ^idx} -> true
+        _ -> false
+      end
     end)
+  end
+
+  defp meshtastic_radio_id(device) when is_map(device) do
+    Registrations.normalize_radio_id(get_in(device, [:health, :node_id]) || device[:node_id])
+  end
+
+  defp occupied_slot_indexes(channels) when is_list(channels) do
+    for ch <- channels, ch.index in 1..7, ch.empty? != true, do: ch.index
   end
 
   defp role_label(1), do: "primary"
@@ -412,7 +516,9 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
               <h2 class="text-lg font-medium">Connected radios</h2>
               <p class="text-xs opacity-70 mt-1">
                 Each USB companion is listed separately. Slot 0 is PRIMARY
-                (frequency); assign a group to slots 1–7. <strong class="font-medium">Invite</strong>
+                (frequency); assign a group to slots 1–7 on <strong class="font-medium">this</strong>
+                radio’s node id — the same slot on another radio is a different channel.
+                <strong class="font-medium">Invite</strong>
                 shows the PSK / QR for another Meshtastic device.
               </p>
             </div>
@@ -472,6 +578,23 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
                       else: "custom LoRa"
                     )} · hops {health[:hop_limit] || 3}
                   </p>
+                  <p
+                    :if={device.active?}
+                    class="text-sm opacity-70"
+                    id={"radio-clock-#{device_dom_id(device)}"}
+                  >
+                    <%= if clock = radio_clock_at(health) do %>
+                      Radio clock (local)
+                      <.local_time
+                        id={"mt-clock-#{device_dom_id(device)}"}
+                        at={clock}
+                        class="whitespace-nowrap text-sm font-mono"
+                      />
+                      <span :if={health[:time_synced_at]} class="opacity-60"> · synced</span>
+                    <% else %>
+                      Radio clock unset
+                    <% end %>
+                  </p>
                   <p :if={health[:last_error] && not device.active?} class="text-sm text-warning">
                     {health.last_error}
                   </p>
@@ -486,6 +609,19 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
                     disabled={is_nil(device.path)}
                   >
                     Reconnect
+                  </button>
+                  <button
+                    class={[
+                      "btn btn-outline btn-sm",
+                      @time_syncing_port == device.path && "loading"
+                    ]}
+                    id={"sync-time-#{device_dom_id(device)}"}
+                    phx-click="sync_time"
+                    phx-value-port={device.path}
+                    type="button"
+                    disabled={not device.active? or @time_syncing_port == device.path}
+                  >
+                    {if(@time_syncing_port == device.path, do: "Syncing time…", else: "Sync time")}
                   </button>
                   <button
                     class={["btn btn-outline btn-sm", @channel_syncing && "loading"]}
@@ -545,8 +681,9 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
                           <%= if ch.index == 0 do %>
                             <span class="opacity-60">—</span>
                           <% else %>
-                            <% linked = linked_group(@groups, ch.index) %>
-                            <% choices = assignable_groups(@bridges, ch.index) %>
+                            <% radio_id = meshtastic_radio_id(device) %>
+                            <% linked = linked_group(@groups, ch.index, radio_id) %>
+                            <% choices = assignable_groups(@bridges, ch.index, radio_id) %>
                             <%= if @bridges == [] do %>
                               <p class="text-xs opacity-70">
                                 <.link navigate={~p"/admin/registrations"} class="link">
@@ -555,40 +692,48 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
                                 first.
                               </p>
                             <% else %>
-                              <div class="flex flex-wrap items-center gap-2">
-                                <form
-                                  id={"slot-group-form-#{device_dom_id(device)}-#{ch.index}"}
-                                  phx-change="assign_slot_group"
-                                  class="min-w-0 grow"
-                                >
-                                  <input type="hidden" name="port" value={device.path} />
-                                  <input type="hidden" name="channel_idx" value={ch.index} />
-                                  <select
-                                    id={"slot-group-#{device_dom_id(device)}-#{ch.index}"}
-                                    name="group_id"
-                                    class="select select-bordered select-sm w-full max-w-xs"
+                              <%= if is_nil(radio_id) do %>
+                                <p class="text-xs opacity-70">
+                                  Waiting for this radio’s node id.
+                                </p>
+                              <% else %>
+                                <div class="flex flex-wrap items-center gap-2">
+                                  <form
+                                    id={"slot-group-form-#{device_dom_id(device)}-#{ch.index}"}
+                                    phx-change="assign_slot_group"
+                                    class="min-w-0 grow"
                                   >
-                                    <option value="" selected={is_nil(linked)}>—</option>
-                                    <option
-                                      :for={g <- choices}
-                                      value={g.id}
-                                      selected={linked && linked.id == g.id}
+                                    <input type="hidden" name="port" value={device.path} />
+                                    <input type="hidden" name="radio_id" value={radio_id} />
+                                    <input type="hidden" name="channel_idx" value={ch.index} />
+                                    <select
+                                      id={"slot-group-#{device_dom_id(device)}-#{ch.index}"}
+                                      name="group_id"
+                                      class="select select-bordered select-sm w-full max-w-xs"
                                     >
-                                      {g.display_name}
-                                    </option>
-                                  </select>
-                                </form>
-                                <button
-                                  :if={linked}
-                                  type="button"
-                                  class="btn btn-outline btn-xs shrink-0"
-                                  id={"show-invite-#{device_dom_id(device)}-#{ch.index}"}
-                                  phx-click="show_channel_invite"
-                                  phx-value-id={linked.id}
-                                >
-                                  Invite
-                                </button>
-                              </div>
+                                      <option value="" selected={is_nil(linked)}>—</option>
+                                      <option
+                                        :for={g <- choices}
+                                        value={g.id}
+                                        selected={linked && linked.id == g.id}
+                                      >
+                                        {g.display_name}
+                                      </option>
+                                    </select>
+                                  </form>
+                                  <button
+                                    :if={linked}
+                                    type="button"
+                                    class="btn btn-outline btn-xs shrink-0"
+                                    id={"show-invite-#{device_dom_id(device)}-#{ch.index}"}
+                                    phx-click="show_channel_invite"
+                                    phx-value-id={linked.id}
+                                    phx-value-radio_id={radio_id}
+                                  >
+                                    Invite
+                                  </button>
+                                </div>
+                              <% end %>
                             <% end %>
                           <% end %>
                         </td>

@@ -15,8 +15,10 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
   @max_frame 1024
 
   @port_text 1
+  @port_position 3
   @port_admin 6
   @port_nodeinfo 4
+  @port_telemetry 67
 
   @broadcast 0xFFFFFFFF
 
@@ -24,12 +26,17 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
   @role_primary 1
   @role_secondary 2
 
-  # AdminMessage.ConfigType.LORA_CONFIG
+  # AdminMessage.ConfigType — DEVICE_CONFIG is 0 (proto3 default). We still
+  # encode the field so the get is not dropped.
+  @config_device 0
+  @config_position 1
   @config_lora 5
 
   def port_text, do: @port_text
+  def port_position, do: @port_position
   def port_admin, do: @port_admin
   def port_nodeinfo, do: @port_nodeinfo
+  def port_telemetry, do: @port_telemetry
   def broadcast, do: @broadcast
   def role_disabled, do: @role_disabled
   def role_primary, do: @role_primary
@@ -99,10 +106,35 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
     admin_packet_frame(node_num, admin, false)
   end
 
+  def get_config_admin_frame(node_num, :device)
+      when is_integer(node_num) do
+    admin = Protobuf.encode_varint_field(5, @config_device)
+    admin_packet_frame(node_num, admin, true)
+  end
+
+  def get_config_admin_frame(node_num, :position)
+      when is_integer(node_num) do
+    admin = Protobuf.encode_varint_field(5, @config_position)
+    admin_packet_frame(node_num, admin, true)
+  end
+
   def get_config_admin_frame(node_num, :lora)
       when is_integer(node_num) do
     admin = Protobuf.encode_varint_field(5, @config_lora)
     admin_packet_frame(node_num, admin, true)
+  end
+
+  @doc """
+  AdminMessage.set_time_only = 43 (`fixed32` Unix seconds, quality Net).
+  Session passkey (field 101) comes from a prior get_config / get_channel.
+  """
+  def set_time_admin_frame(node_num, unix, session_passkey)
+      when is_integer(node_num) and is_integer(unix) and unix >= 0 do
+    admin =
+      Protobuf.encode_bytes_field(101, session_passkey || <<>>) <>
+        Protobuf.encode_fixed32_field(43, unix)
+
+    admin_packet_frame(node_num, admin, false)
   end
 
   def set_config_lora_admin_frame(node_num, lora, session_passkey)
@@ -115,6 +147,71 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
 
     admin_packet_frame(node_num, admin, false)
   end
+
+  def set_config_device_admin_frame(node_num, device, session_passkey)
+      when is_integer(node_num) and is_map(device) do
+    config = Protobuf.encode_message_field(1, encode_device_config(device))
+
+    admin =
+      Protobuf.encode_bytes_field(101, session_passkey || <<>>) <>
+        Protobuf.encode_message_field(34, config)
+
+    admin_packet_frame(node_num, admin, false)
+  end
+
+  def empty_device_config do
+    %{
+      role: 0,
+      button_gpio: 0,
+      buzzer_gpio: 0,
+      rebroadcast_mode: 0,
+      node_info_broadcast_secs: 0,
+      double_tap_as_button_press: false,
+      disable_triple_click: false,
+      tzdef: "",
+      led_heartbeat_disabled: false,
+      buzzer_mode: 0
+    }
+  end
+
+  def encode_device_config(device) when is_map(device) do
+    role = Map.get(device, :role, 0)
+    button = Map.get(device, :button_gpio, 0)
+    buzzer = Map.get(device, :buzzer_gpio, 0)
+    rebroadcast = Map.get(device, :rebroadcast_mode, 0)
+    nodeinfo = Map.get(device, :node_info_broadcast_secs, 0)
+    buzzer_mode = Map.get(device, :buzzer_mode, 0)
+
+    maybe_varint(1, role, role != 0) <>
+      maybe_varint(4, button, button != 0) <>
+      maybe_varint(5, buzzer, buzzer != 0) <>
+      maybe_varint(6, rebroadcast, rebroadcast != 0) <>
+      maybe_varint(7, nodeinfo, nodeinfo != 0) <>
+      maybe_bool(8, Map.get(device, :double_tap_as_button_press, false)) <>
+      maybe_bool(10, Map.get(device, :disable_triple_click, false)) <>
+      Protobuf.encode_bytes_field(11, Map.get(device, :tzdef, "") || "") <>
+      maybe_bool(12, Map.get(device, :led_heartbeat_disabled, false)) <>
+      maybe_varint(13, buzzer_mode, buzzer_mode != 0)
+  end
+
+  def parse_device_config(bin) when is_binary(bin) do
+    fields = Protobuf.decode(bin)
+
+    %{
+      role: Protobuf.varint(fields, 1, 0),
+      button_gpio: Protobuf.varint(fields, 4, 0),
+      buzzer_gpio: Protobuf.varint(fields, 5, 0),
+      rebroadcast_mode: Protobuf.varint(fields, 6, 0),
+      node_info_broadcast_secs: Protobuf.varint(fields, 7, 0),
+      double_tap_as_button_press: Protobuf.varint(fields, 8, 0) == 1,
+      disable_triple_click: Protobuf.varint(fields, 10, 0) == 1,
+      tzdef: Protobuf.bytes(fields, 11, ""),
+      led_heartbeat_disabled: Protobuf.varint(fields, 12, 0) == 1,
+      buzzer_mode: Protobuf.varint(fields, 13, 0)
+    }
+  end
+
+  def parse_device_config(_), do: empty_device_config()
 
   def reboot_admin_frame(node_num, seconds \\ 2)
       when is_integer(node_num) and is_integer(seconds) and seconds > 0 do
@@ -173,6 +270,9 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
     fields = Protobuf.decode(bin)
 
     cond do
+      device = Protobuf.bytes(fields, 1) ->
+        {:device, parse_device_config(device)}
+
       lora = Protobuf.bytes(fields, 6) ->
         {:lora, parse_lora_config(lora)}
 
@@ -343,15 +443,37 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
     user = parse_user(Protobuf.bytes(fields, 2, <<>>))
     node_id = if num > 0, do: node_id_hex(num), else: user.node_id
 
+    position = Protobuf.nested(fields, 3)
+
     %{
       num: num,
       node_id: node_id,
       name: user.name,
       short_name: user.short_name,
       user: user,
-      snr: Protobuf.as_float32(Protobuf.field(fields, 4) || 0)
+      snr: Protobuf.as_float32(Protobuf.field(fields, 4) || 0),
+      last_heard: protobuf_unix(Protobuf.field(fields, 5)),
+      position_time: protobuf_unix(Protobuf.field(position, 4))
     }
   end
+
+  @doc "Position.time = 4 (`fixed32` seconds since 1970)."
+  def parse_position(bin) when is_binary(bin) do
+    fields = Protobuf.decode(bin)
+    %{time: protobuf_unix(Protobuf.field(fields, 4))}
+  end
+
+  def parse_position(_), do: %{time: 0}
+
+  @doc "Telemetry.time = 1 (`fixed32` seconds since 1970)."
+  def parse_telemetry_time(bin) when is_binary(bin) do
+    protobuf_unix(Protobuf.field(Protobuf.decode(bin), 1))
+  end
+
+  def parse_telemetry_time(_), do: 0
+
+  defp protobuf_unix(n) when is_integer(n) and n > 0, do: n
+  defp protobuf_unix(_), do: 0
 
   def parse_user(bin) when is_binary(bin) do
     fields = Protobuf.decode(bin)

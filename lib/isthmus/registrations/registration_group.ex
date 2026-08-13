@@ -13,10 +13,13 @@ defmodule Isthmus.Registrations.RegistrationGroup do
     field :kind, :string, default: "registration"
     field :meshcore_channel_idx, :integer
     field :meshcore_channel_secret_enc, :binary
+    field :meshcore_channel_device_id, :string
     field :meshtastic_channel_idx, :integer
     field :meshtastic_channel_psk_enc, :binary
+    field :meshtastic_channel_device_id, :string
 
     has_many :legs, Isthmus.Registrations.IdentityLeg
+    has_many :radio_channels, Isthmus.Registrations.GroupRadioChannel
 
     timestamps(type: :utc_datetime)
   end
@@ -31,8 +34,10 @@ defmodule Isthmus.Registrations.RegistrationGroup do
       :kind,
       :meshcore_channel_idx,
       :meshcore_channel_secret_enc,
+      :meshcore_channel_device_id,
       :meshtastic_channel_idx,
-      :meshtastic_channel_psk_enc
+      :meshtastic_channel_psk_enc,
+      :meshtastic_channel_device_id
     ])
     |> update_change(:owner_pubkey_hex, &String.downcase/1)
     |> validate_required([:owner_pubkey_hex, :status, :created_by, :kind])

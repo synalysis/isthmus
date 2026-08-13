@@ -307,7 +307,7 @@ defmodule Isthmus.Gateway.Translator do
 
     cond do
       not is_nil(channel_idx) ->
-        {Registrations.find_by_meshcore_channel(channel_idx), msg}
+        {Registrations.find_by_meshcore_channel(channel_idx, radio_id_from_meta(msg)), msg}
 
       true ->
         resolve_meshcore_dm_group(msg)
@@ -357,7 +357,7 @@ defmodule Isthmus.Gateway.Translator do
 
     cond do
       not is_nil(channel_idx) ->
-        {Registrations.find_by_meshtastic_channel(channel_idx), msg}
+        {Registrations.find_by_meshtastic_channel(channel_idx, radio_id_from_meta(msg)), msg}
 
       is_binary(msg.from_ref) ->
         {Registrations.find_by_leg(:meshtastic, msg.from_ref) || single_active_group(), msg}
@@ -384,6 +384,23 @@ defmodule Isthmus.Gateway.Translator do
   end
 
   defp meshtastic_channel_idx(_), do: nil
+
+  defp radio_id_from_meta(%Message{meta: meta}) when is_map(meta) do
+    meta["radio_id"] || meta[:radio_id]
+  end
+
+  defp radio_id_from_meta(_), do: nil
+
+  defp echo_on_same_radio_channel?(idx, ingress, group_radio, msg_radio) do
+    ingress == idx and
+      (is_nil(Registrations.normalize_radio_id(group_radio)) or
+         same_radio_id?(group_radio, msg_radio))
+  end
+
+  defp same_radio_id?(a, b) do
+    Registrations.normalize_radio_id(a) != nil and
+      Registrations.normalize_radio_id(a) == Registrations.normalize_radio_id(b)
+  end
 
   # Leading "@name" or "@deadbeef" used to disambiguate MeshCore ingress.
   defp extract_address_token(body) when is_binary(body) do
@@ -727,33 +744,81 @@ defmodule Isthmus.Gateway.Translator do
     "[via Isthmus/#{msg.from_network}] #{msg.body}"
   end
 
-  defp maybe_deliver_meshcore_channel(%{meshcore_channel_idx: idx} = group, msg)
-       when not is_nil(idx) do
-    ingress = meshcore_channel_idx(msg)
+  defp maybe_deliver_meshcore_channel(group, msg) do
+    src_idx = meshcore_channel_idx(msg)
+    src_radio = radio_id_from_meta(msg)
 
-    if ingress == idx do
-      :ok
-    else
-      deliver_meshcore_channel(group, msg, idx)
+    for link <- channel_links(group, "meshcore") do
+      if echo_on_same_radio_channel?(
+           link.channel_idx,
+           src_idx,
+           link.device_id,
+           src_radio
+         ) do
+        :ok
+      else
+        deliver_meshcore_channel(group, msg, link)
+      end
+    end
+
+    :ok
+  end
+
+  defp maybe_deliver_meshtastic_channel(group, msg) do
+    src_idx = meshtastic_channel_idx(msg)
+    src_radio = radio_id_from_meta(msg)
+
+    for link <- channel_links(group, "meshtastic") do
+      if echo_on_same_radio_channel?(
+           link.channel_idx,
+           src_idx,
+           link.device_id,
+           src_radio
+         ) do
+        :ok
+      else
+        deliver_meshtastic_channel(group, msg, link)
+      end
+    end
+
+    :ok
+  end
+
+  defp channel_links(group, network) do
+    case Registrations.radio_links(group, network) do
+      [_ | _] = links ->
+        links
+
+      [] ->
+        fallback_channel_link(group, network)
     end
   end
 
-  defp maybe_deliver_meshcore_channel(_, _), do: :ok
+  defp fallback_channel_link(group, "meshcore") do
+    case group do
+      %{meshcore_channel_idx: idx} when not is_nil(idx) ->
+        [%{channel_idx: idx, device_id: group.meshcore_channel_device_id}]
 
-  defp maybe_deliver_meshtastic_channel(%{meshtastic_channel_idx: idx} = group, msg)
-       when not is_nil(idx) do
-    ingress = meshtastic_channel_idx(msg)
-
-    if ingress == idx do
-      :ok
-    else
-      deliver_meshtastic_channel(group, msg, idx)
+      _ ->
+        []
     end
   end
 
-  defp maybe_deliver_meshtastic_channel(_, _), do: :ok
+  defp fallback_channel_link(group, "meshtastic") do
+    case group do
+      %{meshtastic_channel_idx: idx} when not is_nil(idx) ->
+        [%{channel_idx: idx, device_id: group.meshtastic_channel_device_id}]
 
-  defp deliver_meshtastic_channel(group, msg, idx) do
+      _ ->
+        []
+    end
+  end
+
+  defp fallback_channel_link(_, _), do: []
+
+  defp deliver_meshtastic_channel(group, msg, link) do
+    idx = link.channel_idx
+
     case Policy.allow_gateway_direction?(msg.from_network, "meshtastic") do
       {:drop, reason} ->
         Gateway.log(
@@ -774,7 +839,12 @@ defmodule Isthmus.Gateway.Translator do
             )
 
           :ok ->
-            result = MeshtasticCompanion.send_channel_text(idx, prefix_body(msg))
+            result =
+              MeshtasticCompanion.send_channel_text(
+                idx,
+                prefix_body(msg),
+                MeshtasticCompanion.port_for_radio_id(link.device_id)
+              )
 
             {status, error} =
               case result do
@@ -793,7 +863,10 @@ defmodule Isthmus.Gateway.Translator do
     end
   end
 
-  defp deliver_meshcore_channel(group, msg, idx) do
+  defp deliver_meshcore_channel(group, msg, link) do
+    idx = link.channel_idx
+    port = Companion.port_for_radio_id(link.device_id)
+
     case Policy.allow_gateway_direction?(msg.from_network, "meshcore") do
       {:drop, reason} ->
         Gateway.log(
@@ -814,7 +887,7 @@ defmodule Isthmus.Gateway.Translator do
             )
 
           :ok ->
-            result = Companion.send_channel_text(idx, prefix_body(msg))
+            result = Companion.send_channel_text(idx, prefix_body(msg), port)
 
             {status, error} =
               case result do

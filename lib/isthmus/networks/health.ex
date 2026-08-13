@@ -18,7 +18,7 @@ defmodule Isthmus.Networks.Health do
 
   @doc "Normalize one adapter health map."
   def normalize(network, health) when is_map(health) do
-    status = normalize_status(health[:status] || health["status"])
+    status = overall_status(network, health)
     last_error = health[:last_error] || health["last_error"]
     {issue, fix} = diagnose(network, status, health, last_error)
     severity = severity(status, issue)
@@ -73,18 +73,39 @@ defmodule Isthmus.Networks.Health do
   defp severity(:down, _), do: :error
   defp severity(_, _), do: :warn
 
-  defp summary(:meshcore, :online, health) do
-    port = health[:port] || health["port"]
-    transport = health[:transport] || health["transport"] || :usb
-    "Companion online (#{transport}#{if port, do: " · #{port}", else: ""})"
+  defp overall_status(:meshcore, health), do: meshcore_overall_status(health)
+
+  defp overall_status(_network, health) do
+    normalize_status(health[:status] || health["status"])
   end
 
-  defp summary(:meshcore, :disabled, _), do: "Companion disabled — no port configured"
+  defp meshcore_overall_status(health) do
+    companion = normalize_status(health[:status] || health["status"])
+    bridge = nested_status(health[:bridge])
+    cli = nested_status(health[:bridge_cli])
 
-  defp summary(:meshcore, status, health) do
-    port = health[:port] || health["port"]
-    "Companion #{status}" <> if(port, do: " · #{port}", else: "")
+    cond do
+      up?(companion) -> companion
+      up?(bridge) -> :online
+      up?(cli) -> :online
+      bad?(companion) -> companion
+      bad?(bridge) -> bridge
+      bad?(cli) -> cli
+      true -> companion
+    end
   end
+
+  defp nested_status(nil), do: :disabled
+  defp nested_status(map) when is_map(map), do: normalize_status(map[:status] || map["status"])
+  defp nested_status(_), do: :unknown
+
+  defp up?(status) when status in [:online, :live, :running], do: true
+  defp up?(_), do: false
+
+  defp bad?(status) when status in [:error, :disconnected, :crashed, :down], do: true
+  defp bad?(_), do: false
+
+  defp summary(:meshcore, _status, health), do: meshcore_summary(health)
 
   defp summary(:nostr, status, health) do
     online = health[:online] || 0
@@ -131,13 +152,60 @@ defmodule Isthmus.Networks.Health do
 
   defp summary(_net, status, _), do: "Status: #{status}"
 
+  defp meshcore_summary(health) do
+    companion = companion_summary_part(normalize_status(health[:status] || health["status"]))
+    island = island_summary_part(island_status(health))
+
+    cond do
+      companion && island -> "#{companion} · #{island}"
+      companion -> companion
+      island -> island
+      true -> "No MeshCore radios detected"
+    end
+  end
+
+  defp companion_summary_part(:online), do: "Companion radio connected"
+  defp companion_summary_part(status) when status in [:disabled, :unknown, :not_started], do: nil
+  defp companion_summary_part(status), do: "Companion radio #{status_word(status)}"
+
+  defp island_summary_part(status) when status in [:online, :live, :running],
+    do: "Island tunnel radio connected"
+
+  defp island_summary_part(status) when status in [:disabled, :unknown, :not_started], do: nil
+  defp island_summary_part(status), do: "Island tunnel radio #{status_word(status)}"
+
+  defp island_status(health) do
+    bridge = nested_status(health[:bridge])
+    cli = nested_status(health[:bridge_cli])
+
+    cond do
+      up?(bridge) -> bridge
+      up?(cli) -> cli
+      bad?(bridge) -> bridge
+      bad?(cli) -> cli
+      true -> bridge
+    end
+  end
+
+  defp status_word(:error), do: "error"
+  defp status_word(:disconnected), do: "offline"
+  defp status_word(:crashed), do: "error"
+  defp status_word(:down), do: "offline"
+  defp status_word(other), do: other |> to_string()
+
   defp diagnose(:meshcore, _status, health, last_error) do
     port = health[:port] || health["port"] || System.get_env("ISTHMUS_MESHCORE_PORT")
     err = to_string(last_error || "")
+    companion = normalize_status(health[:status] || health["status"])
+    island_up? = up?(nested_status(health[:bridge])) or up?(nested_status(health[:bridge_cli]))
 
     cond do
-      health[:status] in [:disabled, "disabled"] ->
-        {nil, "Set ISTHMUS_MESHCORE_PORT (try `mix isthmus.meshcore.ports`) and restart."}
+      companion == :disabled and island_up? ->
+        {nil, nil}
+
+      companion == :disabled ->
+        {nil,
+         "Plug in a MeshCore companion or island tunnel radio, then Rescan on Admin → MeshCore."}
 
       String.contains?(err, "eacces") or String.contains?(err, ":eacces") ->
         {"Permission denied opening #{port || "serial port"}",
@@ -257,9 +325,16 @@ defmodule Isthmus.Networks.Health do
   defp diagnose(_, _, _, _), do: {nil, nil}
 
   defp meta_lines(:meshcore, health) do
+    bridge = health[:bridge] || %{}
+    cli = health[:bridge_cli] || %{}
+
     [
+      {"Companion", health[:port]},
+      {"Island tunnel", bridge[:port] || bridge["port"]},
+      {"Island CLI", cli[:port] || cli["port"]},
+      {"Frames in", bridge[:frames_in] || bridge["frames_in"]},
+      {"Frames out", bridge[:frames_out] || bridge["frames_out"]},
       {"Transport", health[:transport]},
-      {"Port", health[:port]},
       {"BLE", health[:ble_address]}
     ]
     |> Enum.reject(fn {_k, v} -> is_nil(v) or v == "" end)
@@ -294,6 +369,7 @@ defmodule Isthmus.Networks.Health do
       {"Node", health[:node_id] && "!#{health[:node_id]}"},
       {"Region", health[:status] in [:online, "online"] && health[:region_label]},
       {"Modem", health[:status] in [:online, "online"] && health[:modem_preset_label]},
+      {"Clock", health[:status] in [:online, "online"] && format_unix_clock(health)},
       {"Sent", health[:sent]},
       {"Received", health[:received]}
     ]
@@ -307,6 +383,19 @@ defmodule Isthmus.Networks.Health do
       Isthmus.Networks.Reticulum.InterfaceSocket.health()[:path]
     catch
       :exit, _ -> nil
+    end
+  end
+
+  defp format_unix_clock(health) when is_map(health) do
+    case health[:device_time_now] || health[:device_time] do
+      unix when is_integer(unix) and unix > 0 ->
+        case DateTime.from_unix(unix) do
+          {:ok, dt} -> Calendar.strftime(dt, "%Y-%m-%d %H:%M:%S UTC")
+          _ -> nil
+        end
+
+      _ ->
+        nil
     end
   end
 end

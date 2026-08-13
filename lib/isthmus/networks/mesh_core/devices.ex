@@ -3,12 +3,12 @@ defmodule Isthmus.Networks.MeshCore.Devices do
   Groups USB ports into logical MeshCore **devices** with stable ids.
 
   A bridge repeater's two CDC interfaces share a USB serial number and become
-  one device with roles `:bridge_cli` + `:bridge_packet`. A companion is its
-  own device. The inventory is UI-oriented; runtime still uses the singleton
-  Companion / BridgeCLI / BridgeLink processes today, matched onto devices by
-  port path.
+  one device with roles `:bridge_cli` + `:bridge_packet`. Each companion USB
+  port is its own device. Runtime health comes from the named primary companion
+  plus extras started by `MeshCore.Supervisor`.
   """
 
+  alias Isthmus.Networks.MeshCore.Companion
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.MeshCore.Ports
 
@@ -36,12 +36,28 @@ defmodule Isthmus.Networks.MeshCore.Devices do
   Options (tests):
   * `:ports` — override `Ports.list/0`
   * `:roles` — override `Discover.roles/0`
-  * `:companion` / `:bridge_cli` / `:bridge_link` — health maps
+  * `:companion` / `:companions` / `:bridge_cli` / `:bridge_link` — health maps
   """
   def inventory(opts \\ []) do
     ports = Keyword.get_lazy(opts, :ports, &Ports.list/0)
     roles = Keyword.get_lazy(opts, :roles, &Discover.roles/0)
-    companion = Keyword.get(opts, :companion, %{})
+
+    companions =
+      cond do
+        Keyword.has_key?(opts, :companions) ->
+          Keyword.get(opts, :companions) || []
+
+        Keyword.has_key?(opts, :companion) ->
+          List.wrap(Keyword.get(opts, :companion))
+
+        true ->
+          try do
+            Companion.list_health()
+          catch
+            :exit, _ -> []
+          end
+      end
+
     bridge_cli = Keyword.get(opts, :bridge_cli, %{})
     bridge_link = Keyword.get(opts, :bridge_link, %{})
 
@@ -60,7 +76,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
     by_path
     |> Map.values()
     |> group_ports()
-    |> Enum.map(&build_device(&1, path_roles, companion, bridge_cli, bridge_link))
+    |> Enum.map(&build_device(&1, path_roles, companions, bridge_cli, bridge_link))
     |> Enum.sort_by(&device_sort/1)
   end
 
@@ -126,12 +142,26 @@ defmodule Isthmus.Networks.MeshCore.Devices do
   end
 
   defp role_paths(roles) when is_map(roles) do
-    for {role, %{path: path}} <- roles,
-        role in [:companion, :bridge_cli, :bridge_packet],
-        is_binary(path) and path != "",
-        into: %{},
-        do: {path, normalize_role(role)}
+    singletons =
+      for {role, %{path: path}} <- roles,
+          role in [:companion, :bridge_cli, :bridge_packet],
+          is_binary(path) and path != "",
+          into: %{},
+          do: {path, normalize_role(role)}
+
+    extras =
+      for entry <- roles[:companion_ports] || [],
+          path = companion_entry_path(entry),
+          is_binary(path) and path != "",
+          into: %{},
+          do: {path, :companion}
+
+    Map.merge(extras, singletons)
   end
+
+  defp companion_entry_path(%{path: path}), do: path
+  defp companion_entry_path(path) when is_binary(path), do: path
+  defp companion_entry_path(_), do: nil
 
   defp normalize_role(role) when is_atom(role), do: role
   defp normalize_role("companion"), do: :companion
@@ -141,12 +171,13 @@ defmodule Isthmus.Networks.MeshCore.Devices do
 
   defp synthetic_port(path, roles) do
     detail =
-      roles
-      |> Map.values()
-      |> Enum.find_value(fn
-        %{path: ^path, detail: %{} = d} -> d
-        _ -> nil
-      end)
+      companion_detail(roles, path) ||
+        roles
+        |> Map.values()
+        |> Enum.find_value(fn
+          %{path: ^path, detail: %{} = d} -> d
+          _ -> nil
+        end)
 
     %{
       name: Path.basename(path),
@@ -159,6 +190,13 @@ defmodule Isthmus.Networks.MeshCore.Devices do
       vendor_id: detail[:vendor_id],
       product_id: detail[:product_id]
     }
+  end
+
+  defp companion_detail(roles, path) do
+    Enum.find_value(roles[:companion_ports] || [], fn
+      %{path: ^path, detail: %{} = d} -> d
+      _ -> nil
+    end)
   end
 
   # Group CDC siblings that share a USB serial; otherwise one port = one device.
@@ -174,7 +212,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
     grouped ++ Enum.map(without, &[&1])
   end
 
-  defp build_device(port_group, path_roles, companion, bridge_cli, bridge_link) do
+  defp build_device(port_group, path_roles, companions, bridge_cli, bridge_link) do
     primary = List.first(port_group) || %{}
 
     ports =
@@ -195,6 +233,8 @@ defmodule Isthmus.Networks.MeshCore.Devices do
         bridge_cli? or bridge_packet? -> :bridge_repeater
         true -> :unknown
       end
+
+    companion = Enum.find(List.wrap(companions), &match_port?(&1, ports))
 
     identity =
       if companion? and match_port?(companion, ports) do
@@ -224,9 +264,14 @@ defmodule Isthmus.Networks.MeshCore.Devices do
         bridge_cli? and match_port?(bridge_cli, ports) and bridge_cli[:status] == :online,
       active_bridge_link?:
         bridge_packet? and match_port?(bridge_link, ports) and bridge_link[:status] == :online,
-      companion_health: if(companion? and match_port?(companion, ports), do: companion),
+      companion_health: if(companion? and is_map(companion), do: companion),
       bridge_cli_health: if(bridge_cli? and match_port?(bridge_cli, ports), do: bridge_cli),
-      bridge_link_health: if(bridge_packet? and match_port?(bridge_link, ports), do: bridge_link)
+      bridge_link_health: if(bridge_packet? and match_port?(bridge_link, ports), do: bridge_link),
+      channels:
+        if(is_map(companion) and is_binary(companion[:port]),
+          do: Companion.list_channels(companion[:port]),
+          else: []
+        )
     }
   end
 

@@ -19,6 +19,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.Meshtastic.Protocol
   alias Isthmus.Networks.Meshtastic.RadioConfig
+  alias Isthmus.Networks.Meshtastic.Timezone
 
   @channels_table :isthmus_meshtastic_channels
   @status_table :isthmus_meshtastic_status
@@ -43,7 +44,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
     case :ets.lookup(@status_table, {:health, key}) do
       [{_, health}] ->
-        health
+        with_estimated_clock(health)
 
       _ ->
         safe_call(port, :health, %{status: :unknown, last_error: "companion not ready"}, 500)
@@ -56,10 +57,32 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     |> :ets.match({{:health, :_}, :"$1"})
     |> List.flatten()
     |> Enum.filter(&is_map/1)
+    |> Enum.map(&with_estimated_clock/1)
     |> Enum.sort_by(&{if(&1[:primary?], do: 0, else: 1), &1[:port] || ""})
   rescue
     _ ->
       [health()]
+  end
+
+  @doc "Serial port owned by the companion with this node id, if any."
+  def port_for_radio_id(nil), do: nil
+
+  def port_for_radio_id(id) when is_binary(id) do
+    want = id |> String.trim() |> String.trim_leading("!") |> String.downcase()
+
+    list_health()
+    |> Enum.find_value(fn health ->
+      have =
+        case health[:node_id] do
+          node when is_binary(node) ->
+            node |> String.trim_leading("!") |> String.downcase()
+
+          _ ->
+            nil
+        end
+
+      if have == want and is_binary(health[:port]) and health[:port] != "", do: health[:port]
+    end)
   end
 
   @doc "Non-blocking read of cached channel slots (ETS)."
@@ -107,6 +130,19 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   def set_lora_config(params, port \\ nil) when is_map(params) do
     safe_call(port, {:set_lora_config, params}, {:error, :timeout}, 8_000)
+  end
+
+  @doc """
+  Write host Unix time to the radio (`AdminMessage.set_time_only`) and set
+  `DeviceConfig.tzdef` so the OLED shows local time.
+
+  `opts` may include `:tz` (IANA name or POSIX string). Defaults to the host
+  timezone (`ISTHMUS_MESHTASTIC_TZ`, `TZ`, or `/etc/localtime`).
+  """
+  def set_time(port \\ nil, opts \\ [])
+
+  def set_time(port, opts) when is_list(opts) do
+    safe_call(port, {:set_time, Keyword.get(opts, :tz)}, {:error, :timeout}, 8_000)
   end
 
   def send_channel_text(idx, text, port \\ nil)
@@ -171,6 +207,10 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
       my_info: nil,
       config_nonce: nil,
       admin: nil,
+      device_time: nil,
+      device_time_at: nil,
+      time_synced_at: nil,
+      device_tzdef: nil,
       sent: 0,
       received: 0
     }
@@ -182,7 +222,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   @impl true
   def handle_call(:health, _from, state) do
-    health = health_map(state)
+    health = with_estimated_clock(health_map(state))
     publish_status(state)
     {:reply, health, state}
   end
@@ -274,6 +314,10 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     {:reply, {:error, :not_connected}, state}
   end
 
+  def handle_call({:set_time, tz}, from, state) do
+    begin_time_sync(from, state, tz)
+  end
+
   @impl true
   def handle_cast(:sync_channels, %{status: :online, uart: uart} = state) when not is_nil(uart) do
     {:noreply, request_config(state)}
@@ -322,8 +366,8 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     {:noreply, reconnect_state(state)}
   end
 
-  def handle_info(:admin_timeout, %{admin: %{from: from, timer: _}} = state) do
-    GenServer.reply(from, {:error, :timeout})
+  def handle_info(:admin_timeout, %{admin: admin} = state) when is_map(admin) do
+    if admin[:from], do: GenServer.reply(admin.from, {:error, :timeout})
     {:noreply, %{state | admin: nil, last_error: "admin timeout"}}
   end
 
@@ -356,7 +400,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
       {:node_info, info} ->
         record_node_sighting(info, "node_db", state)
-        %{state | received: state.received + 1}
+        note_own_node_time(%{state | received: state.received + 1}, info)
 
       {:channel, channel} ->
         put_channel(state, channel)
@@ -364,18 +408,23 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
       {:config, {:lora, lora}} ->
         persist_lora(%{state | lora: lora})
 
+      {:config, {:device, device}} ->
+        publish_status(%{state | device_tzdef: device[:tzdef]})
+
       {:config, _} ->
         state
 
       {:config_complete, nonce} ->
         if state.config_nonce == nonce do
-          persist_channels(state)
-          broadcast_channels(state)
-          persist_lora(state)
-          broadcast_lora(state)
+          state
+          |> persist_channels()
+          |> broadcast_channels()
+          |> persist_lora()
+          |> broadcast_lora()
+          |> maybe_begin_time_sync()
+        else
+          state
         end
-
-        state
 
       :rebooted ->
         Logger.info("Meshtastic companion rebooted — re-requesting config")
@@ -390,6 +439,15 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     maybe_handle_admin(state, pkt)
   end
 
+  defp handle_packet(state, %{portnum: port} = pkt) when port == 3 do
+    pos = Protocol.parse_position(pkt.payload)
+    maybe_note_device_time(state, pkt.from, pos.time)
+  end
+
+  defp handle_packet(state, %{portnum: port} = pkt) when port == 67 do
+    maybe_note_device_time(state, pkt.from, Protocol.parse_telemetry_time(pkt.payload))
+  end
+
   defp handle_packet(state, %{portnum: port} = pkt) when port == 1 do
     my_num = get_in(state, [:my_info, :my_node_num])
 
@@ -402,7 +460,12 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
           channel_idx: pkt.channel,
           body: sanitize_text(pkt.payload),
           from_ref: Protocol.node_id_hex(pkt.from),
-          meta: %{from: pkt.from, id: pkt.id}
+          meta: %{
+            from: pkt.from,
+            id: pkt.id,
+            radio_id: get_in(state, [:my_info, :node_id]),
+            port: state.port
+          }
         })
 
         state
@@ -534,7 +597,182 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     end
   end
 
+  defp maybe_handle_admin(%{admin: %{kind: :set_time} = admin} = state, pkt) do
+    case Protocol.parse_admin_payload(pkt.payload) do
+      {:get_config_response, cfg, passkey} ->
+        if is_reference(admin.timer), do: Process.cancel_timer(admin.timer)
+
+        unix = System.os_time(:second)
+        frame = Protocol.set_time_admin_frame(admin.node_num, unix, passkey)
+
+        case Circuits.UART.write(state.uart, frame) do
+          :ok ->
+            tzdef = apply_device_tzdef(state, admin, cfg, passkey)
+            if admin[:from], do: GenServer.reply(admin.from, :ok)
+
+            put_device_time(
+              %{state | admin: nil, sent: state.sent + 1, device_tzdef: tzdef},
+              unix,
+              synced?: true
+            )
+
+          {:error, reason} ->
+            if admin[:from], do: GenServer.reply(admin.from, {:error, reason})
+            %{state | admin: nil, last_error: inspect(reason)}
+        end
+
+      _ ->
+        state
+    end
+  end
+
   defp maybe_handle_admin(state, _), do: state
+
+  defp begin_time_sync(_from, %{admin: admin} = state, _tz) when is_map(admin) do
+    {:reply, {:error, :busy}, state}
+  end
+
+  defp begin_time_sync(from, %{status: :online, uart: uart} = state, tz) when not is_nil(uart) do
+    case state.my_info do
+      %{my_node_num: num} when is_integer(num) and num > 0 ->
+        frame = Protocol.get_config_admin_frame(num, :device)
+        timer = Process.send_after(self(), :admin_timeout, @admin_timeout_ms)
+
+        case Circuits.UART.write(uart, frame) do
+          :ok ->
+            {:noreply,
+             %{
+               state
+               | admin: %{kind: :set_time, from: from, timer: timer, node_num: num, tz: tz}
+             }}
+
+          {:error, reason} ->
+            Process.cancel_timer(timer)
+            {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
+        end
+
+      _ ->
+        {:reply, {:error, :not_ready}, state}
+    end
+  end
+
+  defp begin_time_sync(_from, state, _tz) do
+    {:reply, {:error, :not_connected}, state}
+  end
+
+  defp maybe_begin_time_sync(state) do
+    case begin_time_sync(nil, state, nil) do
+      {:noreply, new_state} -> new_state
+      {:reply, _, state} -> state
+    end
+  end
+
+  defp apply_device_tzdef(state, admin, cfg, passkey) do
+    posix = Timezone.posix(admin[:tz])
+
+    device =
+      case cfg do
+        {:device, %{} = device} -> device
+        {:other, _} -> Protocol.empty_device_config()
+        _ -> nil
+      end
+
+    cond do
+      posix == "" ->
+        state[:device_tzdef]
+
+      is_nil(device) ->
+        state[:device_tzdef]
+
+      device[:tzdef] == posix ->
+        posix
+
+      true ->
+        frame =
+          Protocol.set_config_device_admin_frame(
+            admin.node_num,
+            Map.put(device, :tzdef, posix),
+            passkey
+          )
+
+        case Circuits.UART.write(state.uart, frame) do
+          :ok -> posix
+          {:error, _} -> state[:device_tzdef]
+        end
+    end
+  end
+
+  defp note_own_node_time(state, info) when is_map(info) do
+    my_num = get_in(state, [:my_info, :my_node_num])
+
+    unix =
+      cond do
+        valid_unix?(info[:position_time]) -> info.position_time
+        valid_unix?(info[:last_heard]) -> info.last_heard
+        true -> 0
+      end
+
+    if is_integer(my_num) and info[:num] == my_num do
+      maybe_note_device_time(state, my_num, unix)
+    else
+      state
+    end
+  end
+
+  defp maybe_note_device_time(state, from, unix) do
+    my_num = get_in(state, [:my_info, :my_node_num])
+
+    if valid_unix?(unix) and (is_nil(my_num) or from == my_num) do
+      put_device_time(state, unix)
+    else
+      state
+    end
+  end
+
+  defp put_device_time(state, unix, opts \\ [])
+
+  defp put_device_time(state, unix, opts) when is_integer(unix) and unix > 1_000_000_000 do
+    now = DateTime.utc_now()
+    synced? = Keyword.get(opts, :synced?, false)
+    synced_at = if synced?, do: now, else: state[:time_synced_at]
+
+    if synced? do
+      Logger.info("Meshtastic companion time synced via #{state.port || "unknown port"}")
+    end
+
+    publish_status(%{
+      state
+      | device_time: unix,
+        device_time_at: now,
+        time_synced_at: synced_at
+    })
+  end
+
+  defp put_device_time(state, _, _), do: state
+
+  defp valid_unix?(n) when is_integer(n) and n > 1_000_000_000, do: true
+  defp valid_unix?(_), do: false
+
+  defp with_estimated_clock(health) when is_map(health) do
+    unix = health[:device_time]
+    at = health[:device_time_at]
+
+    now =
+      cond do
+        is_integer(unix) and unix > 0 and match?(%DateTime{}, at) ->
+          unix + max(DateTime.diff(DateTime.utc_now(), at, :second), 0)
+
+        is_integer(unix) and unix > 0 ->
+          unix
+
+        true ->
+          nil
+      end
+
+    Map.put(health, :device_time_now, now)
+  end
+
+  defp with_estimated_clock(health), do: health
 
   defp put_channel(state, %{index: idx} = channel) when is_integer(idx) do
     channel = channel_map(channel)
@@ -670,7 +908,11 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
         admin: nil,
         my_info: nil,
         channels: %{},
-        lora: RadioConfig.empty()
+        lora: RadioConfig.empty(),
+        device_time: nil,
+        device_time_at: nil,
+        time_synced_at: nil,
+        device_tzdef: nil
     }
     |> maybe_connect()
   end
@@ -687,7 +929,11 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
         admin: nil,
         my_info: nil,
         channels: %{},
-        lora: RadioConfig.empty()
+        lora: RadioConfig.empty(),
+        device_time: nil,
+        device_time_at: nil,
+        time_synced_at: nil,
+        device_tzdef: nil
     }
     |> maybe_connect()
   end
@@ -777,7 +1023,11 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
       modem_preset_label: RadioConfig.preset_label(lora[:modem_preset]),
       use_preset: lora[:use_preset],
       hop_limit: lora[:hop_limit],
-      tx_power: lora[:tx_power]
+      tx_power: lora[:tx_power],
+      device_time: state[:device_time],
+      device_time_at: state[:device_time_at],
+      time_synced_at: state[:time_synced_at],
+      tzdef: state[:device_tzdef]
     }
   end
 

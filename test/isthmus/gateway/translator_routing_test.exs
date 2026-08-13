@@ -111,6 +111,44 @@ defmodule Isthmus.Gateway.TranslatorRoutingTest do
     assert Enum.any?(Gateway.list_forward_log(20), &(&1.registration_group_id == group.id))
   end
 
+  test "meshtastic channel ingress is bound to radio identity" do
+    owner = owner_hex()
+
+    assert {:ok, group} =
+             Registrations.create_bridge_group(owner, %{display_name: "Lobby"})
+
+    psk = String.duplicate("ab", 16)
+
+    assert {:ok, group} =
+             Registrations.link_meshtastic_channel(group, 3, psk, device_id: "aabbccdd")
+
+    {_sk, pk} = Secp256k1.keypair(:xonly)
+    nostr = Base.encode16(pk, case: :lower)
+    assert {:ok, _} = Registrations.attach_member(group, "nostr", nostr)
+
+    Translator.ingest(%Message{
+      from_network: :meshtastic,
+      from_ref: "11223344",
+      body: "other radio",
+      external_id: "mt-other-#{System.unique_integer([:positive])}",
+      meta: %{"meshtastic_channel" => 3, "radio_id" => "11223344"}
+    })
+
+    _ = :sys.get_state(Translator)
+    refute Enum.any?(Gateway.list_forward_log(20), &(&1.registration_group_id == group.id))
+
+    Translator.ingest(%Message{
+      from_network: :meshtastic,
+      from_ref: "deadbeef",
+      body: "bound radio",
+      external_id: "mt-bound-#{System.unique_integer([:positive])}",
+      meta: %{"meshtastic_channel" => 3, "radio_id" => "aabbccdd"}
+    })
+
+    _ = :sys.get_state(Translator)
+    assert Enum.any?(Gateway.list_forward_log(20), &(&1.registration_group_id == group.id))
+  end
+
   test "nostr subject in meta resolves bridge group over author alone" do
     owner = owner_hex()
 

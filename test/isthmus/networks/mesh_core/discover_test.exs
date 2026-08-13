@@ -174,6 +174,27 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
     assert Enum.map(roles.meshtastic_ports, & &1.path) == ["/dev/ttyUSB0", "/dev/ttyUSB1"]
   end
 
+  test "keeps every MeshCore companion port" do
+    probe = fn
+      "/dev/ttyACM0", _ -> :companion
+      "/dev/ttyACM2", _ -> :companion
+      _, _ -> :unknown
+    end
+
+    roles =
+      Discover.scan(
+        enumerate: fn -> fake_ports() end,
+        probe: probe,
+        env: fn _ -> nil end
+      )
+
+    paths = Enum.map(roles.companion_ports, & &1.path)
+    assert "/dev/ttyACM0" in paths
+    assert "/dev/ttyACM2" in paths
+    assert roles.companion.path in paths
+    assert length(paths) == 2
+  end
+
   test "env ISTHMUS_MESHTASTIC_PORT is not stolen as a MeshCore packet sibling" do
     probe = fn
       "/dev/ttyACM0", _ -> :bridge_cli
@@ -293,5 +314,66 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
     refute Map.has_key?(roles, :bridge_packet)
     assert roles.companion.path == "/dev/ttyACM2"
     assert roles.bridge_cli.path == "/dev/ttyACM0"
+  end
+
+  test "keep_still_attached restores a Meshtastic radio that is still plugged in" do
+    previous = %{
+      meshtastic: %{path: "/dev/ttyUSB0", source: :detected, detail: nil},
+      meshtastic_ports: [%{path: "/dev/ttyUSB0", source: :detected, detail: nil}]
+    }
+
+    restored =
+      Discover.keep_still_attached(%{meshtastic_ports: []}, previous, ["/dev/ttyUSB0"])
+
+    assert restored.meshtastic.path == "/dev/ttyUSB0"
+    assert Enum.map(restored.meshtastic_ports, & &1.path) == ["/dev/ttyUSB0"]
+  end
+
+  test "keep_still_attached drops radios that are no longer attached" do
+    previous = %{
+      meshtastic: %{path: "/dev/ttyUSB0", source: :detected, detail: nil},
+      meshtastic_ports: [%{path: "/dev/ttyUSB0", source: :detected, detail: nil}]
+    }
+
+    restored = Discover.keep_still_attached(%{meshtastic_ports: []}, previous, [])
+
+    refute Map.has_key?(restored, :meshtastic)
+    assert restored.meshtastic_ports == []
+  end
+
+  test "keep_still_attached restores a MeshCore companion that is still plugged in" do
+    previous = %{
+      companion: %{path: "/dev/ttyACM2", source: :detected, detail: nil},
+      companion_ports: [%{path: "/dev/ttyACM2", source: :detected, detail: nil}]
+    }
+
+    restored =
+      Discover.keep_still_attached(%{companion_ports: []}, previous, ["/dev/ttyACM2"])
+
+    assert restored.companion.path == "/dev/ttyACM2"
+    assert Enum.map(restored.companion_ports, & &1.path) == ["/dev/ttyACM2"]
+  end
+
+  test "refresh keeps a Meshtastic radio when a later probe cannot reopen the port" do
+    {:ok, agent} = start_supervised({Agent, fn -> :meshtastic end})
+    name = :"discover_keep_#{System.unique_integer([:positive])}"
+
+    start_supervised!(
+      {Discover,
+       name: name,
+       enumerate: fn -> %{"ttyUSB0" => %{description: "Meshtastic"}} end,
+       probe: fn
+         "/dev/ttyUSB0", _ -> Agent.get(agent, & &1)
+         _, _ -> :unknown
+       end,
+       env: fn _ -> nil end}
+    )
+
+    assert Discover.role(:meshtastic, name) == "/dev/ttyUSB0"
+
+    :ok = Agent.update(agent, fn _ -> :unknown end)
+    assert {:ok, roles} = Discover.refresh(name)
+    assert roles.meshtastic.path == "/dev/ttyUSB0"
+    assert Enum.map(roles.meshtastic_ports, & &1.path) == ["/dev/ttyUSB0"]
   end
 end

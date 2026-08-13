@@ -124,7 +124,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
          |> put_flash(:info, "Bridge group created.")
          |> assign(:selected_bridge_id, group.id)
          |> assign(:bridge_form, to_form(%{"display_name" => ""}))
-         |> assign(:modal, nil)
+         |> assign(:modal, :manage)
          |> refresh()}
 
       {:error, reason} ->
@@ -133,7 +133,7 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
   end
 
   def handle_event("select_bridge", %{"id" => id}, socket) do
-    {:noreply, socket |> assign(:selected_bridge_id, id) |> refresh()}
+    {:noreply, socket |> assign(:selected_bridge_id, id) |> assign(:modal, :manage) |> refresh()}
   end
 
   def handle_event("open_new_group", _params, socket) do
@@ -163,7 +163,14 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
   end
 
   def handle_event("close_modal", _params, socket) do
-    {:noreply, assign(socket, :modal, nil)}
+    next_modal =
+      if socket.assigns.modal == :attach and socket.assigns.selected_bridge do
+        :manage
+      else
+        nil
+      end
+
+    {:noreply, assign(socket, :modal, next_modal)}
   end
 
   # Refresh address suggestions when the target network changes; suggestions are
@@ -225,8 +232,8 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
         {:noreply,
          socket
          |> put_flash(:info, "Member attached.")
-         |> assign(:modal, nil)
          |> assign(:selected_bridge_id, group.id)
+         |> assign(:modal, :manage)
          |> refresh()}
 
       {:error, :identity_already_linked} ->
@@ -259,18 +266,21 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
     end
   end
 
-  def handle_event("unlink_channel", %{"network" => "meshcore", "group_id" => group_id}, socket) do
-    unlink_radio_channel(socket, group_id, &Registrations.unlink_meshcore_channel/1, "MeshCore")
+  def handle_event(
+        "unlink_channel",
+        %{"network" => network, "group_id" => group_id} = params,
+        socket
+      )
+      when network in ["meshcore", "meshtastic"] do
+    label = if network == "meshcore", do: "MeshCore", else: "Meshtastic"
+    device_id = params["device_id"]
+    unlink_fun = unlink_fun(network)
+
+    unlink_radio_channel(socket, group_id, unlink_fun, label, device_id)
   end
 
-  def handle_event("unlink_channel", %{"network" => "meshtastic", "group_id" => group_id}, socket) do
-    unlink_radio_channel(
-      socket,
-      group_id,
-      &Registrations.unlink_meshtastic_channel/1,
-      "Meshtastic"
-    )
-  end
+  defp unlink_fun("meshcore"), do: &Registrations.unlink_meshcore_channel/2
+  defp unlink_fun("meshtastic"), do: &Registrations.unlink_meshtastic_channel/2
 
   defp refresh(socket) do
     all_groups = Registrations.list_all()
@@ -284,17 +294,24 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
       end
 
     bridges = Enum.filter(all_groups, &(&1.kind == "bridge" and &1.status == "active"))
+    selected = Enum.find(bridges, &same_id?(&1.id, socket.assigns.selected_bridge_id))
 
-    selected =
-      Enum.find(bridges, &(&1.id == socket.assigns.selected_bridge_id)) || List.first(bridges)
+    socket =
+      socket
+      |> assign(:groups, groups)
+      |> assign(:revoked_count, revoked_count)
+      |> assign(:bridges, bridges)
+      |> assign(:selected_bridge, selected)
+      |> assign(:selected_bridge_id, selected && selected.id)
 
-    socket
-    |> assign(:groups, groups)
-    |> assign(:revoked_count, revoked_count)
-    |> assign(:bridges, bridges)
-    |> assign(:selected_bridge, selected)
-    |> assign(:selected_bridge_id, selected && selected.id)
+    if socket.assigns.modal == :manage and is_nil(selected) do
+      assign(socket, :modal, nil)
+    else
+      socket
+    end
   end
+
+  defp same_id?(a, b), do: to_string(a || "") == to_string(b || "") and to_string(a || "") != ""
 
   @suggestion_limit 20
 
@@ -333,19 +350,16 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
 
   defp announceable_legs(_), do: []
 
-  defp unlink_radio_channel(socket, group_id, unlink_fun, label) do
+  defp unlink_radio_channel(socket, group_id, unlink_fun, label, device_id) do
     group = Registrations.get_group!(group_id)
+    opts = if device_id in [nil, ""], do: [], else: [device_id: device_id]
 
-    case unlink_fun.(group) do
-      {:ok, _} ->
-        {:noreply,
-         socket
-         |> put_flash(:info, "#{label} channel unlinked.")
-         |> refresh()}
+    {:ok, _} = unlink_fun.(group, opts)
 
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Unlink failed: #{inspect(reason)}")}
-    end
+    {:noreply,
+     socket
+     |> put_flash(:info, "#{label} channel unlinked.")
+     |> refresh()}
   end
 
   defp presence_chips(group) do
@@ -359,24 +373,40 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
       end)
 
     channels =
-      []
-      |> maybe_channel_chip(group.meshcore_channel_idx, "meshcore", "badge-primary")
-      |> maybe_channel_chip(group.meshtastic_channel_idx, "meshtastic", "badge-accent")
+      (group.radio_channels || [])
+      |> Enum.sort_by(&{&1.network, &1.inserted_at, &1.id})
+      |> Enum.map(fn ch ->
+        class = if ch.network == "meshcore", do: "badge-primary", else: "badge-accent"
+
+        %{
+          id: "chip-#{ch.network}-ch" <> chip_suffix(group, ch),
+          label: "#{ch.network}/ch #{ch.channel_idx}",
+          class: class
+        }
+      end)
 
     identity ++ channels
   end
 
-  defp maybe_channel_chip(chips, nil, _network, _class), do: chips
+  defp chip_suffix(group, ch) do
+    first? =
+      (group.radio_channels || [])
+      |> Enum.filter(&(&1.network == ch.network))
+      |> Enum.sort_by(&{&1.inserted_at, &1.id})
+      |> List.first()
+      |> case do
+        %{id: id} -> id == ch.id
+        _ -> true
+      end
 
-  defp maybe_channel_chip(chips, idx, network, class) when is_integer(idx) do
-    chips ++
-      [
-        %{
-          id: "chip-#{network}-ch",
-          label: "#{network}/ch #{idx}",
-          class: class
-        }
-      ]
+    if first?, do: "", else: "-#{ch.id}"
+  end
+
+  defp radio_id_hint(nil), do: nil
+  defp radio_id_hint(""), do: nil
+
+  defp radio_id_hint(id) when is_binary(id) do
+    if String.length(id) > 8, do: String.slice(id, 0, 8), else: id
   end
 
   defp member_rows(group) do
@@ -399,14 +429,31 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
       end)
 
     channels =
-      []
-      |> maybe_channel_row(group, :meshcore, group.meshcore_channel_idx, ~p"/admin/meshcore")
-      |> maybe_channel_row(
-        group,
-        :meshtastic,
-        group.meshtastic_channel_idx,
-        ~p"/admin/meshtastic"
-      )
+      (group.radio_channels || [])
+      |> Enum.sort_by(&{&1.network, &1.inserted_at, &1.id})
+      |> Enum.map(fn ch ->
+        href = if ch.network == "meshcore", do: ~p"/admin/meshcore", else: ~p"/admin/meshtastic"
+        device = radio_id_hint(ch.device_id)
+
+        %{
+          id: "member-channel-#{ch.id}",
+          network: ch.network,
+          identity:
+            if(device,
+              do: "channel slot #{ch.channel_idx} on #{device}",
+              else: "channel slot #{ch.channel_idx}"
+            ),
+          title: ch.device_id,
+          kind: :channel,
+          unlink_network: ch.network,
+          unlink_device_id: ch.device_id,
+          group_id: group.id,
+          href: href,
+          role_label: "channel",
+          role_class: "badge-ghost",
+          role_hint: "Private radio channel linked to this group."
+        }
+      end)
 
     identity ++ channels
   end
@@ -427,29 +474,6 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
 
   defp identity_role_copy(role) do
     {role || "unknown", "badge-ghost", ""}
-  end
-
-  defp maybe_channel_row(rows, _group, _network, nil, _href), do: rows
-
-  defp maybe_channel_row(rows, group, network, idx, href) when is_integer(idx) do
-    net = Atom.to_string(network)
-
-    rows ++
-      [
-        %{
-          id: "member-channel-#{net}",
-          network: net,
-          identity: "channel slot #{idx}",
-          title: nil,
-          kind: :channel,
-          unlink_network: net,
-          group_id: group.id,
-          href: href,
-          role_label: "channel",
-          role_class: "badge-ghost",
-          role_hint: "Private radio channel linked to this group."
-        }
-      ]
   end
 
   defp needs_bridge_proxy?(%{kind: "bridge", status: "active", legs: legs}) when is_list(legs) do
@@ -482,84 +506,8 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
             <.icon name="hero-plus" class="w-4 h-4" /> New group
           </button>
           <span class="text-xs opacity-60">
-            Attach members from each group's row below.
+            Manage a group to see members, proxies, and linked radio channels.
           </span>
-        </div>
-
-        <div :if={@selected_bridge} class="space-y-3">
-          <h2 class="text-xl font-medium">
-            {@selected_bridge.display_name}
-            <span class="badge badge-secondary badge-sm ml-2">group</span>
-          </h2>
-          <p class="text-sm opacity-70">
-            MeshCore address token: <code class="font-mono">@{token_for(@selected_bridge)}</code>
-          </p>
-          <p class="text-xs opacity-60">
-            <strong class="font-medium">Proxy</strong>
-            identities are minted and announced by Isthmus.
-            <strong class="font-medium">External</strong>
-            identities are attached peers Isthmus sends to.
-          </p>
-          <div class="overflow-x-auto">
-            <table class="table table-sm" id="bridge-members-table">
-              <thead>
-                <tr>
-                  <th>Network</th>
-                  <th>Role</th>
-                  <th>Identity</th>
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr :for={row <- member_rows(@selected_bridge)} id={row.id}>
-                  <td class="capitalize">{row.network}</td>
-                  <td>
-                    <span
-                      id={"#{row.id}-role"}
-                      class={["badge badge-sm", row.role_class]}
-                      title={row.role_hint}
-                    >
-                      {row.role_label}
-                    </span>
-                  </td>
-                  <td
-                    class="font-mono text-xs break-all"
-                    title={row.title}
-                  >
-                    {row.identity}
-                  </td>
-                  <td>
-                    <div class="flex flex-wrap gap-1 justify-end">
-                      <%= if row.kind == :identity do %>
-                        <button
-                          :if={row.detachable?}
-                          class="btn btn-ghost btn-xs text-error"
-                          phx-click="detach_member"
-                          phx-value-leg_id={row.leg_id}
-                          phx-value-group_id={@selected_bridge.id}
-                        >
-                          Detach
-                        </button>
-                      <% else %>
-                        <.link navigate={row.href} class="btn btn-ghost btn-xs">
-                          Invite
-                        </.link>
-                        <button
-                          class="btn btn-ghost btn-xs text-error"
-                          id={"unlink-#{row.unlink_network}-channel-btn"}
-                          phx-click="unlink_channel"
-                          phx-value-network={row.unlink_network}
-                          phx-value-group_id={row.group_id}
-                        >
-                          Unlink
-                        </button>
-                      <% end %>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
         </div>
 
         <div>
@@ -636,6 +584,8 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                       </button>
                       <button
                         :if={group.kind == "bridge" and group.status == "active"}
+                        type="button"
+                        id={"manage-group-#{group.id}"}
                         class="btn btn-ghost btn-xs"
                         phx-click="select_bridge"
                         phx-value-id={group.id}
@@ -689,6 +639,109 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
               </tbody>
             </table>
           </div>
+        </div>
+
+        <%!-- Manage group modal --%>
+        <div
+          :if={@modal == :manage and @selected_bridge}
+          class="modal modal-open"
+          role="dialog"
+          id="manage-group-modal"
+        >
+          <div class="modal-box max-w-3xl">
+            <h3 class="text-lg font-semibold">
+              {@selected_bridge.display_name}
+              <span class="badge badge-secondary badge-sm ml-2">group</span>
+            </h3>
+            <p class="mt-1 text-sm opacity-70">
+              MeshCore address token: <code class="font-mono">@{token_for(@selected_bridge)}</code>
+            </p>
+            <p class="mt-2 text-xs opacity-60">
+              <strong class="font-medium">Proxy</strong>
+              identities are minted and announced by Isthmus.
+              <strong class="font-medium">External</strong>
+              identities are attached peers Isthmus sends to.
+            </p>
+            <div class="mt-4 overflow-x-auto">
+              <table class="table table-sm" id="bridge-members-table">
+                <thead>
+                  <tr>
+                    <th>Network</th>
+                    <th>Role</th>
+                    <th>Identity</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :if={member_rows(@selected_bridge) == []}>
+                    <td colspan="4" class="opacity-60">
+                      No members yet. Attach a member from this group's row.
+                    </td>
+                  </tr>
+                  <tr :for={row <- member_rows(@selected_bridge)} id={row.id}>
+                    <td class="capitalize">{row.network}</td>
+                    <td>
+                      <span
+                        id={"#{row.id}-role"}
+                        class={["badge badge-sm", row.role_class]}
+                        title={row.role_hint}
+                      >
+                        {row.role_label}
+                      </span>
+                    </td>
+                    <td class="font-mono text-xs break-all" title={row.title}>
+                      {row.identity}
+                    </td>
+                    <td>
+                      <div class="flex flex-wrap gap-1 justify-end">
+                        <%= if row.kind == :identity do %>
+                          <button
+                            :if={row.detachable?}
+                            type="button"
+                            class="btn btn-ghost btn-xs text-error"
+                            phx-click="detach_member"
+                            phx-value-leg_id={row.leg_id}
+                            phx-value-group_id={@selected_bridge.id}
+                          >
+                            Detach
+                          </button>
+                        <% else %>
+                          <.link navigate={row.href} class="btn btn-ghost btn-xs">
+                            Invite
+                          </.link>
+                          <button
+                            type="button"
+                            class="btn btn-ghost btn-xs text-error"
+                            id={"unlink-#{row.id}-btn"}
+                            phx-click="unlink_channel"
+                            phx-value-network={row.unlink_network}
+                            phx-value-group_id={row.group_id}
+                            phx-value-device_id={row.unlink_device_id}
+                          >
+                            Unlink
+                          </button>
+                        <% end %>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-action">
+              <button
+                class="btn btn-primary btn-sm"
+                type="button"
+                phx-click="open_attach"
+                phx-value-id={@selected_bridge.id}
+              >
+                Attach member
+              </button>
+              <button class="btn btn-ghost btn-sm" phx-click="close_modal" type="button">
+                Close
+              </button>
+            </div>
+          </div>
+          <div class="modal-backdrop" phx-click="close_modal"></div>
         </div>
 
         <%!-- New group modal --%>

@@ -4,6 +4,7 @@ defmodule Isthmus.Networks.MeshCore do
 
   alias Isthmus.Announce.Governor
   alias Isthmus.Announce.Sightings
+  alias Isthmus.Networks.MeshCore.BridgeCLI
   alias Isthmus.Networks.MeshCore.BridgeLink
   alias Isthmus.Networks.MeshCore.Companion
   alias Isthmus.Networks.MeshCore.Crypto
@@ -107,6 +108,13 @@ defmodule Isthmus.Networks.MeshCore do
         :exit, _ -> %{status: :not_started}
       end
 
+    bridge_cli =
+      try do
+        BridgeCLI.health()
+      catch
+        :exit, _ -> %{status: :not_started}
+      end
+
     synthetic =
       try do
         SyntheticNode.health()
@@ -117,11 +125,12 @@ defmodule Isthmus.Networks.MeshCore do
     Map.merge(
       %{
         network: :meshcore,
-        detail: "Companion USB/BLE transport"
+        detail: "Companion and island tunnel radios"
       },
       companion
     )
     |> Map.put(:bridge, bridge)
+    |> Map.put(:bridge_cli, bridge_cli)
     |> Map.put(:synthetic, synthetic)
   end
 

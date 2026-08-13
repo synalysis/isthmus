@@ -31,27 +31,28 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   end
 
   @impl true
-  def handle_event("sync_meshcore_channels", _params, socket) do
-    health = Companion.health()
+  def handle_event("sync_meshcore_channels", params, socket) do
+    port = blank_port(params["port"])
+    health = Companion.health(port)
 
     if health.status == :online do
-      Companion.sync_channels_async()
+      Companion.sync_channels_async(port)
 
       {:noreply,
        socket
        |> assign(:channel_syncing, true)
-       |> assign(:companion_health, health)
+       |> assign(:companion_health, Companion.health())
        |> put_flash(:info, "Syncing MeshCore channels…")}
     else
       {:noreply,
        socket
-       |> assign(:companion_health, health)
+       |> assign(:companion_health, Companion.health())
        |> put_flash(:error, "MeshCore companion offline — set ISTHMUS_MESHCORE_PORT.")}
     end
   end
 
-  def handle_event("reconnect_companion", _params, socket) do
-    Companion.reconnect()
+  def handle_event("reconnect_companion", params, socket) do
+    Companion.reconnect(blank_port(params["port"]))
 
     {:noreply,
      socket
@@ -61,35 +62,42 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
   def handle_event("assign_slot_group", params, socket) do
     idx = parse_slot(params["channel_idx"])
+    radio_id = Registrations.normalize_radio_id(params["radio_id"])
+    port = blank_port(params["port"])
     group_id = String.trim(to_string(params["group_id"] || ""))
-    current = linked_group(socket.assigns.groups, idx)
+    current = linked_group(socket.assigns.groups, idx, radio_id)
 
     cond do
       idx not in 1..7 ->
         {:noreply,
          put_flash(socket, :error, "Pick a private slot (1–7). Slot 0 is the public channel.")}
 
+      is_nil(radio_id) ->
+        {:noreply,
+         put_flash(socket, :error, "Radio identity unknown — wait for the companion pubkey.")}
+
       group_id == "" and is_nil(current) ->
         {:noreply, socket}
 
       group_id == "" ->
-        unlink_slot(socket, current)
+        unlink_slot(socket, current, radio_id, port)
 
       current && current.id == group_id ->
         {:noreply, socket}
 
-      empty_channel?(socket.assigns.meshcore_channels, idx) ->
-        provision_channel(socket, Registrations.get_group!(group_id), idx: idx)
+      empty_channel?(Companion.list_channels(port), idx) ->
+        provision_channel(socket, Registrations.get_group!(group_id), idx: idx, port: port)
 
       true ->
-        link_occupied_slot(socket, group_id, idx, current)
+        link_occupied_slot(socket, group_id, idx, radio_id, current, port)
     end
   end
 
-  def handle_event("show_channel_invite", %{"id" => id}, socket) do
-    group = Registrations.get_group!(id)
+  def handle_event("show_channel_invite", params, socket) do
+    group = Registrations.get_group!(params["id"])
+    radio_id = Registrations.normalize_radio_id(params["radio_id"])
 
-    case Registrations.meshcore_channel_invite(group) do
+    case Registrations.meshcore_channel_invite(group, device_id: radio_id) do
       {:ok, invite} ->
         {:noreply, assign(socket, :channel_invite, invite)}
 
@@ -160,8 +168,12 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     device_id = payload["device_id"]
 
     with :ok <- ensure_device_role(socket, device_id, :companion),
-         :ok <- Companion.set_radio_params(params),
-         :ok <- Companion.set_tx_power(params["tx_power"] || params[:tx_power]) do
+         :ok <- Companion.set_radio_params(params, companion_port_for(socket, device_id)),
+         :ok <-
+           Companion.set_tx_power(
+             params["tx_power"] || params[:tx_power],
+             companion_port_for(socket, device_id)
+           ) do
       {:noreply,
        socket
        |> assign(:radio_modal, nil)
@@ -216,13 +228,16 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   end
 
   @impl true
-  def handle_info({:meshcore_channels, channels}, socket) when is_list(channels) do
+  def handle_info({:meshcore_channels, channels, _port}, socket) when is_list(channels) do
     {:noreply,
      socket
      |> assign(:channel_syncing, false)
-     |> assign(:meshcore_channels, Enum.sort_by(channels, & &1.index))
-     |> assign(:companion_health, Companion.health())
+     |> refresh()
      |> put_flash(:info, "Synced #{length(channels)} MeshCore channel slots.")}
+  end
+
+  def handle_info({:meshcore_channels, channels}, socket) when is_list(channels) do
+    handle_info({:meshcore_channels, channels, nil}, socket)
   end
 
   def handle_info(:refresh_synthetic, socket) do
@@ -232,18 +247,20 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp refresh(socket) do
+    companions = Companion.list_health()
+    claim_meshcore_slots(companions)
+
     groups = Registrations.list_all()
     bridges = Enum.filter(groups, &(&1.kind == "bridge" and &1.status == "active"))
-
-    companion = Companion.health()
     bridge_cli = BridgeCLI.health()
     bridge_link = BridgeLink.health()
     roles = Discover.roles()
+    companion = Companion.health()
 
     devices =
       Devices.inventory(
         roles: roles,
-        companion: companion,
+        companions: companions,
         bridge_cli: bridge_cli,
         bridge_link: bridge_link
       )
@@ -251,7 +268,6 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     socket
     |> assign(:groups, groups)
     |> assign(:bridges, bridges)
-    |> assign(:meshcore_channels, Companion.list_channels())
     |> assign(:companion_health, companion)
     |> assign(:bridge_health, bridge_link)
     |> assign(:bridge_cli_health, bridge_cli)
@@ -260,6 +276,17 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     |> assign(:devices, devices)
     |> assign(:channel_syncing, socket.assigns[:channel_syncing] || false)
     |> assign(:radio_applying, socket.assigns[:radio_applying] || false)
+  end
+
+  defp claim_meshcore_slots(companions) when is_list(companions) do
+    Enum.each(companions, fn companion ->
+      radio_id = Registrations.normalize_radio_id(companion[:self_ref])
+      occupied = occupied_slot_indexes(Companion.list_channels(companion[:port]))
+
+      if radio_id && occupied != [] do
+        Registrations.claim_unscoped_radio_channel(:meshcore, radio_id, occupied)
+      end
+    end)
   end
 
   defp radio_form_from_health(health) when is_map(health) do
@@ -297,8 +324,19 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   defp format_roles_flash(roles) do
     formatted =
       Enum.flat_map(roles, fn
-        {role, %{path: path}} when role in [:companion, :bridge_cli, :bridge_packet] ->
+        {:companion_ports, list} when is_list(list) ->
+          Enum.map(list, fn
+            %{path: path} -> "companion @ #{path}"
+            path when is_binary(path) -> "companion @ #{path}"
+            _ -> nil
+          end)
+          |> Enum.reject(&is_nil/1)
+
+        {role, %{path: path}} when role in [:bridge_cli, :bridge_packet] ->
           ["#{role} @ #{path}"]
+
+        {:companion, _} ->
+          []
 
         _ ->
           []
@@ -323,6 +361,24 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
         if ok?, do: :ok, else: {:error, :wrong_role}
     end
   end
+
+  defp companion_port_for(socket, device_id) do
+    case Enum.find(socket.assigns[:devices] || [], &(&1.id == device_id)) do
+      device when is_map(device) -> companion_port(device)
+      _ -> nil
+    end
+  end
+
+  defp companion_port(device) when is_map(device) do
+    get_in(device, [:companion_health, :port]) ||
+      Enum.find_value(device.ports || [], fn
+        %{role: :companion, path: path} when is_binary(path) and path != "" -> path
+        _ -> nil
+      end)
+  end
+
+  defp blank_port(port) when is_binary(port) and port != "", do: port
+  defp blank_port(_), do: nil
 
   defp device_label(socket, device_id) do
     case Enum.find(socket.assigns[:devices] || [], &(&1.id == device_id)) do
@@ -480,14 +536,34 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   defp slot_role(%{empty?: true}), do: "empty"
   defp slot_role(_), do: "private"
 
-  defp linked_group(groups, idx) do
-    Enum.find(groups, &(&1.status == "active" and &1.meshcore_channel_idx == idx))
+  defp linked_group(_groups, _idx, nil), do: nil
+
+  defp linked_group(groups, idx, radio_id) do
+    Enum.find(groups, fn g ->
+      g.status == "active" and
+        match?(%{channel_idx: ^idx}, Registrations.radio_link(g, "meshcore", radio_id))
+    end)
   end
 
-  defp assignable_groups(bridges, idx) do
+  defp assignable_groups(bridges, idx, radio_id) do
     Enum.filter(bridges, fn g ->
-      is_nil(g.meshcore_channel_idx) or g.meshcore_channel_idx == idx
+      case Registrations.radio_link(g, "meshcore", radio_id) do
+        nil -> true
+        %{channel_idx: ^idx} -> true
+        _ -> false
+      end
     end)
+  end
+
+  defp meshcore_radio_id(device) when is_map(device) do
+    Registrations.normalize_radio_id(
+      get_in(device, [:identity, :public_key]) ||
+        get_in(device, [:companion_health, :self_ref])
+    )
+  end
+
+  defp occupied_slot_indexes(channels) when is_list(channels) do
+    for ch <- channels, ch.index in 1..7, ch.empty? != true, do: ch.index
   end
 
   defp channel_rows(channels) do
@@ -533,7 +609,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
          |> assign(:channel_invite, nil)
          |> put_flash(
            :info,
-           "Private MeshCore channel created on slot #{linked.meshcore_channel_idx}."
+           "Private MeshCore channel created on slot #{Keyword.get(opts, :idx) || linked.meshcore_channel_idx}."
          )
          |> refresh()}
 
@@ -547,7 +623,8 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
         {:noreply, put_flash(socket, :error, "That slot is already configured on the radio.")}
 
       {:error, :already_linked} ->
-        {:noreply, put_flash(socket, :error, "This group already has a MeshCore channel.")}
+        {:noreply,
+         put_flash(socket, :error, "This group already has a MeshCore channel on this radio.")}
 
       {:error, :timeout} ->
         {:noreply, put_flash(socket, :error, "Timed out talking to MeshCore companion.")}
@@ -557,17 +634,24 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     end
   end
 
-  defp unlink_slot(socket, group) do
-    idx = group.meshcore_channel_idx
+  defp unlink_slot(socket, group, radio_id, port) do
+    link = Registrations.radio_link(group, "meshcore", radio_id)
+    idx = link && link.channel_idx
 
-    case clear_radio_slot(idx) do
+    case clear_radio_slot(idx, port) do
       :ok ->
-        finish_unlink(socket, group, "Channel unlinked and slot #{idx} cleared on the radio.")
+        finish_unlink(
+          socket,
+          group,
+          radio_id,
+          "Channel unlinked and slot #{idx} cleared on the radio."
+        )
 
       {:error, :not_connected} ->
         finish_unlink(
           socket,
           group,
+          radio_id,
           "Channel unlinked. Companion offline — the radio slot was not cleared."
         )
 
@@ -577,45 +661,39 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     end
   end
 
-  defp clear_radio_slot(idx) when is_integer(idx) and idx in 1..7 do
-    case Companion.clear_channel(idx) do
+  defp clear_radio_slot(idx, port) when is_integer(idx) and idx in 1..7 do
+    case Companion.clear_channel(idx, port) do
       {:ok, _} -> :ok
       {:error, _} = err -> err
     end
   end
 
-  defp clear_radio_slot(_), do: :ok
+  defp clear_radio_slot(_, _), do: :ok
 
-  defp finish_unlink(socket, group, message) do
-    case Registrations.unlink_meshcore_channel(group) do
-      {:ok, _} ->
-        {:noreply,
-         socket
-         |> assign(:channel_invite, nil)
-         |> put_flash(:info, message)
-         |> refresh()}
+  defp finish_unlink(socket, group, radio_id, message) do
+    {:ok, _} = Registrations.unlink_meshcore_channel(group, device_id: radio_id)
 
-      {:error, reason} ->
-        {:noreply, put_flash(socket, :error, "Unlink failed: #{inspect(reason)}")}
-    end
+    {:noreply,
+     socket
+     |> assign(:channel_invite, nil)
+     |> put_flash(:info, message)
+     |> refresh()}
   end
 
-  defp link_occupied_slot(socket, group_id, idx, current) do
+  defp link_occupied_slot(socket, group_id, idx, radio_id, current, port) do
     group = Registrations.get_group!(group_id)
 
-    with :ok <- maybe_unlink(current),
+    with :ok <- maybe_unlink(current, radio_id),
          %{secret_hex: secret} when is_binary(secret) and secret != "" <-
-           Companion.get_channel(idx),
-         {:ok, _} <- Registrations.link_meshcore_channel(group, idx, secret) do
+           Companion.get_channel(idx, port),
+         {:ok, _} <-
+           Registrations.link_meshcore_channel(group, idx, secret, device_id: radio_id) do
       {:noreply,
        socket
        |> assign(:channel_invite, nil)
        |> put_flash(:info, "Channel #{idx} linked to #{group.display_name}.")
        |> refresh()}
     else
-      {:error, :unlink_failed, reason} ->
-        {:noreply, put_flash(socket, :error, "Unlink failed: #{inspect(reason)}")}
-
       nil ->
         {:noreply, put_flash(socket, :error, "Channel not in companion cache — sync first.")}
 
@@ -633,13 +711,11 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     end
   end
 
-  defp maybe_unlink(nil), do: :ok
+  defp maybe_unlink(nil, _), do: :ok
 
-  defp maybe_unlink(group) do
-    case Registrations.unlink_meshcore_channel(group) do
-      {:ok, _} -> :ok
-      {:error, reason} -> {:error, :unlink_failed, reason}
-    end
+  defp maybe_unlink(group, radio_id) do
+    {:ok, _} = Registrations.unlink_meshcore_channel(group, device_id: radio_id)
+    :ok
   end
 
   @impl true
@@ -658,7 +734,8 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
         <.admin_header current={:meshcore} title="MeshCore">
           Connect radios here. An <strong class="font-medium">island tunnel radio</strong>
           carries mesh traffic for tunnels. On a <strong class="font-medium">companion</strong>,
-          slot 0 is public; assign a group to slots 1–7. <strong class="font-medium">Invite</strong>
+          slot 0 is public; assign a group to slots 1–7 on this companion’s
+          identity. <strong class="font-medium">Invite</strong>
           shows the secret / QR for another MeshCore device.
         </.admin_header>
 
@@ -741,6 +818,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                     class="btn btn-outline btn-sm"
                     id={"reconnect-#{device_dom_id(device.id)}"}
                     phx-click="reconnect_companion"
+                    phx-value-port={companion_port(device)}
                     type="button"
                   >
                     Reconnect
@@ -749,6 +827,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                     :if={device.companion?}
                     class={["btn btn-outline btn-sm", @channel_syncing && "loading"]}
                     phx-click="sync_meshcore_channels"
+                    phx-value-port={companion_port(device)}
                     id={"sync-channels-#{device_dom_id(device.id)}"}
                     type="button"
                     disabled={@channel_syncing or not device.active_companion?}
@@ -813,7 +892,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                     </thead>
                     <tbody>
                       <tr
-                        :for={ch <- channel_rows(@meshcore_channels)}
+                        :for={ch <- channel_rows(device.channels)}
                         id={"#{device_dom_id(device.id)}-ch-#{ch.index}"}
                       >
                         <td>{ch.index}</td>
@@ -832,8 +911,9 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                           <%= if ch.index == 0 do %>
                             <span class="opacity-60">—</span>
                           <% else %>
-                            <% linked = linked_group(@groups, ch.index) %>
-                            <% choices = assignable_groups(@bridges, ch.index) %>
+                            <% radio_id = meshcore_radio_id(device) %>
+                            <% linked = linked_group(@groups, ch.index, radio_id) %>
+                            <% choices = assignable_groups(@bridges, ch.index, radio_id) %>
                             <%= if @bridges == [] do %>
                               <p class="text-xs opacity-70">
                                 <.link navigate={~p"/admin/registrations"} class="link">
@@ -842,39 +922,48 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
                                 first.
                               </p>
                             <% else %>
-                              <div class="flex flex-wrap items-center gap-2">
-                                <form
-                                  id={"slot-group-form-#{device_dom_id(device.id)}-#{ch.index}"}
-                                  phx-change="assign_slot_group"
-                                  class="min-w-0 grow"
-                                >
-                                  <input type="hidden" name="channel_idx" value={ch.index} />
-                                  <select
-                                    id={"slot-group-#{device_dom_id(device.id)}-#{ch.index}"}
-                                    name="group_id"
-                                    class="select select-bordered select-sm w-full max-w-xs"
+                              <%= if is_nil(radio_id) do %>
+                                <p class="text-xs opacity-70">
+                                  Waiting for this radio’s identity.
+                                </p>
+                              <% else %>
+                                <div class="flex flex-wrap items-center gap-2">
+                                  <form
+                                    id={"slot-group-form-#{device_dom_id(device.id)}-#{ch.index}"}
+                                    phx-change="assign_slot_group"
+                                    class="min-w-0 grow"
                                   >
-                                    <option value="" selected={is_nil(linked)}>—</option>
-                                    <option
-                                      :for={g <- choices}
-                                      value={g.id}
-                                      selected={linked && linked.id == g.id}
+                                    <input type="hidden" name="radio_id" value={radio_id} />
+                                    <input type="hidden" name="port" value={companion_port(device)} />
+                                    <input type="hidden" name="channel_idx" value={ch.index} />
+                                    <select
+                                      id={"slot-group-#{device_dom_id(device.id)}-#{ch.index}"}
+                                      name="group_id"
+                                      class="select select-bordered select-sm w-full max-w-xs"
                                     >
-                                      {g.display_name}
-                                    </option>
-                                  </select>
-                                </form>
-                                <button
-                                  :if={linked}
-                                  type="button"
-                                  class="btn btn-outline btn-xs shrink-0"
-                                  id={"show-invite-#{device_dom_id(device.id)}-#{ch.index}"}
-                                  phx-click="show_channel_invite"
-                                  phx-value-id={linked.id}
-                                >
-                                  Invite
-                                </button>
-                              </div>
+                                      <option value="" selected={is_nil(linked)}>—</option>
+                                      <option
+                                        :for={g <- choices}
+                                        value={g.id}
+                                        selected={linked && linked.id == g.id}
+                                      >
+                                        {g.display_name}
+                                      </option>
+                                    </select>
+                                  </form>
+                                  <button
+                                    :if={linked}
+                                    type="button"
+                                    class="btn btn-outline btn-xs shrink-0"
+                                    id={"show-invite-#{device_dom_id(device.id)}-#{ch.index}"}
+                                    phx-click="show_channel_invite"
+                                    phx-value-id={linked.id}
+                                    phx-value-radio_id={radio_id}
+                                  >
+                                    Invite
+                                  </button>
+                                </div>
+                              <% end %>
                             <% end %>
                           <% end %>
                         </td>

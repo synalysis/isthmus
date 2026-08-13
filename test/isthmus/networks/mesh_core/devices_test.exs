@@ -88,6 +88,59 @@ defmodule Isthmus.Networks.MeshCore.DevicesTest do
     assert bridge.bridge_link_health[:frames_in] == 3
   end
 
+  test "inventory lists each MeshCore companion as its own device" do
+    ports = [
+      %{
+        name: "ttyACM2",
+        path: "/dev/ttyACM2",
+        score: 1,
+        reasons: [],
+        description: "Companion A",
+        manufacturer: "Seeed",
+        serial_number: "CP1",
+        vendor_id: 0x2886,
+        product_id: 0x802F
+      },
+      %{
+        name: "ttyACM3",
+        path: "/dev/ttyACM3",
+        score: 1,
+        reasons: [],
+        description: "Companion B",
+        manufacturer: "Seeed",
+        serial_number: "CP2",
+        vendor_id: 0x2886,
+        product_id: 0x802F
+      }
+    ]
+
+    roles = %{
+      companion: %{path: "/dev/ttyACM2", detail: %{}},
+      companion_ports: [
+        %{path: "/dev/ttyACM2", detail: %{}},
+        %{path: "/dev/ttyACM3", detail: %{}}
+      ]
+    }
+
+    devices =
+      Devices.inventory(
+        ports: ports,
+        roles: roles,
+        companions: [
+          %{status: :online, port: "/dev/ttyACM2", self_name: "Gate A", self_ref: "aa"},
+          %{status: :online, port: "/dev/ttyACM3", self_name: "Gate B", self_ref: "bb"}
+        ],
+        bridge_cli: %{},
+        bridge_link: %{}
+      )
+
+    assert length(devices) == 2
+    assert Enum.all?(devices, & &1.companion?)
+    assert Enum.all?(devices, & &1.active_companion?)
+    names = Enum.map(devices, & &1.label) |> Enum.sort()
+    assert names == ["Gate A", "Gate B"]
+  end
+
   test "inventory ignores a Meshtastic discover role" do
     ports = [
       %{

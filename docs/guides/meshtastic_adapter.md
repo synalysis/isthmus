@@ -32,6 +32,7 @@ Each companion:
 - Sends group traffic with `send_channel_text/2` (broadcast on that slot)
 - Provisions secondary slots 1–7 via AdminMessage (`get_channel` then `set_channel` with session passkey)
 - Writes LoRa config (region / modem preset, or BW / SF / CR) via `get_config` then `set_config`, then reboots
+- Syncs host Unix time onto the radio (`AdminMessage.set_time_only`) after each config dump, and on **Sync time**. Also writes `DeviceConfig.tzdef` (POSIX timezone from the Isthmus host, or the browser zone on **Sync time**) so the OLED shows **local** time. The RTC itself stays UTC. The admin card shows the radio clock in the browser’s local timezone. Devices without GPS or an RTC otherwise sit at epoch until a client sets time. Override with `ISTHMUS_MESHTASTIC_TZ` (IANA or POSIX).
 
 Admin: `/admin/meshtastic`.
 
@@ -41,17 +42,17 @@ Same model as MeshCore:
 
 | Radio | Group field | Invite |
 |---|---|---|
-| MeshCore slots 1–7 | `meshcore_channel_idx` + encrypted secret | `meshcore://channel/add?…` |
-| Meshtastic slots 1–7 | `meshtastic_channel_idx` + encrypted PSK | `https://meshtastic.org/e/#…?add=true` |
+| MeshCore slots 1–7 | `group_radio_channels` (network `meshcore`) | `meshcore://channel/add?…` |
+| Meshtastic slots 1–7 | `group_radio_channels` (network `meshtastic`) | `https://meshtastic.org/e/#…?add=true` |
 
-Slot **0** is PRIMARY (sets the radio frequency). Isthmus creates private channels in empty **secondary** slots 1–7 only. Create groups on Admin → **Groups**, then assign a group from the **Linked group** dropdown on a companion’s slot table. Slot numbers are local to each radio; other devices join by **name + PSK**.
+Slot **0** is PRIMARY (sets the radio frequency). Isthmus creates private channels in empty **secondary** slots 1–7 only. Create groups on Admin → **Groups**, then assign a group from the **Linked group** dropdown on a companion’s slot table. Slot numbers are local to each radio’s identity (Meshtastic node id / MeshCore pubkey); the same slot index on a second radio is not the same channel. The same group **can** be linked on several USB companions at once (each radio keeps its own slot + PSK). Other devices join by **name + PSK**.
 
 LoRa **region** (country / band) and **modem preset** (Long Fast, Medium Fast, …) are per companion: open **Radio configuration** on that radio’s card. Switch Modem to **Custom** for explicit bandwidth / spreading factor / coding rate and an optional override frequency. Apply writes LoRa config and reboots that companion.
 
-When a group has `meshtastic_channel_idx` set:
+When a group is linked to one or more Meshtastic radios (`group_radio_channels`):
 
 - Inbound channel texts fan out to attached Nostr / RNS / MeshCore members
-- Traffic into the group is posted back onto that Meshtastic channel (`[via Isthmus/…]`)
+- Traffic into the group is posted back onto **each** linked Meshtastic companion (`[via Isthmus/…]`), except the radio/slot the message arrived on
 - Echoes from our own node id are dropped so we do not loop
 
 ## Suggested next steps
@@ -66,6 +67,7 @@ When a group has `meshtastic_channel_idx` set:
 - [x] LoRa region / modem preset / custom radio config (per-radio modal)
 - [x] Multiple USB companions (primary + extras)
 - [x] NodeInfo → Admin Adverts (no MeshCore-style flood advert)
+- [x] Companion RTC / `set_time_only` + admin clock display
 - [ ] MQTT / TCP client (optional second transport)
 - [ ] Attach Meshtastic node ids as group member legs (DM path)
 

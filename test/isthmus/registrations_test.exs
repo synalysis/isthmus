@@ -148,12 +148,27 @@ defmodule Isthmus.RegistrationsTest do
     assert {:ok, linked} = Registrations.link_meshcore_channel(g1, 2, secret)
     assert linked.meshcore_channel_idx == 2
     assert linked.meshcore_channel_secret_enc != nil
+    assert linked.meshcore_channel_device_id == nil
 
     assert Registrations.find_by_meshcore_channel(2).id == g1.id
     assert {:error, :channel_already_linked} = Registrations.link_meshcore_channel(g2, 2, secret)
 
-    assert {:ok, _} = Registrations.unlink_meshcore_channel(linked)
-    assert Registrations.find_by_meshcore_channel(2) == nil
+    assert {:ok, on_a} =
+             Registrations.link_meshcore_channel(g1, 2, secret,
+               device_id: String.duplicate("aa", 32)
+             )
+
+    assert {:ok, on_b} =
+             Registrations.link_meshcore_channel(g2, 2, secret,
+               device_id: String.duplicate("bb", 32)
+             )
+
+    assert Registrations.find_by_meshcore_channel(2, String.duplicate("aa", 32)).id == g1.id
+    assert Registrations.find_by_meshcore_channel(2, String.duplicate("bb", 32)).id == g2.id
+    refute Registrations.find_by_meshcore_channel(2, String.duplicate("aa", 32)).id == on_b.id
+
+    assert {:ok, _} = Registrations.unlink_meshcore_channel(on_a)
+    assert Registrations.find_by_meshcore_channel(2, String.duplicate("aa", 32)) == nil
   end
 
   test "meshcore_channel_invite returns secret and meshcore URI" do
@@ -188,12 +203,69 @@ defmodule Isthmus.RegistrationsTest do
     assert {:ok, linked} = Registrations.link_meshtastic_channel(g1, 2, psk)
     assert linked.meshtastic_channel_idx == 2
     assert linked.meshtastic_channel_psk_enc != nil
+    assert linked.meshtastic_channel_device_id == nil
 
     assert Registrations.find_by_meshtastic_channel(2).id == g1.id
     assert {:error, :channel_already_linked} = Registrations.link_meshtastic_channel(g2, 2, psk)
 
-    assert {:ok, _} = Registrations.unlink_meshtastic_channel(linked)
-    assert Registrations.find_by_meshtastic_channel(2) == nil
+    assert {:ok, on_a} =
+             Registrations.link_meshtastic_channel(g1, 2, psk, device_id: "aabbccdd")
+
+    assert on_a.meshtastic_channel_device_id == "aabbccdd"
+    assert Registrations.find_by_meshtastic_channel(2, "aabbccdd").id == g1.id
+    assert Registrations.find_by_meshtastic_channel(2, "11223344") == nil
+
+    assert {:ok, on_b} =
+             Registrations.link_meshtastic_channel(g2, 2, psk, device_id: "11223344")
+
+    assert on_b.meshtastic_channel_device_id == "11223344"
+    assert Registrations.find_by_meshtastic_channel(2, "11223344").id == g2.id
+
+    assert {:error, :channel_already_linked} =
+             Registrations.link_meshtastic_channel(g2, 2, psk, device_id: "aabbccdd")
+
+    assert {:ok, _} = Registrations.unlink_meshtastic_channel(on_a)
+    assert Registrations.find_by_meshtastic_channel(2, "aabbccdd") == nil
+  end
+
+  test "the same group can link Meshtastic channels on two radios" do
+    owner = owner_hex()
+    assert {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "Lobby"})
+    psk = String.duplicate("ab", 16)
+
+    assert {:ok, group} =
+             Registrations.link_meshtastic_channel(group, 3, psk, device_id: "aabbccdd")
+
+    assert {:ok, group} =
+             Registrations.link_meshtastic_channel(group, 5, psk, device_id: "11223344")
+
+    links = Registrations.radio_links(group, "meshtastic")
+    assert length(links) == 2
+    assert Registrations.find_by_meshtastic_channel(3, "aabbccdd").id == group.id
+    assert Registrations.find_by_meshtastic_channel(5, "11223344").id == group.id
+    assert Registrations.find_by_meshtastic_channel(3, "11223344") == nil
+
+    assert {:ok, group} =
+             Registrations.unlink_meshtastic_channel(group, device_id: "aabbccdd")
+
+    assert Registrations.find_by_meshtastic_channel(3, "aabbccdd") == nil
+    assert Registrations.find_by_meshtastic_channel(5, "11223344").id == group.id
+    assert length(Registrations.radio_links(group, "meshtastic")) == 1
+  end
+
+  test "claim_unscoped_radio_channel binds a slot-only link to the radio that occupies it" do
+    owner = owner_hex()
+    assert {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "Lobby"})
+    psk = String.duplicate("ab", 16)
+    assert {:ok, group} = Registrations.link_meshtastic_channel(group, 3, psk)
+    assert group.meshtastic_channel_device_id == nil
+
+    assert :ok = Registrations.claim_unscoped_radio_channel(:meshtastic, "AABBCCDD", [1, 3])
+    claimed = Registrations.get_group!(group.id)
+    assert claimed.meshtastic_channel_device_id == "aabbccdd"
+    assert Registrations.find_by_meshtastic_channel(3, "aabbccdd").id == group.id
+    assert Registrations.find_by_meshtastic_channel(3) == nil
+    assert Registrations.find_by_meshtastic_channel(3, "11223344") == nil
   end
 
   test "meshtastic_channel_invite returns PSK and meshtastic URL" do
