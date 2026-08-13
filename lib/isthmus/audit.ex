@@ -7,19 +7,40 @@ defmodule Isthmus.Audit do
   alias Isthmus.Gateway.Activity
   alias Isthmus.Repo
 
+  @kinds ~w(sighting governor gateway)
+
   @doc """
   Unified ops timeline entries for admin UI.
 
   Each entry: `%{at, kind, summary, detail, meta}`
-  """
-  def timeline(limit \\ 80) do
-    limit = max(limit, 1)
-    each = max(div(limit, 3) + 5, 10)
 
-    (governor_entries(each) ++ gateway_entries(each) ++ sighting_entries(each))
-    |> Enum.sort_by(& &1.at, {:desc, DateTime})
-    |> Enum.take(limit)
+  Options:
+  - `:kinds` — list of `"sighting"` / `"governor"` / `"gateway"` (default: all)
+  """
+  def timeline(limit \\ 80, opts \\ [])
+
+  def timeline(limit, opts) when is_integer(limit) and is_list(opts) do
+    limit = max(limit, 1)
+    kinds = normalize_kinds(Keyword.get(opts, :kinds, @kinds))
+
+    if kinds == [] do
+      []
+    else
+      each = if length(kinds) == 1, do: limit, else: max(div(limit, length(kinds)) + 5, 10)
+
+      kinds
+      |> Enum.flat_map(fn
+        "governor" -> governor_entries(each)
+        "gateway" -> gateway_entries(each)
+        "sighting" -> sighting_entries(each)
+        _ -> []
+      end)
+      |> Enum.sort_by(& &1.at, {:desc, DateTime})
+      |> Enum.take(limit)
+    end
   end
+
+  def kinds, do: @kinds
 
   def governor_recent(limit \\ 50) do
     GovernorEvent
@@ -113,4 +134,13 @@ defmodule Isthmus.Audit do
       ref
     end
   end
+
+  defp normalize_kinds(kinds) when is_list(kinds) do
+    kinds
+    |> Enum.map(&to_string/1)
+    |> Enum.filter(&(&1 in @kinds))
+    |> Enum.uniq()
+  end
+
+  defp normalize_kinds(_), do: @kinds
 end
