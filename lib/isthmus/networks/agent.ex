@@ -6,7 +6,9 @@ defmodule Isthmus.Networks.Agent do
   **client** (via `ex_mcp`). Attach a short name such as `cursor`; Isthmus
   prompts that agent with group traffic and fans the reply back out.
 
-  Default command is Cursor CLI `agent acp`. Override with `ISTHMUS_ACP_COMMAND`.
+  Default command is Cursor CLI `agent acp`. Override from Admin → ACP
+  or `ISTHMUS_ACP_COMMAND`. Member identity is a session name on that one
+  subprocess — it does not select which binary to spawn.
   """
   @behaviour Isthmus.NetworkAdapter
 
@@ -44,7 +46,7 @@ defmodule Isthmus.Networks.Agent do
         label: "ACP agent",
         uri_or_text: ref,
         qr_payload: nil,
-        app_hints: ["Cursor `agent acp`", "Gemini CLI", "other ACP agents"]
+        app_hints: ["Admin → ACP", "Cursor `agent acp`", "Gemini `gemini --acp`"]
       }
     ]
   end

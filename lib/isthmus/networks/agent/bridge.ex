@@ -29,6 +29,12 @@ defmodule Isthmus.Networks.Agent.Bridge do
     :exit, _ -> {:error, :not_started}
   end
 
+  def reconnect do
+    GenServer.call(__MODULE__, :reconnect, 15_000)
+  catch
+    :exit, _ -> {:error, :not_started}
+  end
+
   @impl true
   def init(_opts) do
     Process.flag(:trap_exit, true)
@@ -51,6 +57,11 @@ defmodule Isthmus.Networks.Agent.Bridge do
   @impl true
   def handle_call(:health, _from, state) do
     {:reply, health_map(state), state}
+  end
+
+  def handle_call(:reconnect, _from, state) do
+    state = state |> drop_client() |> maybe_connect()
+    {:reply, {:ok, health_map(state)}, state}
   end
 
   def handle_call({:enqueue, _ref, _text, _meta}, _from, %{status: status} = state)
@@ -115,6 +126,24 @@ defmodule Isthmus.Networks.Agent.Bridge do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
+  defp drop_client(%{client: nil} = state) do
+    %{state | sessions: %{}, chunks: %{}, busy: false, queue: :queue.new()}
+  end
+
+  defp drop_client(%{client: pid} = state) when is_pid(pid) do
+    Process.unlink(pid)
+
+    if Process.alive?(pid) do
+      try do
+        GenServer.stop(pid, :shutdown, 5_000)
+      catch
+        :exit, _ -> :ok
+      end
+    end
+
+    drop_client(%{state | client: nil, status: :disconnected, last_error: nil})
+  end
+
   defp maybe_connect(%{client: client} = state) when not is_nil(client), do: state
 
   defp maybe_connect(state) do
@@ -125,7 +154,11 @@ defmodule Isthmus.Networks.Agent.Bridge do
         %{state | status: :disabled, last_error: "ACP agent disabled"}
 
       command(opts) == [] ->
-        %{state | status: :disabled, last_error: "no ACP command (set ISTHMUS_ACP_COMMAND)"}
+        %{
+          state
+          | status: :disabled,
+            last_error: "no ACP command (set Admin → ACP or ISTHMUS_ACP_COMMAND)"
+        }
 
       true ->
         case ExMCP.ACP.start_client(

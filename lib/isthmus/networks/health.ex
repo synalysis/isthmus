@@ -157,7 +157,7 @@ defmodule Isthmus.Networks.Health do
   end
 
   defp summary(:agent, :disabled, _),
-    do: "ACP agent disabled — attach a member named cursor, then run `agent acp`"
+    do: "ACP agent disabled — enable it under Admin → ACP"
 
   defp summary(:agent, status, health) do
     err = health[:last_error]
@@ -340,18 +340,18 @@ defmodule Isthmus.Networks.Health do
   defp diagnose(:agent, :disabled, _, _),
     do:
       {nil,
-       "Install Cursor CLI, run `agent login`, then start Isthmus. Override the binary with ISTHMUS_ACP_COMMAND."}
+       "Pick a native ACP preset under Admin → ACP (Cursor, Hermes, Gemini, OpenCode, …), or set ISTHMUS_ACP_COMMAND."}
 
   defp diagnose(:agent, _status, health, last_error) do
     err = to_string(last_error || health[:last_error] || "")
 
     cond do
       health[:status] in [:disabled, "disabled"] ->
-        {nil, "Install Cursor CLI (`agent acp`) or set ISTHMUS_ACP_COMMAND."}
+        {nil, "Enable the agent under Admin → ACP, or set ISTHMUS_ACP_COMMAND."}
 
       err != "" ->
         {"ACP agent not connected",
-         "Run `agent login`, check ISTHMUS_ACP_COMMAND, then restart Isthmus."}
+         "Check the command on Admin → ACP (Cursor needs `agent login`). Apply & reconnect."}
 
       true ->
         {nil, nil}

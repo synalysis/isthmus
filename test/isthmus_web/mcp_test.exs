@@ -42,6 +42,8 @@ defmodule IsthmusWeb.MCPTest do
     names = Enum.map(tools, & &1["name"])
     assert "list_groups" in names
     assert "inject_message" in names
+    assert "get_acp" in names
+    assert "set_acp" in names
   end
 
   defp post_mcp(conn, payload, headers) do

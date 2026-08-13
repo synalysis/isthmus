@@ -11,7 +11,7 @@ defmodule Isthmus.MCP.Server do
   @instructions """
   You are operating an Isthmus instance: a bridge between MeshCore, Meshtastic,
   Reticulum (LXMF), Nostr, and ACP agents. Use these tools to inspect health,
-  manage groups/members, inject messages, and change tunnels, relays, and policy.
+  manage groups/members, inject messages, and change tunnels, relays, ACP agent, and policy.
   Identify groups by UUID or display name (e.g. "Lobby"). Never ask for vault
   secrets or nsecs; this API does not expose private keys.
   """
@@ -179,6 +179,26 @@ defmodule Isthmus.MCP.Server do
     annotations(readOnlyHint: true)
 
     run(fn args, state -> reply(Tools.get_policy(args), state) end)
+  end
+
+  tool "get_acp", "ACP agent command, working directory, and connection status" do
+    annotations(readOnlyHint: true)
+
+    run(fn args, state -> reply(Tools.get_acp(args), state) end)
+  end
+
+  tool "set_acp",
+       "Set the ACP agent command (Cursor, Hermes, Gemini, OpenCode, …) and reconnect" do
+    param(:enabled, :boolean, description: "Whether to spawn the ACP subprocess")
+    param(:command, :string, description: "Executable and args, e.g. hermes acp")
+    param(:cwd, :string, description: "Working directory for ACP sessions")
+
+    param(:preset, :string,
+      description:
+        "cursor | hermes | gemini | opencode | goose | copilot | cline | qwen | auggie | custom"
+    )
+
+    run(fn args, state -> reply(Tools.set_acp(args), state) end)
   end
 
   tool "set_policy", "Write a policy key (registration_open, budgets, gateway directions, …)" do

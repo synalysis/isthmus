@@ -8,6 +8,7 @@ defmodule Isthmus.MCP.Tools do
   alias Isthmus.Gateway
   alias Isthmus.Gateway.Message
   alias Isthmus.Gateway.Translator
+  alias Isthmus.Networks.Agent.Settings
   alias Isthmus.Networks.Health
   alias Isthmus.Networks.MeshCore.Companion, as: MeshCoreCompanion
   alias Isthmus.Networks.Meshtastic.Companion, as: MeshtasticCompanion
@@ -329,6 +330,52 @@ defmodule Isthmus.MCP.Tools do
     {:ok, %{settings: Policy.all_settings(), directions: Policy.direction_keys()}}
   end
 
+  def get_acp(_args \\ %{}) do
+    settings = Settings.current()
+    health = safe_agent_health()
+
+    {:ok,
+     %{
+       enabled: settings.enabled,
+       command: settings.command,
+       cwd: settings.cwd,
+       preset: settings.preset,
+       source: settings.source,
+       status: health[:status],
+       last_error: health[:last_error]
+     }}
+  end
+
+  def set_acp(args) do
+    params = %{
+      "enabled" => fetch(args, :enabled),
+      "command" => optional_text(args, :command) || Settings.current().command,
+      "cwd" => optional_text(args, :cwd) || Settings.current().cwd || "",
+      "preset" => optional_text(args, :preset) || "custom"
+    }
+
+    params =
+      if is_nil(fetch(args, :enabled)) do
+        Map.put(params, "enabled", Settings.current().enabled)
+      else
+        params
+      end
+
+    case Settings.apply(params) do
+      {:ok, health} ->
+        {:ok,
+         %{
+           ok: true,
+           status: health[:status] || health["status"],
+           command: Settings.current().command,
+           last_error: health[:last_error] || health["last_error"]
+         }}
+
+      {:error, :blank_command} ->
+        {:error, "command is required when enabled"}
+    end
+  end
+
   def set_policy(args) do
     with {:ok, key} <- require_text(args, :key) do
       if key not in @writable_policy do
@@ -599,5 +646,11 @@ defmodule Isthmus.MCP.Tools do
     fun.()
   catch
     :exit, _ -> []
+  end
+
+  defp safe_agent_health do
+    Isthmus.Networks.Agent.health()
+  catch
+    :exit, _ -> %{status: :not_started}
   end
 end

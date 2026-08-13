@@ -923,6 +923,14 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
                   autocomplete="off"
                   phx-debounce="150"
                 />
+                <p
+                  :if={@attach_network == "agent"}
+                  class="mt-2 text-xs opacity-70"
+                  id="attach-agent-hint"
+                >
+                  Identity is a session name on the single ACP subprocess.
+                  Pick the ACP CLI under <.link navigate={~p"/admin/agent"} class="link">Admin → ACP</.link>.
+                </p>
                 <div :if={@attach_network in ["meshcore", "reticulum"]} class="mt-2">
                   <p class="text-xs opacity-60 mb-1">
                     <%= if @identity_suggestions == [] do %>

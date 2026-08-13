@@ -36,13 +36,24 @@ Manage under **Admin → Groups** (`/admin/registrations`).
 
 ## ACP agent (AI member)
 
-A bridge group can attach an **ACP agent** as a member. Isthmus is the ACP *client*; the agent (default: Cursor CLI `agent acp`) is the conversational peer.
+A bridge group can attach an **ACP agent** as a member. Isthmus is the ACP *client*; it
+spawns **one** agent subprocess (default: Cursor CLI `agent acp`) and prompts it with
+group traffic.
 
-1. Install and log in to the agent (`agent login` for Cursor).
-2. Admin → **Groups** → **Attach member** → network **ACP agent** → identity `cursor` (any short name: `a-z`, digits, `_`, `-`).
-3. Send a message into the group from radio / Nostr / RNS, or **Admin → Groups → Send message**. Isthmus prompts the agent and fans the reply back to the other legs.
+The attached identity (`cursor`, `hermes`, …) is only a session name. It does **not**
+choose which binary to run. Switch the subprocess under **Admin → ACP** (`/admin/agent`).
+Native presets: Cursor (`agent acp`), Hermes (`hermes acp`), Gemini CLI (`gemini --acp`),
+OpenCode (`opencode acp`), Goose (`goose acp`), GitHub Copilot (`copilot --acp`),
+Cline (`cline --acp`), Qwen Code (`qwen --acp`), Auggie (`auggie --acp`). Custom is any
+other ACP stdio command. That setting is persisted and reconnects without restarting Isthmus.
 
-Env:
+1. Install and log in to the agent (`agent login` for Cursor; `hermes model` for Hermes;
+   provider setup for Gemini / OpenCode / Goose / …).
+2. Admin → **ACP** → pick a native preset → **Apply & reconnect**.
+3. Admin → **Groups** → **Attach member** → network **ACP agent** → identity `cursor` (any short name: `a-z`, digits, `_`, `-`).
+4. Send a message into the group from radio / Nostr / RNS, or **Admin → Groups → Send message**. Isthmus prompts the agent and fans the reply back to the other legs.
+
+Env (boot defaults until Admin → ACP is saved):
 
 ```bash
 # ISTHMUS_ACP_ENABLED=false
@@ -50,7 +61,9 @@ Env:
 # ISTHMUS_ACP_CWD=/path/to/workspace
 ```
 
-The agent identity is unique across groups (`cursor` can only be attached once). Tool calls from the agent are rejected — this path is for short mesh replies, not an IDE session. See [ex_mcp](https://hex.pm/packages/ex_mcp) and [Cursor ACP](https://cursor.com/docs/cli/acp).
+Examples: `ISTHMUS_ACP_COMMAND=hermes acp` or `ISTHMUS_ACP_COMMAND=agent acp`.
+
+The agent identity is unique across groups (`cursor` can only be attached once). Tool calls from the agent are rejected — this path is for short mesh replies, not an IDE session. See [ex_mcp](https://hex.pm/packages/ex_mcp), [Cursor ACP](https://cursor.com/docs/cli/acp), and [Hermes ACP](https://hermes-agent.nousresearch.com/docs/user-guide/features/acp).
 
 ## MCP control plane
 

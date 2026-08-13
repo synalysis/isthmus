@@ -46,6 +46,7 @@ defmodule IsthmusWeb.AdminNav do
             current={@current == :meshtastic}
           />
           <.nav_link href={~p"/admin/nostr"} label="Nostr" current={@current == :nostr} />
+          <.nav_link href={~p"/admin/agent"} label="ACP" current={@current == :agent} />
         </div>
       </div>
       <div class="flex items-start gap-3 px-3 py-2" id="admin-nav-ops">

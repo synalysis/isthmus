@@ -30,6 +30,15 @@ defmodule Isthmus.Application do
       rescue
         _ -> :ok
       end
+
+      if Mix.env() != :test do
+        try do
+          Isthmus.Networks.Agent.Settings.hydrate_from_policy()
+          Isthmus.Networks.Agent.Bridge.reconnect()
+        rescue
+          _ -> :ok
+        end
+      end
     end)
 
     result
