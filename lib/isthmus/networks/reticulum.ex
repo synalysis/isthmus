@@ -6,6 +6,7 @@ defmodule Isthmus.Networks.Reticulum do
 
   alias Isthmus.Announce.Governor
   alias Isthmus.Announce.Sightings
+  alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.Reticulum.ConfigFile
   alias Isthmus.Networks.Reticulum.InterfaceSocket
   alias Isthmus.Networks.Reticulum.Sidecar
@@ -177,6 +178,45 @@ defmodule Isthmus.Networks.Reticulum do
   end
 
   def share_instance?, do: ConfigFile.share_instance?()
+
+  @doc "USB RNodes claimed by Discover (KISS detect), for the Reticulum config pane."
+  def detected_rnodes do
+    roles =
+      try do
+        Discover.roles()
+      catch
+        :exit, _ -> %{}
+      end
+
+    Enum.map(roles[:rnode_ports] || [], fn entry ->
+      detail = entry[:detail] || %{}
+      path = entry[:path]
+
+      %{
+        path: path,
+        label: rnode_label(detail, path),
+        manufacturer: detail[:manufacturer],
+        serial_number: detail[:serial_number],
+        description: detail[:description]
+      }
+    end)
+  end
+
+  defp rnode_label(detail, path) do
+    cond do
+      is_binary(detail[:description]) and detail[:description] != "" ->
+        detail[:description]
+
+      is_binary(detail[:manufacturer]) and detail[:manufacturer] != "" ->
+        detail[:manufacturer]
+
+      is_binary(path) ->
+        Path.basename(path)
+
+      true ->
+        "RNode"
+    end
+  end
 
   @doc "Request (or probe) an RNS path to a destination hash."
   def request_path(destination_hash) when is_binary(destination_hash) do

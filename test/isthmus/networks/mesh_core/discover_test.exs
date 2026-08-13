@@ -272,4 +272,26 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
 
     assert roles.bridge_packet.path == "/dev/ttyACM1"
   end
+
+  test "classifies a USB RNode and does not steal it as a packet sibling" do
+    probe = fn
+      "/dev/ttyACM0", _ -> :bridge_cli
+      "/dev/ttyACM1", _ -> :rnode
+      "/dev/ttyACM2", _ -> :companion
+      _, _ -> :unknown
+    end
+
+    roles =
+      Discover.scan(
+        enumerate: fn -> fake_ports() end,
+        probe: probe,
+        env: fn _ -> nil end
+      )
+
+    assert roles.rnode.path == "/dev/ttyACM1"
+    assert Enum.map(roles.rnode_ports, & &1.path) == ["/dev/ttyACM1"]
+    refute Map.has_key?(roles, :bridge_packet)
+    assert roles.companion.path == "/dev/ttyACM2"
+    assert roles.bridge_cli.path == "/dev/ttyACM0"
+  end
 end

@@ -82,6 +82,10 @@ preserving comments; **Apply** restarts the sidecar):
 
 - Keep **AutoInterface** enabled on both nodes on the same L2 network.
 - Or add TCP peering, e.g. MeshChatX listens and Isthmus dials:
+- Or add a USB **RNode** (`RNodeInterface`) from Admin → Reticulum when Discover
+  sees the KISS detect handshake. Set frequency / bandwidth / SF to match the
+  rest of your RNS mesh. Only one process can own the serial port — if MeshChatX
+  is shared master and already has the RNode, leave it there.
 
 ```ini
 [[TCP to MeshChatX]]

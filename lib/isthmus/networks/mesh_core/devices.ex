@@ -45,7 +45,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
     bridge_cli = Keyword.get(opts, :bridge_cli, %{})
     bridge_link = Keyword.get(opts, :bridge_link, %{})
 
-    meshtastic_paths = meshtastic_paths(roles)
+    meshtastic_paths = foreign_paths(roles)
     ports = Enum.reject(ports, fn p -> MapSet.member?(meshtastic_paths, p.path) end)
 
     path_roles = role_paths(roles)
@@ -86,6 +86,11 @@ defmodule Isthmus.Networks.MeshCore.Devices do
     end
   end
 
+  defp foreign_paths(roles) when is_map(roles) do
+    meshtastic_paths(roles)
+    |> MapSet.union(rnode_paths(roles))
+  end
+
   defp meshtastic_paths(roles) when is_map(roles) do
     primary =
       case roles[:meshtastic] do
@@ -95,6 +100,23 @@ defmodule Isthmus.Networks.MeshCore.Devices do
 
     extras =
       Enum.flat_map(roles[:meshtastic_ports] || [], fn
+        %{path: path} when is_binary(path) -> [path]
+        path when is_binary(path) -> [path]
+        _ -> []
+      end)
+
+    MapSet.new(primary ++ extras)
+  end
+
+  defp rnode_paths(roles) when is_map(roles) do
+    primary =
+      case roles[:rnode] do
+        %{path: path} when is_binary(path) -> [path]
+        _ -> []
+      end
+
+    extras =
+      Enum.flat_map(roles[:rnode_ports] || [], fn
         %{path: path} when is_binary(path) -> [path]
         path when is_binary(path) -> [path]
         _ -> []

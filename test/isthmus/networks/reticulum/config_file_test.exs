@@ -91,7 +91,39 @@ defmodule Isthmus.Networks.Reticulum.ConfigFileTest do
              ConfigFile.add_interface(%{name: "Default Interface", type: "AutoInterface"}, path)
 
     assert {:error, :unsupported_type} =
+             ConfigFile.add_interface(%{name: "Radio", type: "NotARealInterface"}, path)
+  end
+
+  test "adds RNodeInterface with radio fields", %{path: path} do
+    assert {:error, :missing_port} =
              ConfigFile.add_interface(%{name: "Radio", type: "RNodeInterface"}, path)
+
+    assert {:ok, _} =
+             ConfigFile.add_interface(
+               %{
+                 name: "RNode USB",
+                 type: "RNodeInterface",
+                 port: "/dev/ttyACM3",
+                 frequency: 915_000_000,
+                 bandwidth: 125_000,
+                 txpower: 7,
+                 spreadingfactor: 8,
+                 codingrate: 5
+               },
+               path
+             )
+
+    assert {:ok, ifaces} = ConfigFile.list_interfaces(path)
+    rnode = Enum.find(ifaces, &(&1.name == "RNode USB"))
+    assert rnode.type == "RNodeInterface"
+    assert rnode.port == "/dev/ttyACM3"
+    assert rnode.frequency == "915000000"
+    assert rnode.spreadingfactor == "8"
+
+    text = File.read!(path)
+    assert text =~ "[[RNode USB]]"
+    assert text =~ "type = RNodeInterface"
+    assert text =~ "port = /dev/ttyACM3"
   end
 
   test "set_interface_enabled toggles without dropping comments", %{path: path} do

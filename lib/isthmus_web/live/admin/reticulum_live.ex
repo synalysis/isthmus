@@ -3,6 +3,8 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
 
   alias Isthmus.Networks.Reticulum
   alias Isthmus.Networks.Reticulum.ConfigFile
+  alias Isthmus.Networks.Reticulum.RNode
+  alias Isthmus.Registrations
 
   @impl true
   def mount(_params, _session, socket) do
@@ -12,6 +14,7 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
      socket
      |> assign(:page_title, "Reticulum")
      |> assign(:iface_form, blank_iface_form())
+     |> assign(:iface_modal, false)
      |> assign(:sidecar_health, %{status: :unknown})
      |> assign_data()}
   end
@@ -21,30 +24,57 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
 
   @impl true
   def handle_event("iface_validate", %{"iface" => params}, socket) do
-    {:noreply, assign(socket, :iface_form, to_form(params, as: :iface))}
+    {:noreply, assign(socket, :iface_form, to_form(maybe_rnode_defaults(params), as: :iface))}
+  end
+
+  def handle_event("open_iface_modal", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:iface_form, blank_iface_form())
+     |> assign(:iface_modal, true)}
+  end
+
+  def handle_event("close_iface_modal", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:iface_modal, false)
+     |> assign(:iface_form, blank_iface_form())}
   end
 
   def handle_event("iface_add", %{"iface" => params}, socket) do
-    attrs = %{
-      name: params["name"],
-      type: params["type"],
-      enabled: true,
-      target_host: params["target_host"],
-      target_port: params["target_port"],
-      listen_ip: params["listen_ip"],
-      listen_port: params["listen_port"]
-    }
+    attrs = iface_attrs(params)
 
     case Reticulum.add_config_interface(attrs) do
       {:ok, _} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Interface added to config. Click Apply to reload the sidecar.")
+         |> assign(:iface_modal, false)
          |> assign(:iface_form, blank_iface_form())
+         |> put_flash(:info, "Interface added to config. Click Apply to reload the sidecar.")
          |> assign_data()}
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Could not add interface: #{format_err(reason)}")}
+    end
+  end
+
+  def handle_event("use_rnode", %{"path" => path}, socket) do
+    {:noreply,
+     socket
+     |> assign(:iface_form, to_form(RNode.default_form_params(path), as: :iface))
+     |> assign(:iface_modal, true)}
+  end
+
+  def handle_event("rescan_rnodes", _params, socket) do
+    case Isthmus.Networks.MeshCore.Discover.refresh() do
+      {:ok, _roles} ->
+        {:noreply,
+         socket
+         |> put_flash(:info, "Rescanned USB serial ports.")
+         |> assign_data()}
+
+      {:error, reason} ->
+        {:noreply, put_flash(socket, :error, "Rescan failed: #{inspect(reason)}")}
     end
   end
 
@@ -155,10 +185,49 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
     socket
     |> assign(:config_path, Reticulum.config_path())
     |> assign(:config_interfaces, config_ifaces)
+    |> assign(:detected_rnodes, Reticulum.detected_rnodes())
+    |> assign(:lxmf_destinations, lxmf_destination_rows(socket.assigns[:status]))
     |> assign(:share_instance, share?)
     |> assign(:sidecar_health, health)
     |> assign(:allowed_types, ConfigFile.allowed_types())
   end
+
+  defp iface_attrs(%{"type" => "RNodeInterface"} = params) do
+    Map.merge(
+      %{
+        name: params["name"],
+        type: "RNodeInterface",
+        enabled: true
+      },
+      RNode.config_from_form(params)
+    )
+  end
+
+  defp iface_attrs(params) do
+    %{
+      name: params["name"],
+      type: params["type"],
+      enabled: true,
+      target_host: params["target_host"],
+      target_port: params["target_port"],
+      listen_ip: params["listen_ip"],
+      listen_port: params["listen_port"]
+    }
+  end
+
+  defp maybe_rnode_defaults(%{"type" => "RNodeInterface"} = params) do
+    defaults = RNode.default_form_params(params["port"] || "")
+
+    Enum.reduce(defaults, params, fn {key, value}, acc ->
+      if String.trim(to_string(acc[key] || "")) == "" do
+        Map.put(acc, key, value)
+      else
+        acc
+      end
+    end)
+  end
+
+  defp maybe_rnode_defaults(params), do: params
 
   defp blank_iface_form do
     to_form(
@@ -174,6 +243,13 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
     )
   end
 
+  defp format_err(:missing_port), do: "RNode needs a serial port"
+  defp format_err(:invalid_frequency), do: "RNode frequency must be 137–3000 MHz"
+  defp format_err(:invalid_bandwidth), do: "RNode bandwidth must be 7.8–1625 kHz"
+  defp format_err(:invalid_txpower), do: "RNode TX power must be 0–37 dBm"
+  defp format_err(:invalid_spreadingfactor), do: "RNode spreading factor must be 5–12"
+  defp format_err(:invalid_codingrate), do: "RNode coding rate must be 5–8"
+  defp format_err(:unsupported_type), do: "Unsupported interface type"
   defp format_err(reason) when is_atom(reason), do: Atom.to_string(reason)
   defp format_err(reason), do: inspect(reason)
 
@@ -216,7 +292,10 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
       iface.target_host && "host=#{iface.target_host}",
       iface.target_port && "port=#{iface.target_port}",
       iface.listen_ip && "listen=#{iface.listen_ip}",
-      iface.listen_port && "port=#{iface.listen_port}"
+      iface.listen_port && "port=#{iface.listen_port}",
+      iface.port && "port=#{iface.port}",
+      iface.frequency && "freq=#{iface.frequency} Hz",
+      iface.bandwidth && "bw=#{iface.bandwidth} Hz"
     ]
     |> Enum.reject(&is_nil/1)
     |> Enum.join(" · ")
@@ -225,6 +304,60 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
       other -> other
     end
   end
+
+  defp rnode_configured?(path, ifaces) do
+    Enum.any?(ifaces, fn iface ->
+      iface.type == "RNodeInterface" and iface.port == path
+    end)
+  end
+
+  defp rnode_dom_id(path) when is_binary(path) do
+    "rnode-" <> (path |> Path.basename() |> String.replace(~r/[^A-Za-z0-9_-]/, "-"))
+  end
+
+  defp rnode_dom_id(_), do: "rnode-unknown"
+
+  defp lxmf_destination_rows(%{registered: registered}) when is_list(registered) do
+    by_ref = reticulum_leg_index()
+
+    Enum.map(registered, fn dest ->
+      hex = dest |> to_string() |> String.downcase()
+
+      case Map.get(by_ref, hex) do
+        {group, leg} ->
+          %{
+            dest: dest,
+            group_name: group.display_name,
+            group_kind: group.kind,
+            role: leg.role
+          }
+
+        _ ->
+          %{dest: dest, group_name: nil, group_kind: nil, role: nil}
+      end
+    end)
+  end
+
+  defp lxmf_destination_rows(_), do: []
+
+  defp reticulum_leg_index do
+    for group <- Registrations.list_all(),
+        group.status == "active",
+        leg <- group.legs || [],
+        leg.network == "reticulum",
+        is_binary(leg.identity_ref),
+        into: %{} do
+      {String.downcase(leg.identity_ref), {group, leg}}
+    end
+  rescue
+    _ -> %{}
+  end
+
+  defp lxmf_role_label("proxy"), do: "proxy (Isthmus-owned)"
+  defp lxmf_role_label("primary"), do: "primary"
+  defp lxmf_role_label("member"), do: "member"
+  defp lxmf_role_label(role) when is_binary(role) and role != "", do: role
+  defp lxmf_role_label(_), do: "—"
 
   @impl true
   def render(assigns) do
@@ -270,6 +403,7 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
             <div class="stat bg-base-200 rounded-box border border-base-300">
               <div class="stat-title">LXMF destinations</div>
               <div class="stat-value text-2xl">{@status.registered_count}</div>
+              <div class="stat-desc">Isthmus-owned delivery inboxes</div>
             </div>
             <div class="stat bg-base-200 rounded-box border border-base-300">
               <div class="stat-title">Traffic</div>
@@ -398,7 +532,80 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
               </button>
             </div>
 
-            <h3 class="text-sm font-medium pt-1">Configured interfaces</h3>
+            <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <h3 class="text-sm font-medium">Detected RNodes</h3>
+              <button
+                type="button"
+                class="btn btn-outline btn-xs"
+                id="rns-rescan-rnodes"
+                phx-click="rescan_rnodes"
+              >
+                Rescan USB
+              </button>
+            </div>
+            <div
+              :if={@detected_rnodes != []}
+              class="overflow-x-auto rounded-box border border-base-300"
+              id="rns-detected-rnodes"
+            >
+              <p class="text-xs opacity-70 px-4 pt-3">
+                USB radios that answered the RNode detect handshake. Add one as an
+                <span class="font-mono">RNodeInterface</span>
+                in this config (Apply restarts the sidecar and opens the port).
+                If MeshChatX already owns the radio as shared master, leave it there.
+              </p>
+              <table class="table table-sm">
+                <thead>
+                  <tr>
+                    <th>Radio</th>
+                    <th>Port</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={rnode <- @detected_rnodes} id={rnode_dom_id(rnode.path)}>
+                    <td class="text-sm">
+                      <span class="font-medium">{rnode.label}</span>
+                      <span
+                        :if={rnode_configured?(rnode.path, @config_interfaces)}
+                        class="badge badge-sm badge-ghost ml-2"
+                      >
+                        in config
+                      </span>
+                    </td>
+                    <td class="font-mono text-xs">{rnode.path}</td>
+                    <td class="text-right">
+                      <button
+                        type="button"
+                        class="btn btn-secondary btn-xs"
+                        id={"use-rnode-#{rnode_dom_id(rnode.path)}"}
+                        phx-click="use_rnode"
+                        phx-value-path={rnode.path}
+                        disabled={rnode_configured?(rnode.path, @config_interfaces)}
+                      >
+                        Add as interface
+                      </button>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p :if={@detected_rnodes == []} class="text-xs opacity-60" id="rns-detected-rnodes-empty">
+              No USB RNode detected. Plug one in and Rescan USB, or Add interface
+              and choose RNodeInterface.
+            </p>
+
+            <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <h3 class="text-sm font-medium">Configured interfaces</h3>
+              <button
+                type="button"
+                class="btn btn-secondary btn-sm"
+                id="rns-open-iface-modal"
+                phx-click="open_iface_modal"
+              >
+                Add interface
+              </button>
+            </div>
             <div class="overflow-x-auto rounded-box border border-base-300">
               <table class="table table-sm" id="rns-configured-ifaces">
                 <thead>
@@ -458,51 +665,124 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
                 </tbody>
               </table>
             </div>
+          </div>
 
-            <.form
-              for={@iface_form}
-              id="rns-iface-form"
-              phx-change="iface_validate"
-              phx-submit="iface_add"
-              class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 items-end pt-2"
-            >
-              <.input field={@iface_form[:name]} type="text" label="Name" required />
-              <.input
-                field={@iface_form[:type]}
-                type="select"
-                label="Type"
-                options={Enum.map(@allowed_types, &{&1, &1})}
-              />
-              <.input
-                :if={@iface_form[:type].value == "TCPClientInterface"}
-                field={@iface_form[:target_host]}
-                type="text"
-                label="Target host"
-              />
-              <.input
-                :if={@iface_form[:type].value == "TCPClientInterface"}
-                field={@iface_form[:target_port]}
-                type="text"
-                label="Target port"
-              />
-              <.input
-                :if={@iface_form[:type].value == "TCPServerInterface"}
-                field={@iface_form[:listen_ip]}
-                type="text"
-                label="Listen IP"
-              />
-              <.input
-                :if={@iface_form[:type].value == "TCPServerInterface"}
-                field={@iface_form[:listen_port]}
-                type="text"
-                label="Listen port"
-              />
-              <div class="sm:col-span-2 lg:col-span-3">
-                <button type="submit" class="btn btn-secondary btn-sm" id="rns-iface-add">
-                  Add interface
-                </button>
-              </div>
-            </.form>
+          <div
+            :if={@iface_modal}
+            class="modal modal-open"
+            role="dialog"
+            id="rns-iface-modal"
+          >
+            <div class="modal-box max-w-lg">
+              <h3 class="text-lg font-semibold">Add interface</h3>
+              <p class="text-sm opacity-70 mt-1">
+                Writes a block into Isthmus’s RNS config. Click Apply on the page
+                to restart the sidecar and load it.
+              </p>
+              <.form
+                for={@iface_form}
+                id="rns-iface-form"
+                phx-change="iface_validate"
+                phx-submit="iface_add"
+                class="mt-4 space-y-3"
+              >
+                <.input
+                  field={@iface_form[:name]}
+                  type="text"
+                  label="Name"
+                  required
+                  autofocus
+                  phx-mounted={JS.focus()}
+                />
+                <.input
+                  field={@iface_form[:type]}
+                  type="select"
+                  label="Type"
+                  options={Enum.map(@allowed_types, &{&1, &1})}
+                />
+                <.input
+                  :if={@iface_form[:type].value == "TCPClientInterface"}
+                  field={@iface_form[:target_host]}
+                  type="text"
+                  label="Target host"
+                />
+                <.input
+                  :if={@iface_form[:type].value == "TCPClientInterface"}
+                  field={@iface_form[:target_port]}
+                  type="text"
+                  label="Target port"
+                />
+                <.input
+                  :if={@iface_form[:type].value == "TCPServerInterface"}
+                  field={@iface_form[:listen_ip]}
+                  type="text"
+                  label="Listen IP"
+                />
+                <.input
+                  :if={@iface_form[:type].value == "TCPServerInterface"}
+                  field={@iface_form[:listen_port]}
+                  type="text"
+                  label="Listen port"
+                />
+                <.input
+                  :if={@iface_form[:type].value == "RNodeInterface"}
+                  field={@iface_form[:port]}
+                  type="text"
+                  label="Serial port"
+                  placeholder="/dev/ttyACM0"
+                />
+                <.input
+                  :if={@iface_form[:type].value == "RNodeInterface"}
+                  field={@iface_form[:frequency_mhz]}
+                  type="text"
+                  label="Frequency (MHz)"
+                />
+                <.input
+                  :if={@iface_form[:type].value == "RNodeInterface"}
+                  field={@iface_form[:bandwidth_khz]}
+                  type="text"
+                  label="Bandwidth (kHz)"
+                />
+                <.input
+                  :if={@iface_form[:type].value == "RNodeInterface"}
+                  field={@iface_form[:txpower]}
+                  type="number"
+                  label="TX (dBm)"
+                  min="0"
+                  max="37"
+                />
+                <.input
+                  :if={@iface_form[:type].value == "RNodeInterface"}
+                  field={@iface_form[:spreadingfactor]}
+                  type="number"
+                  label="Spreading factor"
+                  min="5"
+                  max="12"
+                />
+                <.input
+                  :if={@iface_form[:type].value == "RNodeInterface"}
+                  field={@iface_form[:codingrate]}
+                  type="number"
+                  label="Coding rate"
+                  min="5"
+                  max="8"
+                />
+                <div class="modal-action">
+                  <button
+                    class="btn btn-ghost btn-sm"
+                    type="button"
+                    id="rns-close-iface-modal"
+                    phx-click="close_iface_modal"
+                  >
+                    Cancel
+                  </button>
+                  <button class="btn btn-primary btn-sm" type="submit" id="rns-iface-add">
+                    Add interface
+                  </button>
+                </div>
+              </.form>
+            </div>
+            <div class="modal-backdrop" phx-click="close_iface_modal"></div>
           </div>
 
           <div class="space-y-2">
@@ -556,11 +836,50 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
             </div>
           </div>
 
-          <div :if={@status.registered != []} class="space-y-2">
+          <div class="space-y-2" id="rns-lxmf-destinations">
             <h2 class="text-lg font-medium">Registered LXMF destinations</h2>
-            <ul class="text-xs font-mono space-y-1 opacity-80">
-              <li :for={dest <- @status.registered}>{dest}</li>
-            </ul>
+            <p class="text-xs opacity-70 max-w-3xl">
+              These are <strong class="font-medium">Isthmus-owned</strong>
+              <span class="font-mono">lxmf.delivery</span>
+              inboxes loaded in this sidecar — minted Reticulum
+              <strong class="font-medium">proxies</strong>
+              for groups and registrations, so Isthmus can receive LXMF and send as
+              that identity. Attached MeshChatX hashes are not listed; Isthmus does
+              not hold their keys. The tunnel destination is separate (Tunnels).
+            </p>
+            <%= if @lxmf_destinations == [] do %>
+              <p class="text-sm opacity-70">
+                None loaded yet. Register a primary or mint an RNS proxy on a group.
+              </p>
+            <% else %>
+              <div class="overflow-x-auto rounded-box border border-base-300">
+                <table class="table table-sm" id="rns-lxmf-destinations-table">
+                  <thead>
+                    <tr>
+                      <th>Destination</th>
+                      <th>Belongs to</th>
+                      <th>Role</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr :for={row <- @lxmf_destinations} id={"rns-lxmf-#{row.dest}"}>
+                      <td class="font-mono text-xs break-all">{row.dest}</td>
+                      <td class="text-sm">
+                        <%= if row.group_name do %>
+                          <span class="font-medium">{row.group_name}</span>
+                          <span class="badge badge-ghost badge-sm ml-1">
+                            {AdminCopy.group_kind_label(row.group_kind)}
+                          </span>
+                        <% else %>
+                          <span class="opacity-60">Not matched to a group</span>
+                        <% end %>
+                      </td>
+                      <td class="text-sm opacity-80">{lxmf_role_label(row.role)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            <% end %>
           </div>
         </div>
 

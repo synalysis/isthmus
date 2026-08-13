@@ -156,4 +156,34 @@ defmodule Isthmus.Networks.MeshCore.DevicesTest do
 
     assert devices == []
   end
+
+  test "inventory ignores a detected RNode" do
+    ports = [
+      %{
+        name: "ttyACM3",
+        path: "/dev/ttyACM3",
+        score: 1,
+        reasons: [],
+        description: "RNode",
+        manufacturer: "Espressif",
+        serial_number: "RN1",
+        vendor_id: 0x303A,
+        product_id: 0x1001
+      }
+    ]
+
+    devices =
+      Devices.inventory(
+        ports: ports,
+        roles: %{
+          rnode: %{path: "/dev/ttyACM3", detail: %{}},
+          rnode_ports: [%{path: "/dev/ttyACM3"}]
+        },
+        companion: %{},
+        bridge_cli: %{},
+        bridge_link: %{}
+      )
+
+    assert devices == []
+  end
 end

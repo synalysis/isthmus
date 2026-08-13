@@ -7,6 +7,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   - `:bridge_cli` — MeshCore repeater text CLI (`ver\\r`)
   - `:bridge_packet` — sibling CDC of a detected CLI (or env override)
   - `:meshtastic` — Meshtastic serial API (`0x94 0xC3` protobuf want_config)
+  - `:rnode` — Reticulum RNode KISS detect (`FEND CMD_DETECT DETECT_RESP`)
 
   Environment variables override detection when set:
   - `ISTHMUS_MESHCORE_PORT`
@@ -24,13 +25,14 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   alias Isthmus.Networks.MeshCore.Ports
   alias Isthmus.Networks.MeshCore.Protocol
   alias Isthmus.Networks.Meshtastic.Protocol, as: MeshtasticProtocol
+  alias Isthmus.Networks.Reticulum.RNode
 
   @table :isthmus_meshcore_discover
   @baud 115_200
   @probe_timeout_ms 500
   @open_timeout_ms 1_500
 
-  @type role :: :companion | :bridge_cli | :bridge_packet | :meshtastic
+  @type role :: :companion | :bridge_cli | :bridge_packet | :meshtastic | :rnode
   @type assignment :: %{
           path: String.t(),
           source: :env | :detected,
@@ -52,7 +54,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   @doc "Port path for a role, or nil."
   def role(role, name \\ __MODULE__)
-      when role in [:companion, :bridge_cli, :bridge_packet, :meshtastic] do
+      when role in [:companion, :bridge_cli, :bridge_packet, :meshtastic, :rnode] do
     case roles(name)[role] do
       %{path: path} when is_binary(path) and path != "" -> path
       _ -> nil
@@ -130,7 +132,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   Options:
   - `:enumerate` — `fn -> %{name => meta}` (default Circuits.UART.enumerate/0)
-  - `:probe` — `fn path, meta -> :companion | :bridge_cli | :meshtastic | :unknown | {:error, term}`
+  - `:probe` — `fn path, meta -> :companion | :bridge_cli | :meshtastic | :rnode | :unknown | {:error, term}`
   - `:env` — `fn key -> value | nil`
   - `:skip_paths` — ports to leave alone (already open elsewhere)
   """
@@ -153,7 +155,9 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     Logger.info("MeshCore discover: probing #{length(ports)} port(s)")
 
     {detected, claimed} =
-      Enum.reduce(ports, {%{meshtastic_ports: []}, MapSet.new()}, fn port, {acc, claimed} ->
+      Enum.reduce(ports, {%{meshtastic_ports: [], rnode_ports: []}, MapSet.new()}, fn port,
+                                                                                      {acc,
+                                                                                       claimed} ->
         cond do
           MapSet.member?(claimed, port.path) ->
             {acc, claimed}
@@ -184,6 +188,11 @@ defmodule Isthmus.Networks.MeshCore.Discover do
                 entry = %{path: port.path, source: :detected, detail: port}
                 {add_meshtastic(acc, entry), MapSet.put(claimed, port.path)}
 
+              :rnode ->
+                Logger.info("MeshCore discover: #{port.path} -> rnode")
+                entry = %{path: port.path, source: :detected, detail: port}
+                {add_rnode(acc, entry), MapSet.put(claimed, port.path)}
+
               other ->
                 Logger.debug("MeshCore discover: #{port.path} -> #{inspect(other)}")
                 {acc, claimed}
@@ -198,11 +207,13 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       |> put_role(:meshtastic, env_meshtastic, detected[:meshtastic], :env)
       |> maybe_packet(env_packet, detected[:bridge_cli], by_path, claimed)
 
-    Map.put(
-      roles,
+    roles
+    |> Map.put(
       :meshtastic_ports,
       merge_meshtastic_ports(detected[:meshtastic_ports], roles[:meshtastic])
     )
+    |> Map.put(:rnode_ports, detected[:rnode_ports] || [])
+    |> maybe_primary_rnode(detected[:rnode])
   end
 
   @impl true
@@ -389,19 +400,26 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
       false ->
         _ = Circuits.UART.flush(uart)
-        _ = Circuits.UART.write(uart, "ver\r")
+        _ = Circuits.UART.write(uart, RNode.detect_frame())
 
-        if read_until(uart, &cli_response?/1, @probe_timeout_ms) do
-          :bridge_cli
+        if read_until(uart, &RNode.detect_response?/1, @probe_timeout_ms) do
+          :rnode
         else
           _ = Circuits.UART.flush(uart)
-          nonce = :rand.uniform(0x7FFF_FFFE) + 1
-          _ = Circuits.UART.write(uart, MeshtasticProtocol.want_config_frame(nonce))
+          _ = Circuits.UART.write(uart, "ver\r")
 
-          if read_until(uart, &meshtastic_response?/1, @probe_timeout_ms) do
-            :meshtastic
+          if read_until(uart, &cli_response?/1, @probe_timeout_ms) do
+            :bridge_cli
           else
-            :unknown
+            _ = Circuits.UART.flush(uart)
+            nonce = :rand.uniform(0x7FFF_FFFE) + 1
+            _ = Circuits.UART.write(uart, MeshtasticProtocol.want_config_frame(nonce))
+
+            if read_until(uart, &meshtastic_response?/1, @probe_timeout_ms) do
+              :meshtastic
+            else
+              :unknown
+            end
           end
         end
     end
@@ -558,6 +576,16 @@ defmodule Isthmus.Networks.MeshCore.Discover do
           end)
           |> Enum.reject(&is_nil/1)
 
+        {:rnode_ports, list} when is_list(list) ->
+          Enum.map(list, fn
+            %{path: path, source: source} -> "rnode=#{path}(#{source})"
+            _ -> nil
+          end)
+          |> Enum.reject(&is_nil/1)
+
+        {:rnode, _} ->
+          []
+
         {role, %{path: path, source: source}} ->
           ["#{role}=#{path}(#{source})"]
 
@@ -575,6 +603,17 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end)
     |> Map.put_new(:meshtastic, entry)
   end
+
+  defp add_rnode(acc, entry) do
+    acc
+    |> Map.update(:rnode_ports, [entry], fn list ->
+      if Enum.any?(list, &(&1.path == entry.path)), do: list, else: list ++ [entry]
+    end)
+    |> Map.put_new(:rnode, entry)
+  end
+
+  defp maybe_primary_rnode(roles, nil), do: roles
+  defp maybe_primary_rnode(roles, entry), do: Map.put_new(roles, :rnode, entry)
 
   defp merge_meshtastic_ports(detected, primary) do
     list = detected || []

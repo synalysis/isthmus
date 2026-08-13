@@ -9,7 +9,7 @@ defmodule Isthmus.Networks.Reticulum.ConfigFile do
   unrelated sections are left intact.
   """
 
-  @allowed_types ~w(AutoInterface TCPClientInterface TCPServerInterface)
+  @allowed_types ~w(AutoInterface TCPClientInterface TCPServerInterface RNodeInterface)
 
   def path do
     configdir =
@@ -39,10 +39,11 @@ defmodule Isthmus.Networks.Reticulum.ConfigFile do
   Add an interface block. Attrs:
 
   * `:name` (required)
-  * `:type` — AutoInterface | TCPClientInterface | TCPServerInterface
+  * `:type` — AutoInterface | TCPClientInterface | TCPServerInterface | RNodeInterface
   * `:enabled` — boolean (default true)
   * `:target_host`, `:target_port` — TCP client
   * `:listen_ip`, `:listen_port` — TCP server
+  * `:port`, `:frequency`, `:bandwidth`, `:txpower`, `:spreadingfactor`, `:codingrate` — RNode
   """
   def add_interface(attrs, path \\ path()) when is_map(attrs) do
     name =
@@ -56,6 +57,7 @@ defmodule Isthmus.Networks.Reticulum.ConfigFile do
 
     with :ok <- validate_name(name),
          :ok <- validate_type(type),
+         :ok <- validate_rnode(type, attrs),
          {:ok, text} <- read(path),
          {:ok, doc} <- parse(text),
          :ok <- ensure_name_free(doc, name) do
@@ -350,6 +352,12 @@ defmodule Isthmus.Networks.Reticulum.ConfigFile do
   defp validate_type(type) when type in @allowed_types, do: :ok
   defp validate_type(_), do: {:error, :unsupported_type}
 
+  defp validate_rnode("RNodeInterface", attrs) do
+    Isthmus.Networks.Reticulum.RNode.validate_config(attrs)
+  end
+
+  defp validate_rnode(_, _), do: :ok
+
   defp ensure_name_free(doc, name) do
     if Enum.any?(doc.interfaces, &(&1.name == name)) do
       {:error, :already_exists}
@@ -391,6 +399,17 @@ defmodule Isthmus.Networks.Reticulum.ConfigFile do
     [
       "    listen_ip = #{ip}",
       "    listen_port = #{port}"
+    ]
+  end
+
+  defp type_specific_lines("RNodeInterface", attrs) do
+    [
+      "    port = #{Map.get(attrs, :port) || Map.get(attrs, "port")}",
+      "    frequency = #{Map.get(attrs, :frequency) || Map.get(attrs, "frequency")}",
+      "    bandwidth = #{Map.get(attrs, :bandwidth) || Map.get(attrs, "bandwidth")}",
+      "    txpower = #{Map.get(attrs, :txpower) || Map.get(attrs, "txpower")}",
+      "    spreadingfactor = #{Map.get(attrs, :spreadingfactor) || Map.get(attrs, "spreadingfactor")}",
+      "    codingrate = #{Map.get(attrs, :codingrate) || Map.get(attrs, "codingrate")}"
     ]
   end
 
@@ -450,7 +469,13 @@ defmodule Isthmus.Networks.Reticulum.ConfigFile do
       target_host: fields["target_host"],
       target_port: fields["target_port"],
       listen_ip: fields["listen_ip"],
-      listen_port: fields["listen_port"]
+      listen_port: fields["listen_port"],
+      port: fields["port"],
+      frequency: fields["frequency"],
+      bandwidth: fields["bandwidth"],
+      txpower: fields["txpower"],
+      spreadingfactor: fields["spreadingfactor"],
+      codingrate: fields["codingrate"]
     }
   end
 
