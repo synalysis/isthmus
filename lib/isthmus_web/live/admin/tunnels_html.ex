@@ -187,10 +187,10 @@ defmodule IsthmusWeb.Admin.TunnelsHTML do
                   placeholder="Shared tunnel code — both sides enter the same phrase"
                 />
                 <p class="mt-1 text-xs opacity-60">
-                  Both endpoints must derive the same tunnel id: enter an identical code on each side
-                  (case-insensitive). Inbound frames are demuxed by tunnel id, not by carrier address,
-                  so a return path only works when both sides match. Leave blank for a one-off random
-                  tunnel (outbound only until the other side pairs the id).
+                  Both endpoints must enter the same pairing code (case-insensitive). Frames are
+                  HMAC-authenticated from that code, and demuxed by the derived tunnel id — sharing
+                  only the tunnel id does not stop a sniffer from injecting. Leave blank for a
+                  one-off random tunnel (legacy HMAC from the tunnel id).
                 </p>
               </div>
               <select class="select select-bordered" name="peer[payload_network]">

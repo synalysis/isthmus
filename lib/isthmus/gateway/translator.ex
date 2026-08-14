@@ -23,6 +23,7 @@ defmodule Isthmus.Gateway.Translator do
   alias Isthmus.Gateway.Resolve
   alias Isthmus.Networks.Nostr.ServiceInbox
   alias Isthmus.Nostr.Crypto
+  alias Isthmus.Nostr.Event
   alias Isthmus.Registrations
 
   @spec start_link(keyword()) :: GenServer.on_start()
@@ -67,16 +68,28 @@ defmodule Isthmus.Gateway.Translator do
   end
 
   def handle_info({:meshcore_dm, attrs}, state) when is_map(attrs) do
-    ingest(%Message{
-      from_network: :meshcore,
-      from_ref: attrs[:from_ref] || attrs["from_ref"],
-      to_ref: attrs[:to_ref] || attrs["to_ref"],
-      body: attrs[:body] || attrs["body"] || "",
-      external_id: attrs[:external_id],
-      meta: attrs[:meta] || %{}
-    })
+    from_ref = attrs[:from_ref] || attrs["from_ref"]
+    body = attrs[:body] || attrs["body"] || ""
 
-    {:noreply, state}
+    case Registrations.complete_bind("meshcore", from_ref, body) do
+      {:ok, _} ->
+        {:noreply, state}
+
+      {:error, _} ->
+        {:noreply, state}
+
+      :error ->
+        ingest(%Message{
+          from_network: :meshcore,
+          from_ref: from_ref,
+          to_ref: attrs[:to_ref] || attrs["to_ref"],
+          body: body,
+          external_id: attrs[:external_id],
+          meta: attrs[:meta] || %{}
+        })
+
+        {:noreply, state}
+    end
   end
 
   def handle_info({:meshcore_channel, attrs}, state) when is_map(attrs) do
@@ -127,16 +140,28 @@ defmodule Isthmus.Gateway.Translator do
   end
 
   def handle_info({:lxmf, attrs}, state) when is_map(attrs) do
-    ingest(%Message{
-      from_network: :reticulum,
-      from_ref: attrs["from"] || attrs[:from],
-      to_ref: attrs["to"] || attrs[:to],
-      body: attrs["body"] || attrs[:body] || "",
-      external_id: attrs["id"],
-      meta: %{}
-    })
+    from_ref = attrs["from"] || attrs[:from]
+    body = attrs["body"] || attrs[:body] || ""
 
-    {:noreply, state}
+    case Registrations.complete_bind("reticulum", from_ref, body) do
+      {:ok, _} ->
+        {:noreply, state}
+
+      {:error, _} ->
+        {:noreply, state}
+
+      :error ->
+        ingest(%Message{
+          from_network: :reticulum,
+          from_ref: from_ref,
+          to_ref: attrs["to"] || attrs[:to],
+          body: body,
+          external_id: attrs["id"],
+          meta: %{}
+        })
+
+        {:noreply, state}
+    end
   end
 
   def handle_info({:agent_message, attrs}, state) when is_map(attrs) do
@@ -154,32 +179,38 @@ defmodule Isthmus.Gateway.Translator do
 
   def handle_info(_msg, state), do: {:noreply, state}
 
-  defp handle_nostr_event(%{"kind" => kind} = event) when kind in [4, 14, 1059] do
-    inboxes = Registrations.list_nostr_inbox_keypairs()
+  defp handle_nostr_event(%{"kind" => kind} = event) when kind in [4, 1059] do
+    with {:ok, _} <- Event.verify(event) do
+      inboxes = Registrations.list_nostr_inbox_keypairs()
 
-    if inboxes == [] do
-      Logger.debug("nostr DM ignored (no proxy or ISTHMUS_NOSTR_NSEC)")
-      :ok
-    else
-      case decrypt_nostr_with_inboxes(event, kind, inboxes) do
-        {:ok, body, author, meta, to_hex} ->
-          if kind == 1059 and not is_binary(meta["subject"] || meta[:subject]) do
-            Logger.debug("nostr NIP-17 DM missing subject — routing by recipient proxy")
-          end
+      if inboxes == [] do
+        Logger.debug("nostr DM ignored (no proxy or ISTHMUS_NOSTR_NSEC)")
+        :ok
+      else
+        case decrypt_nostr_with_inboxes(event, kind, inboxes) do
+          {:ok, body, author, meta, to_hex} ->
+            if kind == 1059 and not is_binary(meta["subject"] || meta[:subject]) do
+              Logger.debug("nostr NIP-17 DM missing subject — routing by recipient proxy")
+            end
 
-          ingest(%Message{
-            from_network: :nostr,
-            from_ref: author,
-            to_ref: to_hex,
-            body: body,
-            external_id: event["id"],
-            meta: Map.merge(%{"kind" => kind}, Deliver.stringify_meta(meta))
-          })
+            ingest(%Message{
+              from_network: :nostr,
+              from_ref: author,
+              to_ref: to_hex,
+              body: body,
+              external_id: event["id"],
+              meta: Map.merge(%{"kind" => kind}, Deliver.stringify_meta(meta))
+            })
 
-        {:error, reason} ->
-          Logger.debug("nostr DM decrypt failed: #{inspect(reason)}")
-          :ok
+          {:error, reason} ->
+            Logger.debug("nostr DM decrypt failed: #{inspect(reason)}")
+            :ok
+        end
       end
+    else
+      {:error, reason} ->
+        Logger.debug("nostr event rejected: #{inspect(reason)}")
+        :ok
     end
   rescue
     e ->

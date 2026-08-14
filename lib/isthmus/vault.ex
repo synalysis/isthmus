@@ -32,7 +32,7 @@ defmodule Isthmus.Vault do
     secret =
       System.get_env("ISTHMUS_VAULT_SECRET") ||
         Application.get_env(:isthmus, :vault_secret) ||
-        "dev-only-insecure-isthmus-vault-secret!!"
+        raise "ISTHMUS_VAULT_SECRET / :vault_secret is not configured"
 
     :crypto.hash(:sha256, secret)
   end

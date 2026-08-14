@@ -12,6 +12,7 @@ defmodule Isthmus.Registrations do
 
   alias Isthmus.Registrations.{
     Announce,
+    Bind,
     GroupRadioChannel,
     IdentityLeg,
     Proxy,
@@ -205,15 +206,21 @@ defmodule Isthmus.Registrations do
   end
 
   @doc "Register a known MeshCore identity as primary; mint Nostr + RNS proxies."
-  @spec register_meshcore_primary(String.t(), String.t()) :: result(group())
-  @spec register_meshcore_primary(String.t(), String.t(), map()) :: result(group())
+  @spec register_meshcore_primary(String.t(), String.t()) ::
+          result(group()) | {:ok, Bind.challenge()}
+  @spec register_meshcore_primary(String.t(), String.t(), map()) ::
+          result(group()) | {:ok, Bind.challenge()}
   def register_meshcore_primary(owner_hex, meshcore_input, attrs \\ %{})
       when is_binary(owner_hex) and is_binary(meshcore_input) do
     if registration_allowed?(attrs) do
       with {:ok, ref, material} <- Networks.MeshCore.parse_identity_ref(meshcore_input),
            :ok <- ensure_ref_free("meshcore", ref),
            :ok <- ensure_no_active_registration(owner_hex) do
-        do_register_meshcore_primary(String.downcase(owner_hex), ref, material, attrs)
+        if skip_bind?(attrs) do
+          do_register_meshcore_primary(String.downcase(owner_hex), ref, material, attrs)
+        else
+          Bind.start(owner_hex, "meshcore", ref, Map.put(attrs, :material, material))
+        end
       end
     else
       {:error, :registration_closed}
@@ -221,15 +228,21 @@ defmodule Isthmus.Registrations do
   end
 
   @doc "Register a known Reticulum dest as primary; mint Nostr + MeshCore proxies."
-  @spec register_reticulum_primary(String.t(), String.t()) :: result(group())
-  @spec register_reticulum_primary(String.t(), String.t(), map()) :: result(group())
+  @spec register_reticulum_primary(String.t(), String.t()) ::
+          result(group()) | {:ok, Bind.challenge()}
+  @spec register_reticulum_primary(String.t(), String.t(), map()) ::
+          result(group()) | {:ok, Bind.challenge()}
   def register_reticulum_primary(owner_hex, rns_input, attrs \\ %{})
       when is_binary(owner_hex) and is_binary(rns_input) do
     if registration_allowed?(attrs) do
       with {:ok, ref, material} <- Networks.Reticulum.parse_identity_ref(rns_input),
            :ok <- ensure_ref_free("reticulum", ref),
            :ok <- ensure_no_active_registration(owner_hex) do
-        do_register_reticulum_primary(String.downcase(owner_hex), ref, material, attrs)
+        if skip_bind?(attrs) do
+          do_register_reticulum_primary(String.downcase(owner_hex), ref, material, attrs)
+        else
+          Bind.start(owner_hex, "reticulum", ref, Map.put(attrs, :material, material))
+        end
       end
     else
       {:error, :registration_closed}
@@ -366,6 +379,16 @@ defmodule Isthmus.Registrations do
           Repo.rollback(reason)
       end
     end)
+  end
+
+  @spec complete_bind(network(), String.t() | nil, String.t() | nil) :: {:ok, group()} | :error
+  def complete_bind(network, from_ref, body), do: Bind.complete(network, from_ref, body)
+
+  defp skip_bind?(attrs) do
+    Map.get(attrs, :created_by) == "admin" or
+      Map.get(attrs, "created_by") == "admin" or
+      Map.get(attrs, :bind_verified) == true or
+      Map.get(attrs, "bind_verified") == true
   end
 
   defp registration_allowed?(attrs) do

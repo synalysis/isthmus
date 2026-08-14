@@ -6,6 +6,52 @@ defmodule Isthmus.Gateway.TranslatorRoutingTest do
   alias Isthmus.Gateway.Translator
   alias Isthmus.Registrations
 
+  test "unmatched meshcore DM is not routed to the only registration group" do
+    owner = owner_hex()
+    mc = String.duplicate("99", 32)
+
+    assert {:ok, group} =
+             Registrations.register_meshcore_primary(owner, mc, %{
+               display_name: "Only Radio",
+               created_by: "admin"
+             })
+
+    ext = "unmatched-#{System.unique_integer([:positive])}"
+
+    Translator.ingest(%Message{
+      from_network: :meshcore,
+      from_ref: String.duplicate("88", 32),
+      to_ref: nil,
+      body: "hello stranger",
+      external_id: ext,
+      meta: %{}
+    })
+
+    _ = :sys.get_state(Translator)
+
+    logs = Enum.filter(Gateway.list_forward_log(30), &(&1.external_id == ext))
+    assert Enum.any?(logs, &(&1.status == "dropped" and &1.error == "no_registration"))
+    refute Enum.any?(logs, &(&1.registration_group_id == group.id))
+  end
+
+  test "meshcore bind phrase completes registration and is not forwarded" do
+    owner = owner_hex()
+    mc = String.duplicate("77", 32)
+
+    assert {:ok, %{phrase: phrase}} =
+             Registrations.register_meshcore_primary(owner, mc, %{display_name: "Bind Radio"})
+
+    ext = "bind-#{System.unique_integer([:positive])}"
+
+    send(Translator, {:meshcore_dm, %{from_ref: mc, body: phrase, external_id: ext, meta: %{}}})
+    _ = :sys.get_state(Translator)
+
+    group = Registrations.active_registration_for_owner(owner)
+    assert group
+    assert Enum.any?(group.legs, &(&1.identity_ref == mc))
+    refute Enum.any?(Gateway.list_forward_log(20), &(&1.external_id == ext))
+  end
+
   test "meshcore @token resolves bridge group and strips token from body" do
     owner = owner_hex()
     assert {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "Token Camp"})

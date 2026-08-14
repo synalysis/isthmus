@@ -16,7 +16,7 @@ defmodule Isthmus.Networks.Nostr.RelayPool do
   alias Isthmus.Relays
 
   @seen_event_limit 2_000
-  @gateway_kinds [4, 14, 1059]
+  @gateway_kinds [4, 1059]
 
   def start_link(opts \\ []) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -379,8 +379,8 @@ defmodule Isthmus.Networks.Nostr.RelayPool do
         [Isthmus.Networks.Nostr.TunnelCarrier.filter_global()]
       else
         [
-          %{"kinds" => [4, 14, 1059], "authors" => pubkeys, "limit" => 20},
-          %{"kinds" => [4, 14, 1059], "#p" => pubkeys, "limit" => 20},
+          %{"kinds" => [4, 1059], "authors" => pubkeys, "limit" => 20},
+          %{"kinds" => [4, 1059], "#p" => pubkeys, "limit" => 20},
           Isthmus.Networks.Nostr.TunnelCarrier.filter_global()
         ] ++
           if(service,

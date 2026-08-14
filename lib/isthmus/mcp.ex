@@ -9,7 +9,7 @@ defmodule Isthmus.MCP do
 
   @spec enabled?() :: boolean()
   def enabled? do
-    Keyword.get(env(), :enabled, true) != false
+    Keyword.get(env(), :enabled, false) == true
   end
 
   @spec token() :: String.t() | nil

@@ -104,7 +104,7 @@ defmodule Isthmus.Tunnel.Engine do
   def handle_info(:tick, state) do
     Sightings.purge_expired()
     _ = maybe_requeue_reachable(state)
-    state = drain_outbox(state)
+    state = state |> prune_reassembly() |> drain_outbox()
     schedule_tick()
     {:noreply, state}
   end
@@ -144,9 +144,9 @@ defmodule Isthmus.Tunnel.Engine do
   @impl true
   def handle_cast({:inbound, binary}, state) do
     state =
-      case Frame.decode(binary) do
-        {:ok, frame, _rest} -> ingest_frame(frame, state)
-        {:error, _} -> state
+      case authenticated_frame(binary) do
+        {:ok, frame} -> ingest_frame(frame, state)
+        :error -> state
       end
 
     {:noreply, state}
@@ -281,57 +281,62 @@ defmodule Isthmus.Tunnel.Engine do
   defp dispatch(_msg), do: {:error, :unknown_channel}
 
   defp send_over_carrier(%Peer{} = peer, %{payload: payload} = msg) when is_binary(payload) do
-    carrier = network_atom(peer.carrier_network)
-    adapter = Networks.adapter!(carrier)
-    mtu = if function_exported?(adapter, :mtu, 1), do: adapter.mtu(%{}), else: 200
+    case network_atom(peer.carrier_network) do
+      nil ->
+        {:error, :unknown_network}
 
-    seq = peer.next_seq
-    frames = encode_outbound(peer, seq, payload, mtu, msg)
-    {:ok, peer} = Tunnel.bump_seq(peer)
-    sent_at = System.monotonic_time(:millisecond)
+      carrier ->
+        adapter = Networks.adapter!(carrier)
+        mtu = if function_exported?(adapter, :mtu, 1), do: adapter.mtu(%{}), else: 200
 
-    result =
-      Enum.reduce_while(frames, :ok, fn frame, :ok ->
-        encoded = Frame.encode(frame)
+        seq = peer.next_seq
+        frames = encode_outbound(peer, seq, payload, mtu, msg)
+        {:ok, peer} = Tunnel.bump_seq(peer)
+        sent_at = System.monotonic_time(:millisecond)
 
-        send_result =
-          if exports?(adapter, :send_raw, 2) do
-            try do
-              adapter.send_raw(encoded, %{
-                peer_ref: peer.peer_ref,
-                tunnel_id: peer.tunnel_id,
-                kind: if(control_msg?(msg), do: :control, else: :data)
-              })
-            catch
-              :exit, reason ->
-                Logger.warning(
-                  "tunnel carrier send exited (#{peer.carrier_network}): #{inspect(reason)}"
-                )
+        result =
+          Enum.reduce_while(frames, :ok, fn frame, :ok ->
+            encoded = Frame.encode(frame, Tunnel.mac_key(peer))
 
-                {:error, {:carrier_exit, reason}}
+            send_result =
+              if exports?(adapter, :send_raw, 2) do
+                try do
+                  adapter.send_raw(encoded, %{
+                    peer_ref: peer.peer_ref,
+                    tunnel_id: peer.tunnel_id,
+                    kind: if(control_msg?(msg), do: :control, else: :data)
+                  })
+                catch
+                  :exit, reason ->
+                    Logger.warning(
+                      "tunnel carrier send exited (#{peer.carrier_network}): #{inspect(reason)}"
+                    )
+
+                    {:error, {:carrier_exit, reason}}
+                end
+              else
+                {:error, :adapter_no_raw}
+              end
+
+            case send_result do
+              :ok -> {:cont, :ok}
+              {:ok, _} -> {:cont, :ok}
+              other -> {:halt, other}
             end
-          else
-            {:error, :adapter_no_raw}
-          end
+          end)
 
-        case send_result do
-          :ok -> {:cont, :ok}
-          {:ok, _} -> {:cont, :ok}
-          other -> {:halt, other}
+        if result == :ok do
+          GenServer.cast(self(), {:track_send, peer.tunnel_id, seq, sent_at, peer})
+
+          Phoenix.PubSub.broadcast(
+            Isthmus.PubSub,
+            "tunnel:events",
+            {:tunnel_sent, %{tunnel_id: peer.tunnel_id, seq: seq, bytes: byte_size(payload)}}
+          )
         end
-      end)
 
-    if result == :ok do
-      GenServer.cast(self(), {:track_send, peer.tunnel_id, seq, sent_at, peer})
-
-      Phoenix.PubSub.broadcast(
-        Isthmus.PubSub,
-        "tunnel:events",
-        {:tunnel_sent, %{tunnel_id: peer.tunnel_id, seq: seq, bytes: byte_size(payload)}}
-      )
+        result
     end
-
-    result
   end
 
   defp send_over_carrier(_peer, _msg), do: {:error, :invalid_outbox_payload}
@@ -413,8 +418,7 @@ defmodule Isthmus.Tunnel.Engine do
 
         Logger.debug("tunnel control announce #{network}/#{ref}: #{inspect(result)}")
 
-        ack = Frame.encode(Frame.ack_frame(frame.tunnel_id, frame.seq))
-        maybe_send_ack(frame.tunnel_id, ack)
+        maybe_send_ack(frame.tunnel_id, Frame.ack_frame(frame.tunnel_id, frame.seq))
 
         Phoenix.PubSub.broadcast(
           Isthmus.PubSub,
@@ -427,8 +431,7 @@ defmodule Isthmus.Tunnel.Engine do
       {:ok, %{"op" => "ping"}} ->
         # Far side can reach us — record inbound without flipping outbound reachable.
         state = mark_inbound(state, tunnel_hex, :ping)
-        ack = Frame.encode(Frame.ack_frame(frame.tunnel_id, frame.seq))
-        maybe_send_ack(frame.tunnel_id, ack)
+        maybe_send_ack(frame.tunnel_id, Frame.ack_frame(frame.tunnel_id, frame.seq))
         state
 
       {:ok, other} ->
@@ -442,31 +445,60 @@ defmodule Isthmus.Tunnel.Engine do
   end
 
   defp reassemble(frame, state) do
-    key = {frame.tunnel_id, frame.seq}
-    parts = Map.get(state.reassembly, key, %{})
-    parts = Map.put(parts, frame.frag_idx, frame.payload)
+    if frame.frag_cnt > Frame.max_frag_cnt() or frame.frag_idx >= frame.frag_cnt do
+      state
+    else
+      key = {frame.tunnel_id, frame.seq}
+      now = System.monotonic_time(:millisecond)
+      entry = Map.get(state.reassembly, key, %{parts: %{}, at: now, frag_cnt: frame.frag_cnt})
+      parts = Map.put(entry.parts, frame.frag_idx, frame.payload)
+      entry = %{entry | parts: parts, frag_cnt: frame.frag_cnt}
 
-    if map_size(parts) == frame.frag_cnt do
-      payload =
-        0..(frame.frag_cnt - 1)
-        |> Enum.map(&Map.fetch!(parts, &1))
-        |> IO.iodata_to_binary()
+      if map_size(parts) == frame.frag_cnt do
+        payload =
+          0..(frame.frag_cnt - 1)
+          |> Enum.map(&Map.fetch!(parts, &1))
+          |> IO.iodata_to_binary()
 
-      if Frame.hash16(payload) == frame.payload_hash16 do
         deliver_payload(frame.tunnel_id, payload)
-        ack = Frame.encode(Frame.ack_frame(frame.tunnel_id, frame.seq))
-        maybe_send_ack(frame.tunnel_id, ack)
+        maybe_send_ack(frame.tunnel_id, Frame.ack_frame(frame.tunnel_id, frame.seq))
 
         state
         |> update_in([:reassembly], &Map.delete(&1, key))
         |> update_in([:stats, :reassembled], &(&1 + 1))
       else
-        Logger.warning("tunnel reassembly hash mismatch")
-        update_in(state, [:reassembly], &Map.delete(&1, key))
+        put_in(state, [:reassembly, key], entry)
       end
-    else
-      put_in(state, [:reassembly, key], parts)
     end
+  end
+
+  @reassembly_ttl_ms 30_000
+  @max_reassembly 48
+
+  defp prune_reassembly(%{reassembly: buf} = state) when map_size(buf) == 0, do: state
+
+  defp prune_reassembly(%{reassembly: buf} = state) do
+    now = System.monotonic_time(:millisecond)
+
+    pruned =
+      buf
+      |> Enum.reject(fn
+        {_k, %{at: at}} -> now - at > @reassembly_ttl_ms
+        _ -> false
+      end)
+      |> Map.new()
+
+    pruned =
+      if map_size(pruned) > @max_reassembly do
+        pruned
+        |> Enum.sort_by(fn {_k, e} -> Map.get(e, :at, 0) end)
+        |> Enum.take(-@max_reassembly)
+        |> Map.new()
+      else
+        pruned
+      end
+
+    %{state | reassembly: pruned}
   end
 
   defp deliver_payload(tunnel_id_bin, payload) do
@@ -523,49 +555,54 @@ defmodule Isthmus.Tunnel.Engine do
   end
 
   defp inject_payload_to_island(%Peer{} = peer, tunnel_hex, payload) do
-    payload_net = network_atom(peer.payload_network)
-    adapter = Networks.adapter!(payload_net)
+    case network_atom(peer.payload_network) do
+      nil ->
+        {:error, :unknown_network}
 
-    opts = %{
-      direction: :from_tunnel,
-      from_tunnel: true,
-      tunnel_id: tunnel_hex
-    }
+      payload_net ->
+        adapter = Networks.adapter!(payload_net)
 
-    # inject_raw/2 replays a foreign packet verbatim; send_raw/2 would
-    # re-originate it from our own identity, which is wrong for a payload.
-    result =
-      cond do
-        exports?(adapter, :inject_raw, 2) ->
-          apply(adapter, :inject_raw, [payload, opts])
+        opts = %{
+          direction: :from_tunnel,
+          from_tunnel: true,
+          tunnel_id: tunnel_hex
+        }
 
-        exports?(adapter, :send_raw, 2) ->
-          adapter.send_raw(payload, opts)
+        # inject_raw/2 replays a foreign packet verbatim; send_raw/2 would
+        # re-originate it from our own identity, which is wrong for a payload.
+        result =
+          cond do
+            exports?(adapter, :inject_raw, 2) ->
+              apply(adapter, :inject_raw, [payload, opts])
 
-        true ->
-          Logger.warning(
-            "tunnel delivered #{byte_size(payload)} bytes for #{tunnel_hex} but #{payload_net} has no inject_raw/2 or send_raw/2"
-          )
+            exports?(adapter, :send_raw, 2) ->
+              adapter.send_raw(payload, opts)
 
-          {:error, :adapter_no_raw}
-      end
+            true ->
+              Logger.warning(
+                "tunnel delivered #{byte_size(payload)} bytes for #{tunnel_hex} but #{payload_net} has no inject_raw/2 or send_raw/2"
+              )
 
-    log_delivery(peer, tunnel_hex, byte_size(payload), result)
-    record_inbound_sighting(peer, tunnel_hex, result)
+              {:error, :adapter_no_raw}
+          end
 
-    Phoenix.PubSub.broadcast(
-      Isthmus.PubSub,
-      "tunnel:events",
-      {:tunnel_delivered,
-       %{
-         tunnel_id: tunnel_hex,
-         payload_network: peer.payload_network,
-         bytes: byte_size(payload),
-         result: result
-       }}
-    )
+        log_delivery(peer, tunnel_hex, byte_size(payload), result)
+        record_inbound_sighting(peer, tunnel_hex, result)
 
-    result
+        Phoenix.PubSub.broadcast(
+          Isthmus.PubSub,
+          "tunnel:events",
+          {:tunnel_delivered,
+           %{
+             tunnel_id: tunnel_hex,
+             payload_network: peer.payload_network,
+             bytes: byte_size(payload),
+             result: result
+           }}
+        )
+
+        result
+    end
   end
 
   defp log_delivery(peer, tunnel_hex, bytes, result) do
@@ -628,15 +665,16 @@ defmodule Isthmus.Tunnel.Engine do
     :ok
   end
 
-  defp maybe_send_ack(tunnel_id_bin, ack_binary) do
+  defp maybe_send_ack(tunnel_id_bin, %Frame{} = ack_frame) do
     tunnel_hex = Base.encode16(tunnel_id_bin, case: :lower)
 
     try do
       with %Peer{} = peer <- Repo.get_by(Peer, tunnel_id: tunnel_hex),
-           carrier <- network_atom(peer.carrier_network),
+           carrier when not is_nil(carrier) <- network_atom(peer.carrier_network),
            adapter <- Networks.adapter!(carrier),
            true <- exports?(adapter, :send_raw, 2) do
-        adapter.send_raw(ack_binary, %{peer_ref: peer.peer_ref, kind: :ack})
+        encoded = Frame.encode(ack_frame, Tunnel.mac_key(peer))
+        adapter.send_raw(encoded, %{peer_ref: peer.peer_ref, kind: :ack})
       else
         _ -> :ok
       end
@@ -645,26 +683,26 @@ defmodule Isthmus.Tunnel.Engine do
     end
   end
 
-  defp network_atom(name) when is_binary(name) do
-    case name do
-      "reticulum" ->
-        :reticulum
+  @networks ~w(reticulum meshcore nostr meshtastic agent)
 
-      "meshcore" ->
-        :meshcore
+  defp network_atom(name)
+       when is_atom(name) and name in [:reticulum, :meshcore, :nostr, :meshtastic, :agent],
+       do: name
 
-      "nostr" ->
-        :nostr
+  defp network_atom(name) when is_binary(name) and name in @networks do
+    String.to_existing_atom(name)
+  end
 
-      "meshtastic" ->
-        :meshtastic
+  defp network_atom(_), do: nil
 
-      other ->
-        try do
-          String.to_existing_atom(other)
-        rescue
-          ArgumentError -> String.to_atom(other)
-        end
+  defp authenticated_frame(binary) when is_binary(binary) do
+    with {:ok, frame, _rest} <- Frame.decode(binary),
+         tunnel_hex <- Base.encode16(frame.tunnel_id, case: :lower),
+         %Peer{} = peer <- Repo.get_by(Peer, tunnel_id: tunnel_hex),
+         true <- Frame.valid_mac?(frame, Tunnel.mac_key(peer)) do
+      {:ok, frame}
+    else
+      _ -> :error
     end
   end
 
@@ -816,39 +854,44 @@ defmodule Isthmus.Tunnel.Engine do
     state = %{state | liveness: touch_ping(state.liveness, peer.tunnel_id, now_ms, path)}
 
     try do
-      carrier = network_atom(peer.carrier_network)
-      adapter = Networks.adapter!(carrier)
-
-      if exports?(adapter, :send_raw, 2) do
-        seq = peer.next_seq
-        tid = Frame.tunnel_id_from_string(peer.tunnel_id)
-        payload = Jason.encode!(%{"v" => 1, "op" => "ping", "ts" => now_ms})
-        encoded = Frame.encode(Frame.control_frame(tid, seq, payload))
-        {:ok, _} = Tunnel.bump_seq(peer)
-        sent_at = System.monotonic_time(:millisecond)
-
-        send_result =
-          adapter.send_raw(encoded, %{
-            peer_ref: peer.peer_ref,
-            tunnel_id: peer.tunnel_id,
-            kind: :control
-          })
-
-        {mode, err} = classify_send(send_result)
-
-        state = %{
+      case network_atom(peer.carrier_network) do
+        nil ->
           state
-          | liveness: record_ping_send(state.liveness, peer.tunnel_id, now_ms, mode, err)
-        }
 
-        if ok_send?(send_result) do
-          pending = Map.put(state.pending_acks, {peer.tunnel_id, seq}, {sent_at, peer, :ping})
-          %{state | pending_acks: pending}
-        else
-          state
-        end
-      else
-        state
+        carrier ->
+          adapter = Networks.adapter!(carrier)
+
+          if exports?(adapter, :send_raw, 2) do
+            seq = peer.next_seq
+            tid = Frame.tunnel_id_from_string(peer.tunnel_id)
+            payload = Jason.encode!(%{"v" => 1, "op" => "ping", "ts" => now_ms})
+            encoded = Frame.encode(Frame.control_frame(tid, seq, payload), Tunnel.mac_key(peer))
+            {:ok, _} = Tunnel.bump_seq(peer)
+            sent_at = System.monotonic_time(:millisecond)
+
+            send_result =
+              adapter.send_raw(encoded, %{
+                peer_ref: peer.peer_ref,
+                tunnel_id: peer.tunnel_id,
+                kind: :control
+              })
+
+            {mode, err} = classify_send(send_result)
+
+            state = %{
+              state
+              | liveness: record_ping_send(state.liveness, peer.tunnel_id, now_ms, mode, err)
+            }
+
+            if ok_send?(send_result) do
+              pending = Map.put(state.pending_acks, {peer.tunnel_id, seq}, {sent_at, peer, :ping})
+              %{state | pending_acks: pending}
+            else
+              state
+            end
+          else
+            state
+          end
       end
     rescue
       e ->

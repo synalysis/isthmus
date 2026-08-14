@@ -118,4 +118,21 @@ defmodule Isthmus.Nostr.CryptoTest do
     assert {:ok, _} = Event.verify(event)
     assert event["kind"] == 4
   end
+
+  test "decrypt_inbound rejects unsigned kind 14 rumors" do
+    {sk, pk} = Secp256k1.keypair(:xonly)
+    hex = Base.encode16(pk, case: :lower)
+
+    event = %{
+      "kind" => 14,
+      "pubkey" => hex,
+      "content" => "impersonated dm",
+      "tags" => [["p", hex]],
+      "id" => String.duplicate("ab", 32),
+      "sig" => String.duplicate("cd", 64),
+      "created_at" => System.system_time(:second)
+    }
+
+    assert {:error, :unsupported_kind} = Crypto.decrypt_inbound(sk, event)
+  end
 end

@@ -18,7 +18,7 @@ defmodule IsthmusWeb.HealthController do
   def readiness(conn, params) do
     case Ecto.Adapters.SQL.query(Repo, "SELECT 1", []) do
       {:ok, _} ->
-        if params["deep"] in ["1", "true"] do
+        if params["deep"] in ["1", "true"] and IsthmusWeb.MetricsAuth.allowed?(conn) do
           adapters = safe_adapter_health()
           degraded? = Enum.any?(adapters, fn {_k, v} -> degraded_status?(v) end)
 

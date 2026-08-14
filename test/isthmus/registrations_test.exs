@@ -394,6 +394,26 @@ defmodule Isthmus.RegistrationsTest do
     assert Enum.any?(inboxes, fn {pk, _} -> pk == proxy.identity_ref end)
   end
 
+  test "self-service meshcore primary requires a bind phrase from that identity" do
+    owner = owner_hex()
+    mc = String.duplicate("ae", 32)
+
+    assert {:ok, %{phrase: phrase, identity_ref: ^mc}} =
+             Registrations.register_meshcore_primary(owner, mc, %{display_name: "Radio Bind"})
+
+    assert String.starts_with?(phrase, "isthmus-bind:")
+    refute Registrations.active_registration_for_owner(owner)
+
+    assert :error = Registrations.complete_bind("meshcore", mc, "wrong phrase")
+    refute Registrations.active_registration_for_owner(owner)
+
+    assert {:ok, group} =
+             Registrations.complete_bind("meshcore", mc, "please complete #{phrase}")
+
+    assert Enum.any?(group.legs, &(&1.network == "meshcore" and &1.identity_ref == mc))
+    assert Registrations.active_registration_for_owner(owner).id == group.id
+  end
+
   test "bridge group can attach an ACP agent member" do
     owner = owner_hex()
     assert {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "AI Camp"})

@@ -25,7 +25,9 @@ defmodule Isthmus.Tunnel do
     attrs =
       attrs
       |> stringify_keys()
-      |> resolve_tunnel_id(fn -> Base.encode16(:crypto.strong_rand_bytes(16), case: :lower) end)
+      |> resolve_tunnel_secrets(fn ->
+        Base.encode16(:crypto.strong_rand_bytes(16), case: :lower)
+      end)
 
     %Peer{}
     |> Peer.changeset(attrs)
@@ -49,30 +51,92 @@ defmodule Isthmus.Tunnel do
     |> Base.encode16(case: :lower)
   end
 
+  @doc "32-byte HMAC key derived from a pairing / auth secret."
+  def mac_key_from_code(code) when is_binary(code) do
+    normalized = code |> String.trim() |> String.downcase()
+    :crypto.hash(:sha256, "isthmus-tunnel-mac|" <> normalized)
+  end
+
+  @doc "Legacy HMAC key when only the public tunnel id is shared."
+  def mac_key_from_tunnel_id(id) when is_binary(id) do
+    :crypto.hash(:sha256, "isthmus-tunnel-mac-id|" <> String.downcase(id))
+  end
+
+  @doc "HMAC key for encoding/verifying ISTH frames for this peer."
+  def mac_key(%Peer{} = peer) do
+    meta = peer.meta || %{}
+    hex = meta["mac_key_hex"] || meta[:mac_key_hex]
+
+    case is_binary(hex) && Base.decode16(hex, case: :mixed) do
+      {:ok, key} when byte_size(key) == 32 -> key
+      _ -> mac_key_from_tunnel_id(peer.tunnel_id)
+    end
+  end
+
   defp present?(value), do: is_binary(value) and String.trim(value) != ""
 
-  # Resolve the tunnel_id from an explicit value, a pairing code, or the fallback.
-  # `pairing_code` is a virtual form field and is never persisted.
-  defp resolve_tunnel_id(attrs, fallback) when is_function(fallback, 0) do
+  # Resolve tunnel_id + MAC key. `pairing_code` / `auth_secret` are virtual and
+  # never persisted; the derived mac_key_hex lives under meta.
+  defp resolve_tunnel_secrets(attrs, fallback) when is_function(fallback, 0) do
+    pairing = attrs["pairing_code"]
+    auth_secret = attrs["auth_secret"]
+
     tunnel_id =
       cond do
         present?(attrs["tunnel_id"]) -> attrs["tunnel_id"]
-        present?(attrs["pairing_code"]) -> tunnel_id_from_code(attrs["pairing_code"])
+        present?(pairing) -> tunnel_id_from_code(pairing)
         true -> fallback.()
       end
 
+    mac_hex =
+      cond do
+        present?(pairing) ->
+          Base.encode16(mac_key_from_code(pairing), case: :lower)
+
+        present?(auth_secret) ->
+          Base.encode16(mac_key_from_code(auth_secret), case: :lower)
+
+        true ->
+          Base.encode16(mac_key_from_tunnel_id(tunnel_id), case: :lower)
+      end
+
+    meta =
+      case attrs["meta"] do
+        map when is_map(map) -> stringify_keys(map)
+        _ -> %{}
+      end
+      |> Map.put("mac_key_hex", mac_hex)
+
     attrs
     |> Map.put("tunnel_id", tunnel_id)
+    |> Map.put("meta", meta)
     |> Map.delete("pairing_code")
+    |> Map.delete("auth_secret")
   end
 
   def update_peer(%Peer{} = peer, attrs) do
-    # On edit, keep the existing tunnel_id unless the operator supplies a new one
-    # (explicit id or a fresh pairing code).
+    raw = stringify_keys(attrs)
+    rotating? = present?(raw["pairing_code"]) or present?(raw["auth_secret"])
+
     attrs =
-      attrs
-      |> stringify_keys()
-      |> resolve_tunnel_id(fn -> peer.tunnel_id end)
+      raw
+      |> Map.put_new("meta", peer.meta || %{})
+      |> resolve_tunnel_secrets(fn -> peer.tunnel_id end)
+
+    attrs =
+      if rotating? do
+        attrs
+      else
+        stored = (peer.meta || %{})["mac_key_hex"]
+        meta = attrs["meta"] || %{}
+
+        meta =
+          if is_binary(stored) and stored != "",
+            do: Map.put(meta, "mac_key_hex", stored),
+            else: meta
+
+        Map.put(attrs, "meta", meta)
+      end
 
     peer |> Peer.changeset(attrs) |> Repo.update()
   end

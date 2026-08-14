@@ -52,9 +52,9 @@ defmodule IsthmusWeb.Router do
       legacy_http_sse: false,
       server_info: %{name: "isthmus", version: "0.1.0"},
       instructions: Isthmus.MCP.Server.instructions(),
-      cors_enabled: true,
-      validate_origin: false,
-      allowed_origins: :any,
+      cors_enabled: false,
+      validate_origin: true,
+      allowed_origins: [],
       handler_call_timeout: 30_000
   end
 
@@ -63,7 +63,6 @@ defmodule IsthmusWeb.Router do
 
     live "/", HomeLive
     live "/login", LoginLive
-    get "/session", SessionController, :create
     post "/session", SessionController, :create
     delete "/logout", SessionController, :delete
 

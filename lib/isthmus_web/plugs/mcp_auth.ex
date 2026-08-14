@@ -16,7 +16,7 @@ defmodule IsthmusWeb.Plugs.McpAuth do
       is_nil(Isthmus.MCP.token()) ->
         reject(conn, 401, "Set ISTHMUS_MCP_TOKEN to enable the MCP control plane")
 
-      bearer(conn) == Isthmus.MCP.token() ->
+      token_match?(bearer(conn), Isthmus.MCP.token()) ->
         conn
 
       true ->
@@ -31,6 +31,13 @@ defmodule IsthmusWeb.Plugs.McpAuth do
       _ -> nil
     end
   end
+
+  defp token_match?(provided, expected)
+       when is_binary(provided) and is_binary(expected) and provided != "" and expected != "" do
+    Plug.Crypto.secure_compare(provided, expected)
+  end
+
+  defp token_match?(_, _), do: false
 
   defp reject(conn, status, message) do
     conn

@@ -22,6 +22,28 @@ defmodule Isthmus.Tunnel.EngineTest do
     %{peer: peer}
   end
 
+  test "inbound frames with a wrong HMAC are dropped", %{peer: peer} do
+    tid = Frame.tunnel_id_from_string(peer.tunnel_id)
+
+    control =
+      Frame.control_frame(
+        tid,
+        99,
+        Jason.encode!(%{
+          "v" => 1,
+          "op" => "announce",
+          "network" => "meshtastic",
+          "ref" => "cafebabe",
+          "meta" => %{}
+        })
+      )
+
+    Engine.handle_inbound_frame(Frame.encode(control, :crypto.hash(:sha256, "wrong-mac")))
+    _ = :sys.get_state(Engine)
+
+    refute_received {:tunnel_control, %{ref: "cafebabe"}}
+  end
+
   test "drain sends ISTH frames over carrier and inbound reassembles", %{peer: peer} do
     payload = "island-hello-#{System.unique_integer([:positive])}"
     assert {:ok, _} = Tunnel.send_payload(peer, payload)
@@ -75,7 +97,7 @@ defmodule Isthmus.Tunnel.EngineTest do
         })
       )
 
-    Engine.handle_inbound_frame(Frame.encode(control))
+    Engine.handle_inbound_frame(Frame.encode(control, Tunnel.mac_key(peer)))
     _ = :sys.get_state(Engine)
 
     assert_receive {:tunnel_control,
@@ -143,7 +165,7 @@ defmodule Isthmus.Tunnel.EngineTest do
         Jason.encode!(%{"v" => 1, "op" => "ping", "ts" => System.system_time(:millisecond)})
       )
 
-    Engine.handle_inbound_frame(Frame.encode(remote_ping))
+    Engine.handle_inbound_frame(Frame.encode(remote_ping, Tunnel.mac_key(peer)))
     _ = :sys.get_state(Engine)
 
     health = Map.get(Engine.health(), peer.tunnel_id)
@@ -188,7 +210,7 @@ defmodule Isthmus.Tunnel.EngineTest do
     peer.tunnel_id
     |> Frame.tunnel_id_from_string()
     |> Frame.fragment(7, payload, 512)
-    |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1)))
+    |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1, Tunnel.mac_key(peer))))
 
     _ = :sys.get_state(Engine)
 
@@ -227,7 +249,7 @@ defmodule Isthmus.Tunnel.EngineTest do
     peer.tunnel_id
     |> Frame.tunnel_id_from_string()
     |> Frame.fragment(13, packet, 512)
-    |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1)))
+    |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1, Tunnel.mac_key(peer))))
 
     _ = :sys.get_state(Engine)
 
@@ -269,7 +291,7 @@ defmodule Isthmus.Tunnel.EngineTest do
       peer.tunnel_id
       |> Frame.tunnel_id_from_string()
       |> Frame.fragment(11, packet, 512)
-      |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1)))
+      |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1, Tunnel.mac_key(peer))))
     end
 
     deliver.(nostr_peer)
@@ -313,7 +335,7 @@ defmodule Isthmus.Tunnel.EngineTest do
     peer.tunnel_id
     |> Frame.tunnel_id_from_string()
     |> Frame.fragment(9, packet, 512)
-    |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1)))
+    |> Enum.each(&Engine.handle_inbound_frame(Frame.encode(&1, Tunnel.mac_key(peer))))
 
     _ = :sys.get_state(Engine)
 

@@ -9,11 +9,16 @@ defmodule IsthmusWeb.RegisterLive do
     user = socket.assigns.current_user
     existing = Registrations.active_registration_for_owner(user.pubkey_hex)
 
+    if connected?(socket) do
+      Phoenix.PubSub.subscribe(Isthmus.PubSub, Isthmus.Registrations.Bind.topic())
+    end
+
     {:ok,
      socket
      |> assign(:page_title, "Register")
      |> assign(:registration_open, Policy.registration_open?())
      |> assign(:existing, existing)
+     |> assign(:bind_challenge, nil)
      |> assign(:primary, "nostr")
      |> assign(:display_name, "")
      |> assign(:identity_input, "")
@@ -56,6 +61,13 @@ defmodule IsthmusWeb.RegisterLive do
       end
 
     case result do
+      {:ok, %{phrase: phrase} = challenge} when is_binary(phrase) ->
+        {:noreply,
+         socket
+         |> assign(:bind_challenge, challenge)
+         |> assign(:primary, primary)
+         |> put_flash(:info, "Prove you hold that identity — send the bind phrase from it.")}
+
       {:ok, _group} ->
         {:noreply,
          socket
@@ -78,6 +90,20 @@ defmodule IsthmusWeb.RegisterLive do
         {:noreply, put_flash(socket, :error, "Could not register: #{inspect(reason)}")}
     end
   end
+
+  @impl true
+  def handle_info({:bind_complete, owner, _group_id}, socket) do
+    if owner == socket.assigns.current_user.pubkey_hex do
+      {:noreply,
+       socket
+       |> put_flash(:info, success_flash(socket.assigns.primary))
+       |> push_navigate(to: ~p"/me")}
+    else
+      {:noreply, socket}
+    end
+  end
+
+  def handle_info(_msg, socket), do: {:noreply, socket}
 
   defp success_flash("nostr"), do: "Registered. Proxies minted for Reticulum and MeshCore."
   defp success_flash("meshcore"), do: "Registered MeshCore primary. Nostr + RNS proxies minted."
@@ -105,6 +131,23 @@ defmodule IsthmusWeb.RegisterLive do
             <div class="alert alert-info">
               You already have an active registration.
               <.link navigate={~p"/me"} class="link">View identities</.link>
+            </div>
+          <% @bind_challenge -> %>
+            <div id="bind-challenge" class="card bg-base-200 border border-base-300">
+              <div class="card-body space-y-3">
+                <h2 class="text-lg font-semibold">Prove possession</h2>
+                <p class="text-sm text-base-content/70">
+                  From <span class="font-mono text-xs">{@bind_challenge.identity_ref}</span>
+                  on {@bind_challenge.network},
+                  send this exact phrase as a DM (MeshCore) or LXMF message (Reticulum) to this Isthmus node.
+                </p>
+                <p class="font-mono break-all rounded-box bg-base-100 px-3 py-2 text-sm">
+                  {@bind_challenge.phrase}
+                </p>
+                <p class="text-xs opacity-60">
+                  Expires in about 10 minutes. This page updates when the message arrives.
+                </p>
+              </div>
             </div>
           <% not @registration_open -> %>
             <div class="alert alert-warning">Self-service registration is closed by an admin.</div>

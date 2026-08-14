@@ -35,14 +35,13 @@ defmodule Isthmus.Gateway.Resolve do
     group =
       (is_binary(to) && Registrations.find_by_leg(:reticulum, String.downcase(to))) ||
         (is_binary(msg.from_ref) &&
-           Registrations.find_by_leg(:reticulum, String.downcase(msg.from_ref))) ||
-        single_active_group()
+           Registrations.find_by_leg(:reticulum, String.downcase(msg.from_ref)))
 
     {group, msg}
   end
 
   def group(%Message{from_network: net, from_ref: from} = msg) when is_binary(from) do
-    {Registrations.find_by_leg(net, from) || single_active_group(), msg}
+    {Registrations.find_by_leg(net, from), msg}
   end
 
   def group(msg), do: {nil, msg}
@@ -99,12 +98,12 @@ defmodule Isthmus.Gateway.Resolve do
 
       token = extract_address_token(msg.body) ->
         case Registrations.find_by_token(token) do
-          nil -> {single_active_group(), msg}
+          nil -> {nil, msg}
           group -> {group, strip_address_token(msg, token)}
         end
 
       true ->
-        {single_active_group(), msg}
+        {nil, msg}
     end
   end
 
@@ -114,7 +113,7 @@ defmodule Isthmus.Gateway.Resolve do
         {Registrations.find_by_meshtastic_channel(idx, radio_id(msg)), msg}
 
       nil when is_binary(msg.from_ref) ->
-        {Registrations.find_by_leg(:meshtastic, msg.from_ref) || single_active_group(), msg}
+        {Registrations.find_by_leg(:meshtastic, msg.from_ref), msg}
 
       nil ->
         {nil, msg}
@@ -135,12 +134,5 @@ defmodule Isthmus.Gateway.Resolve do
       |> String.trim_leading()
 
     %{msg | body: stripped}
-  end
-
-  defp single_active_group do
-    case Enum.filter(Registrations.list_all(), &(&1.status == "active")) do
-      [only] -> only
-      _ -> nil
-    end
   end
 end

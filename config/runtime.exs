@@ -170,6 +170,9 @@ if config_env() == :prod do
 
   config :isthmus, vault_secret: vault_secret
   config :isthmus, :dns_cluster_query, System.get_env("DNS_CLUSTER_QUERY")
+  config :isthmus, :metrics_public, false
+
+  config :isthmus, :metrics_token, System.get_env("ISTHMUS_METRICS_TOKEN")
 
   # :force_ssl is compile-time (config/prod.exs). Do not set it here.
   # FORCE_SSL=false only adjusts generated URLs for plain-HTTP Docker.

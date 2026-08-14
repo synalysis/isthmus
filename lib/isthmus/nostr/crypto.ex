@@ -170,11 +170,6 @@ defmodule Isthmus.Nostr.Crypto do
           error -> error
         end
 
-      14 ->
-        subject = subject_from_tags(event["tags"] || event[:tags] || [])
-        meta = if subject, do: %{subject: subject}, else: %{}
-        {:ok, event["content"] || "", pubkey_hex(event["pubkey"] || ""), meta}
-
       _ ->
         {:error, :unsupported_kind}
     end
@@ -317,8 +312,6 @@ defmodule Isthmus.Nostr.Crypto do
         nil
     end)
   end
-
-  defp subject_from_tags(_), do: nil
 
   defp seckey_hex(bin) when byte_size(bin) == 32 do
     bin |> normalize_seckey() |> Base.encode16(case: :lower)

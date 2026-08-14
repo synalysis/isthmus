@@ -70,8 +70,11 @@ config :isthmus, Isthmus.Networks.Agent,
   prompt_timeout_ms: 120_000
 
 config :isthmus, Isthmus.MCP,
-  enabled: true,
+  enabled: false,
   token: nil
+
+config :isthmus, :metrics_public, true
+config :isthmus, :metrics_token, nil
 
 # Import environment specific config. This must remain at the bottom
 # of this file so it overrides the configuration defined above.
