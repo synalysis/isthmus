@@ -38,21 +38,35 @@ defmodule IsthmusWeb.Admin.Copy do
   def status_badge_class(_), do: "badge-ghost"
 
   @doc "Purpose title + one-line blurb for a MeshCore device inventory row."
-  def device_purpose(%{kind: :companion}) do
-    {"Companion radio", "Channels, DMs, and contact sync"}
+  def device_purpose(device) do
+    cond do
+      bootloader_usb?(device) ->
+        {"USB bootloader", "Not running companion firmware Isthmus can use"}
+
+      device[:kind] == :companion ->
+        {"Companion radio", "Channels, DMs, and contact sync"}
+
+      device[:kind] == :meshtastic ->
+        {"Companion radio", "Private channels and LoRa configuration"}
+
+      device[:kind] == :bridge_repeater ->
+        {"Island tunnel radio", "Carries MeshCore mesh traffic for tunnels"}
+
+      true ->
+        {"Radio not identified", "Plug in or power on, then Rescan USB"}
+    end
   end
 
-  def device_purpose(%{kind: :meshtastic}) do
-    {"Companion radio", "Private channels and LoRa configuration"}
+  @doc "True when USB still enumerates as a UF2 / DFU bootloader CDC."
+  def bootloader_usb?(device) when is_map(device) do
+    [device[:description], device[:label]]
+    |> Enum.filter(&is_binary/1)
+    |> Enum.join(" ")
+    |> String.downcase()
+    |> String.contains?("boot")
   end
 
-  def device_purpose(%{kind: :bridge_repeater}) do
-    {"Island tunnel radio", "Carries MeshCore mesh traffic for tunnels"}
-  end
-
-  def device_purpose(_device) do
-    {"Radio not identified", "Plug in or power on, then Rescan USB"}
-  end
+  def bootloader_usb?(_), do: false
 
   @doc "Overall device status chip."
   def device_status(%{kind: :meshtastic, health: health}) when is_map(health) do
@@ -62,8 +76,12 @@ defmodule IsthmusWeb.Admin.Copy do
 
   def device_status(device) when is_map(device) do
     cond do
-      device[:active_companion?] or device[:active_bridge_cli?] or device[:active_bridge_link?] ->
+      device[:active_companion?] == true or device[:active_bridge_cli?] == true or
+          device[:active_bridge_link?] == true ->
         {:online, "Connected"}
+
+      bootloader_usb?(device) ->
+        {:unknown, "Bootloader"}
 
       device[:kind] == :unknown ->
         {:unknown, "Not identified"}

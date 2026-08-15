@@ -303,6 +303,18 @@ defmodule Isthmus.Registrations do
 
   def detach_member(_), do: {:error, :not_a_member}
 
+  @doc "Keep this group's bodies on the Messages page after gateway fan-out."
+  @spec set_store_messages(group(), boolean()) :: result(group())
+  def set_store_messages(%RegistrationGroup{} = group, enabled) when is_boolean(enabled) do
+    group
+    |> RegistrationGroup.changeset(%{store_messages: enabled})
+    |> Repo.update()
+    |> case do
+      {:ok, group} -> {:ok, Query.get_group!(group.id)}
+      err -> err
+    end
+  end
+
   @doc """
   Create a bridge group and provision a private MeshCore channel (slot 1–7).
   """

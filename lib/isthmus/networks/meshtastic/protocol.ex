@@ -18,7 +18,21 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
   @port_position 3
   @port_admin 6
   @port_nodeinfo 4
+  @port_store_forward 65
   @port_telemetry 67
+
+  @xmodem_soh 1
+  @xmodem_stx 2
+  @xmodem_eot 3
+  @xmodem_ack 4
+  @xmodem_nak 5
+  @xmodem_can 6
+
+  # StoreAndForward.RequestResponse
+  @sf_router_history 6
+  @sf_client_history 65
+  @sf_router_text_direct 70
+  @sf_router_text_broadcast 71
 
   @broadcast 0xFFFFFFFF
 
@@ -36,7 +50,18 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
   def port_position, do: @port_position
   def port_admin, do: @port_admin
   def port_nodeinfo, do: @port_nodeinfo
+  def port_store_forward, do: @port_store_forward
   def port_telemetry, do: @port_telemetry
+  def sf_router_history, do: @sf_router_history
+  def sf_client_history, do: @sf_client_history
+  def sf_router_text_direct, do: @sf_router_text_direct
+  def sf_router_text_broadcast, do: @sf_router_text_broadcast
+  def xmodem_soh, do: @xmodem_soh
+  def xmodem_stx, do: @xmodem_stx
+  def xmodem_eot, do: @xmodem_eot
+  def xmodem_ack, do: @xmodem_ack
+  def xmodem_nak, do: @xmodem_nak
+  def xmodem_can, do: @xmodem_can
   def broadcast, do: @broadcast
   def role_disabled, do: @role_disabled
   def role_primary, do: @role_primary
@@ -52,9 +77,77 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
     encode_frame(Protobuf.encode_varint_field(3, nonce))
   end
 
-  def heartbeat_frame do
-    # ToRadio.heartbeat = 7 (empty Heartbeat message).
+  def heartbeat_frame(nonce \\ 0)
+
+  def heartbeat_frame(nonce) when is_integer(nonce) and nonce > 0 do
+    # Distinct nonce — firmware drops byte-identical consecutive heartbeats.
+    encode_frame(Protobuf.encode_message_field(7, Protobuf.encode_varint_field(1, nonce)))
+  end
+
+  def heartbeat_frame(_nonce) do
     encode_frame(Protobuf.encode_message_field(7, <<>>))
+  end
+
+  @doc "ToRadio.xmodem_packet = 5. STX + seq 0 + filename starts a download."
+  def xmodem_frame(control, seq \\ 0, buffer \\ <<>>)
+      when is_integer(control) and is_integer(seq) and is_binary(buffer) do
+    crc = if buffer == <<>>, do: 0, else: xmodem_crc16(buffer)
+
+    inner =
+      Protobuf.encode_varint_field(1, control) <>
+        maybe_varint(2, seq, seq > 0) <>
+        maybe_varint(3, crc, crc > 0) <>
+        Protobuf.encode_bytes_field(4, buffer)
+
+    encode_frame(Protobuf.encode_message_field(5, inner))
+  end
+
+  def xmodem_download_frame(filename) when is_binary(filename) do
+    # Firmware memcpy's the buffer into a C string; it must be NUL-terminated.
+    name = if String.ends_with?(filename, <<0>>), do: filename, else: filename <> <<0>>
+    xmodem_frame(@xmodem_stx, 0, name)
+  end
+
+  def parse_xmodem(bin) when is_binary(bin) do
+    fields = Protobuf.decode(bin)
+    buffer = Protobuf.bytes(fields, 4, <<>>)
+
+    %{
+      control: Protobuf.varint(fields, 1, 0),
+      seq: Protobuf.varint(fields, 2, 0),
+      crc16: Protobuf.varint(fields, 3, 0),
+      buffer: buffer
+    }
+  end
+
+  def parse_xmodem(_), do: %{control: 0, seq: 0, crc16: 0, buffer: <<>>}
+
+  def parse_file_info(bin) when is_binary(bin) do
+    fields = Protobuf.decode(bin)
+    name = Protobuf.bytes(fields, 1, "")
+
+    %{
+      name: if(String.valid?(name), do: name, else: ""),
+      size: Protobuf.varint(fields, 2, 0)
+    }
+  end
+
+  def parse_file_info(_), do: %{name: "", size: 0}
+
+  # CRC-16 CCITT used by firmware `XModemAdapter::crc16_ccitt`.
+  def xmodem_crc16(buffer) when is_binary(buffer) do
+    for <<byte <- buffer>>, reduce: 0 do
+      crc ->
+        crc = Bitwise.bor(Bitwise.bsr(crc, 8), Bitwise.bsl(crc, 8)) |> Bitwise.band(0xFFFF)
+        crc = Bitwise.bxor(crc, byte) |> Bitwise.band(0xFFFF)
+        crc = Bitwise.bxor(crc, Bitwise.bsr(Bitwise.band(crc, 0xFF), 4)) |> Bitwise.band(0xFFFF)
+
+        crc =
+          Bitwise.bxor(crc, Bitwise.band(Bitwise.bsl(crc, 12), 0xFFFF)) |> Bitwise.band(0xFFFF)
+
+        Bitwise.bxor(crc, Bitwise.band(Bitwise.bsl(Bitwise.band(crc, 0xFF), 5), 0xFFFF))
+        |> Bitwise.band(0xFFFF)
+    end
   end
 
   def disconnect_frame do
@@ -86,6 +179,46 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
       when is_integer(node_num) and is_binary(text) do
     send_text_frame(%{to: node_num, channel: 0, text: text, want_ack: true})
   end
+
+  @doc """
+  Ask the local node for Store & Forward history (Primary-channel replay).
+
+  Addressed to `node_num` so firmware handles it on-device. A client that is
+  not an S&F server ignores the request; a server dumps stored broadcasts.
+  `window` is minutes (default 7 days, matching heard-message retention).
+  """
+  def store_forward_history_frame(node_num, window \\ 10_080)
+      when is_integer(node_num) and is_integer(window) and window > 0 do
+    history = Protobuf.encode_varint_field(2, window)
+
+    sf =
+      Protobuf.encode_varint_field(1, @sf_client_history) <>
+        Protobuf.encode_message_field(3, history)
+
+    data =
+      Protobuf.encode_varint_field(1, @port_store_forward) <>
+        Protobuf.encode_bytes_field(2, sf)
+
+    packet = mesh_packet(node_num, 0, data, packet_id(), 0, false)
+    encode_frame(Protobuf.encode_message_field(1, packet))
+  end
+
+  def parse_store_forward(bin) when is_binary(bin) do
+    fields = Protobuf.decode(bin)
+    history = Protobuf.nested(fields, 3)
+    text = Protobuf.bytes(fields, 5, <<>>)
+
+    %{
+      rr: Protobuf.varint(fields, 1, 0),
+      text: text,
+      history_messages: Protobuf.varint(history, 1, 0),
+      window: Protobuf.varint(history, 2, 0),
+      last_request: Protobuf.varint(history, 3, 0)
+    }
+  end
+
+  def parse_store_forward(_),
+    do: %{rr: 0, text: <<>>, history_messages: 0, window: 0, last_request: 0}
 
   @doc """
   AdminMessage.get_channel_request is 1-based (index + 1) so protobuf never
@@ -350,6 +483,12 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
       config = Protobuf.bytes(fields, 5) ->
         {:config, parse_config(config)}
 
+      xmodem = Protobuf.bytes(fields, 12) ->
+        {:xmodem, parse_xmodem(xmodem)}
+
+      file_info = Protobuf.bytes(fields, 15) ->
+        {:file_info, parse_file_info(file_info)}
+
       true ->
         {:other, fields}
     end
@@ -406,6 +545,7 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
       to: to,
       channel: channel,
       id: Protobuf.field(fields, 6),
+      rx_time: protobuf_unix(Protobuf.field(fields, 7)),
       portnum: portnum,
       payload: payload,
       want_response: Protobuf.varint(decoded, 3, 0) == 1,

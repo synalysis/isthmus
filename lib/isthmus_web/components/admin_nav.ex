@@ -57,6 +57,7 @@ defmodule IsthmusWeb.AdminNav do
           <.nav_link href={~p"/admin"} label="Home" current={@current == :home} />
           <.nav_link href={~p"/admin/registrations"} label="Groups" current={@current == :groups} />
           <.nav_link href={~p"/admin/adverts"} label="Adverts" current={@current == :adverts} />
+          <.nav_link href={~p"/admin/messages"} label="Messages" current={@current == :messages} />
           <.nav_link href={~p"/admin/topology"} label="Topology" current={@current == :topology} />
           <.nav_link href={~p"/admin/gateway"} label="Gateway" current={@current == :gateway} />
           <.nav_link href={~p"/admin/timeline"} label="Timeline" current={@current == :timeline} />

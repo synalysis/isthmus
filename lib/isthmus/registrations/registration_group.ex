@@ -17,6 +17,7 @@ defmodule Isthmus.Registrations.RegistrationGroup do
           meshtastic_channel_idx: integer() | nil,
           meshtastic_channel_psk_enc: binary() | nil,
           meshtastic_channel_device_id: String.t() | nil,
+          store_messages: boolean(),
           legs: [term()],
           radio_channels: [term()]
         }
@@ -36,6 +37,7 @@ defmodule Isthmus.Registrations.RegistrationGroup do
     field :meshtastic_channel_idx, :integer
     field :meshtastic_channel_psk_enc, :binary
     field :meshtastic_channel_device_id, :string
+    field :store_messages, :boolean, default: false
 
     has_many :legs, Isthmus.Registrations.IdentityLeg
     has_many :radio_channels, Isthmus.Registrations.GroupRadioChannel
@@ -56,7 +58,8 @@ defmodule Isthmus.Registrations.RegistrationGroup do
       :meshcore_channel_device_id,
       :meshtastic_channel_idx,
       :meshtastic_channel_psk_enc,
-      :meshtastic_channel_device_id
+      :meshtastic_channel_device_id,
+      :store_messages
     ])
     |> update_change(:owner_pubkey_hex, &String.downcase/1)
     |> validate_required([:owner_pubkey_hex, :status, :created_by, :kind])

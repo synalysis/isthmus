@@ -85,6 +85,8 @@ defmodule Isthmus.Networks.MeshCore.Companion.Channels do
         "meshcore:channels",
         {:meshcore_channels, channels, state.port}
       )
+
+      send(self(), :drain_messages)
     end
 
     clear(state)

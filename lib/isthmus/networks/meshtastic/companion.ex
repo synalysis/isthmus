@@ -275,7 +275,13 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
       time_synced_at: nil,
       device_tzdef: nil,
       sent: 0,
-      received: 0
+      received: 0,
+      history_requested: false,
+      heartbeat_nonce: 2,
+      files: [],
+      xmodem: nil,
+      xmodem_timer: nil,
+      store_pull_timer: nil
     }
 
     state = maybe_connect(state)
@@ -434,7 +440,11 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   def handle_cast(:sync_channels, state), do: {:noreply, state}
 
   def handle_cast(:reconnect, state) do
-    {:noreply, reconnect_state(state)}
+    if stay_connected?(state) do
+      {:noreply, state}
+    else
+      {:noreply, reconnect_state(state)}
+    end
   end
 
   def handle_cast({:inject, :channel, attrs}, state) do
@@ -463,9 +473,18 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   end
 
   def handle_info(:heartbeat, %{status: :online, uart: uart} = state) when not is_nil(uart) do
-    _ = Circuits.UART.write(uart, Protocol.heartbeat_frame())
+    nonce = next_heartbeat_nonce(state[:heartbeat_nonce])
+    _ = Circuits.UART.write(uart, Protocol.heartbeat_frame(nonce))
     Process.send_after(self(), :heartbeat, @heartbeat_ms)
-    {:noreply, state}
+    {:noreply, %{state | heartbeat_nonce: nonce}}
+  end
+
+  def handle_info(:xmodem_timeout, state) do
+    {:noreply, Inbound.retry_or_finish_xmodem(%{state | xmodem_timer: nil})}
+  end
+
+  def handle_info(:pull_message_store, state) do
+    {:noreply, Inbound.request_message_store(%{state | store_pull_timer: nil})}
   end
 
   def handle_info(:heartbeat, state), do: {:noreply, state}
@@ -534,6 +553,24 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     })
   end
 
+  # Opening CP210x/CH340 pulses DTR and reboots ESP32 Meshtastic firmware.
+  # Rescan only needs a new UART when this companion is down or the port moved.
+  @doc false
+  def stay_connected?(state) when is_map(state) do
+    online? = state[:status] == :online and not is_nil(state[:uart])
+
+    cond do
+      not online? ->
+        false
+
+      state[:fixed_port] == true ->
+        true
+
+      true ->
+        Discover.resolve_port(:meshtastic) == state[:port]
+    end
+  end
+
   defp reconnect_state(%{fixed_port: true} = state) do
     close_uart(state)
 
@@ -549,7 +586,12 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
         device_time: nil,
         device_time_at: nil,
         time_synced_at: nil,
-        device_tzdef: nil
+        device_tzdef: nil,
+        history_requested: false,
+        files: [],
+        xmodem: nil,
+        xmodem_timer: nil,
+        store_pull_timer: nil
     }
     |> maybe_connect()
   end
@@ -571,7 +613,12 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
         device_time: nil,
         device_time_at: nil,
         time_synced_at: nil,
-        device_tzdef: nil
+        device_tzdef: nil,
+        history_requested: false,
+        files: [],
+        xmodem: nil,
+        xmodem_timer: nil,
+        store_pull_timer: nil
     }
     |> maybe_connect()
   end
@@ -588,6 +635,13 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   end
 
   defp close_uart(_), do: :ok
+
+  defp next_heartbeat_nonce(n) when is_integer(n) and n >= 2 do
+    next = n + 1
+    if next == 1, do: 2, else: next
+  end
+
+  defp next_heartbeat_nonce(_), do: 2
 
   defp reply_write(uart, frame, state) do
     case Circuits.UART.write(uart, frame) do

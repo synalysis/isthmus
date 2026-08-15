@@ -3,6 +3,15 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
 
   alias Isthmus.Networks.Meshtastic.Companion
 
+  test "stay_connected? is true only for an online UART on the same port" do
+    online = %{status: :online, uart: self(), port: "/dev/ttyUSB0", fixed_port: true}
+    assert Companion.stay_connected?(online)
+
+    refute Companion.stay_connected?(%{online | status: :error})
+    refute Companion.stay_connected?(%{online | uart: nil})
+    refute Companion.stay_connected?(%{status: :disconnected, uart: nil, port: nil})
+  end
+
   test "disconnect_unidentified is a no-op when no radio is online" do
     assert :ok = Companion.disconnect_unidentified()
   end
@@ -102,5 +111,70 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
 
     assert_receive {:sighting, _}, 1_000
     assert %{hops: 3} = Isthmus.Announce.Sightings.best_for("meshtastic", "ccddeeff")
+  end
+
+  test "queued Primary TEXT_MESSAGE is stored with packet id" do
+    alias Isthmus.Networks.Meshtastic.Companion.Inbound
+    alias Isthmus.Networks.Meshtastic.Protocol
+
+    state = %{
+      my_info: %{my_node_num: 1, node_id: "00000001"},
+      port: "/dev/ttyTEST",
+      received: 0
+    }
+
+    pkt = %{
+      portnum: Protocol.port_text(),
+      from: 0xAABBCCDD,
+      to: Protocol.broadcast(),
+      channel: 0,
+      id: 7_701,
+      rx_time: 1_700_000_300,
+      payload: "held on radio"
+    }
+
+    _ = Inbound.handle_packet(state, pkt)
+    _ = :sys.get_state(Isthmus.Gateway.Translator)
+    _ = :sys.get_state(Isthmus.Gateway.Translator)
+
+    assert Enum.any?(Isthmus.Messages.list_recent(20), fn row ->
+             row.network == "meshtastic" and row.body == "held on radio" and
+               row.external_id == "mt-7701"
+           end)
+  end
+
+  test "Store and Forward broadcast history is stored as Primary text" do
+    alias Isthmus.Networks.Meshtastic.Companion.Inbound
+    alias Isthmus.Networks.Meshtastic.Protocol
+    alias Isthmus.Networks.Meshtastic.Protobuf
+
+    state = %{
+      my_info: %{my_node_num: 1, node_id: "00000001"},
+      port: "/dev/ttyTEST",
+      received: 0
+    }
+
+    payload =
+      Protobuf.encode_varint_field(1, Protocol.sf_router_text_broadcast()) <>
+        Protobuf.encode_bytes_field(5, "sf replay")
+
+    pkt = %{
+      portnum: Protocol.port_store_forward(),
+      from: 0x11223344,
+      to: 1,
+      channel: 0,
+      id: 8_802,
+      rx_time: 1_700_000_400,
+      payload: payload
+    }
+
+    _ = Inbound.handle_packet(state, pkt)
+    _ = :sys.get_state(Isthmus.Gateway.Translator)
+    _ = :sys.get_state(Isthmus.Gateway.Translator)
+
+    assert Enum.any?(Isthmus.Messages.list_recent(20), fn row ->
+             row.network == "meshtastic" and row.body == "sf replay" and
+               row.external_id == "mt-8802"
+           end)
   end
 end

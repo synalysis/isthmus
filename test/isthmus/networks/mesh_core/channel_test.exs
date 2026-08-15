@@ -46,4 +46,15 @@ defmodule Isthmus.Networks.MeshCore.ChannelTest do
     refute Channel.public_group_packet?(private)
     refute Channel.public_group_packet?(advert)
   end
+
+  test "public_slot? matches name or well-known PSK" do
+    assert Channel.public_slot?(%{name: "Public", secret_hex: "00"})
+    assert Channel.public_slot?(%{name: "Camp", secret_hex: Channel.public_psk_hex()})
+    refute Channel.public_slot?(%{name: "Private", secret_hex: "aa"})
+  end
+
+  test "build/decrypt Public group text" do
+    packet = Channel.build_group_text(Channel.public_psk(), "Ada", "ping")
+    assert {:ok, %{name: "Ada", text: "ping"}} = Channel.decrypt_public_text(packet)
+  end
 end

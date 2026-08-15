@@ -3,6 +3,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
 
   alias IsthmusWeb.Admin.MeshtasticHTML
 
+  alias Isthmus.Messages
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.Meshtastic.Companion
   alias Isthmus.Networks.Meshtastic.Devices
@@ -33,6 +34,8 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
      |> assign(:timezone, timezone)
      |> assign(:settings_modal_port, nil)
      |> assign(:channel_invite, nil)
+     |> assign(:send_channel, nil)
+     |> assign(:send_form, to_form(%{"body" => ""}))
      |> assign(:settings_form, to_form(Settings.to_form_params(Settings.empty()), as: :settings))
      |> refresh()}
   end
@@ -238,6 +241,71 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     {:noreply, assign(socket, :channel_invite, nil)}
   end
 
+  def handle_event("open_send_channel", params, socket) do
+    port = params["port"]
+    idx = parse_channel_idx(params["channel_idx"])
+
+    cond do
+      is_nil(port) or port == "" or is_nil(idx) ->
+        {:noreply, put_flash(socket, :error, "Missing radio or channel.")}
+
+      true ->
+        {:noreply,
+         socket
+         |> assign(:send_channel, %{
+           port: port,
+           channel_idx: idx,
+           name: channel_send_name(port, idx)
+         })
+         |> assign(:send_form, to_form(%{"body" => ""}))}
+    end
+  end
+
+  def handle_event("close_send_channel", _params, socket) do
+    {:noreply, assign(socket, :send_channel, nil)}
+  end
+
+  def handle_event("send_channel_text", params, socket) do
+    port = params["port"] || get_in(socket.assigns, [:send_channel, :port])
+
+    idx =
+      parse_channel_idx(
+        params["channel_idx"] || get_in(socket.assigns, [:send_channel, :channel_idx])
+      )
+
+    body = params["body"] |> to_string() |> String.trim()
+    name = get_in(socket.assigns, [:send_channel, :name]) || channel_send_name(port, idx)
+
+    cond do
+      body == "" ->
+        {:noreply,
+         socket
+         |> assign(:send_form, to_form(%{"body" => ""}))
+         |> put_flash(:error, "Message is empty.")}
+
+      is_nil(port) or port == "" or is_nil(idx) ->
+        {:noreply, put_flash(socket, :error, "Missing radio or channel.")}
+
+      true ->
+        case Companion.send_channel_text(idx, body, port) do
+          :ok ->
+            record_admin_channel_send(port, idx, body)
+
+            {:noreply,
+             socket
+             |> assign(:send_channel, nil)
+             |> assign(:send_form, to_form(%{"body" => ""}))
+             |> put_flash(:info, "Sent to #{name}.")}
+
+          {:error, reason} when reason in [:not_connected, :timeout] ->
+            {:noreply, put_flash(socket, :error, "Meshtastic companion is not connected.")}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Send failed: #{format_err(reason)}")}
+        end
+    end
+  end
+
   @impl true
   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
 
@@ -439,6 +507,50 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
 
   defp format_err(reason) when is_binary(reason), do: reason
   defp format_err(reason), do: inspect(reason)
+
+  defp parse_channel_idx(n) when is_integer(n) and n in 0..7, do: n
+
+  defp parse_channel_idx(s) when is_binary(s) do
+    case Integer.parse(s) do
+      {n, ""} when n in 0..7 -> n
+      _ -> nil
+    end
+  end
+
+  defp parse_channel_idx(_), do: nil
+
+  defp channel_send_name(port, idx) do
+    slot = if is_integer(idx), do: Companion.get_channel(idx, port)
+    name = slot && String.trim(to_string(slot[:name] || slot["name"] || ""))
+
+    cond do
+      is_binary(name) and name != "" and
+          String.downcase(name) not in ["channel", "primary", "primary channel"] ->
+        name
+
+      idx == 0 ->
+        "Primary"
+
+      is_integer(idx) ->
+        "slot #{idx}"
+
+      true ->
+        "channel"
+    end
+  end
+
+  defp record_admin_channel_send(port, idx, body) do
+    health = Companion.health(port)
+
+    _ =
+      Messages.maybe_record_meshtastic_channel(%{
+        channel_idx: idx,
+        body: body,
+        from_ref: health[:node_id] || health[:self_ref],
+        force: idx == 0,
+        meta: %{source: "admin_send", port: port}
+      })
+  end
 
   defp meshtastic_radio_id(arg), do: MeshtasticHTML.meshtastic_radio_id(arg)
 

@@ -141,6 +141,35 @@ defmodule IsthmusWeb.Admin.RegistrationsLive do
     {:noreply, socket |> assign(:selected_bridge_id, id) |> assign(:modal, :manage) |> refresh()}
   end
 
+  def handle_event("toggle_store_messages", %{"id" => id}, socket) do
+    group = Enum.find(socket.assigns.groups, &(&1.id == id))
+
+    cond do
+      is_nil(group) ->
+        {:noreply, put_flash(socket, :error, "Group not found.")}
+
+      true ->
+        case Registrations.set_store_messages(group, !group.store_messages) do
+          {:ok, updated} ->
+            {:noreply,
+             socket
+             |> put_flash(
+               :info,
+               if(updated.store_messages,
+                 do: "Storing messages for #{updated.display_name}.",
+                 else: "Stopped storing messages for #{updated.display_name}."
+               )
+             )
+             |> assign(:selected_bridge_id, updated.id)
+             |> assign(:modal, :manage)
+             |> refresh()}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Could not update: #{inspect(reason)}")}
+        end
+    end
+  end
+
   def handle_event("open_new_group", _params, socket) do
     {:noreply,
      socket

@@ -329,7 +329,11 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
 
     case Circuits.UART.write(uart, Protocol.want_config_frame(nonce)) do
       :ok ->
-        %{state | config_nonce: nonce, sent: state.sent + 1}
+        state
+        |> Map.put(:config_nonce, nonce)
+        |> Map.put(:sent, (state[:sent] || 0) + 1)
+        |> Map.put(:history_requested, false)
+        |> Map.put(:files, [])
 
       {:error, reason} ->
         %{state | last_error: inspect(reason)}

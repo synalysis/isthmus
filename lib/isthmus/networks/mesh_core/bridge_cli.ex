@@ -206,17 +206,26 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
 
   @impl true
   def handle_cast(:reconnect, state) do
-    if state.transport, do: state.transport_mod.close(state.transport)
+    if stay_connected?(state) do
+      {:noreply, state}
+    else
+      if state.transport, do: state.transport_mod.close(state.transport)
 
-    state = %{
-      state
-      | transport: nil,
-        buffer: <<>>,
-        status: :disconnected,
-        port: Discover.resolve_port(:bridge_cli)
-    }
+      state = %{
+        state
+        | transport: nil,
+          buffer: <<>>,
+          status: :disconnected,
+          port: Discover.resolve_port(:bridge_cli)
+      }
 
-    {:noreply, maybe_connect(state)}
+      {:noreply, maybe_connect(state)}
+    end
+  end
+
+  defp stay_connected?(state) do
+    state[:status] == :online and not is_nil(state[:transport]) and
+      Discover.resolve_port(:bridge_cli) == state[:port]
   end
 
   @impl true

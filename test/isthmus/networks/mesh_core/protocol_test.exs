@@ -54,6 +54,14 @@ defmodule Isthmus.Networks.MeshCore.ProtocolTest do
     assert msg.timestamp == 1_234
   end
 
+  test "sync_next_message_frame is CMD_SYNC_NEXT_MESSAGE" do
+    assert Protocol.sync_next_message_frame() == <<10>>
+  end
+
+  test "parse_frame no_more_messages" do
+    assert Protocol.parse_frame(<<10>>) == {:no_more_messages, true}
+  end
+
   test "parse_frame channel_msg v3" do
     frame = <<0x11, 10, 0, 0, 2, 0, 0, 99::little-32, "v3 msg">>
     assert {:channel_msg, msg} = Protocol.parse_frame(frame)

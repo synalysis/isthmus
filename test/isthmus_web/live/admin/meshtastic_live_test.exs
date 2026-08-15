@@ -36,6 +36,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
     refute has_element?(view, "#meshtastic-lora-modal")
     refute has_element?(view, "#meshtastic-lora-form")
     refute has_element?(view, "#meshtastic-invite-modal")
+    refute has_element?(view, "#meshtastic-send-channel-modal")
     refute has_element?(view, "#channel-bridge-form")
     refute has_element?(view, "#create-channel-on-group-btn")
     refute html =~ "New group + private channel"
@@ -49,5 +50,23 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
 
     view |> element("#rescan-meshtastic-btn") |> render_click()
     assert render(view) =~ "Rescanned"
+  end
+
+  test "Primary send modal opens and reports when the radio is offline", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
+
+    refute has_element?(view, "#meshtastic-send-channel-modal")
+
+    render_click(view, "open_send_channel", %{"port" => "/dev/ttyTEST", "channel_idx" => "0"})
+
+    assert has_element?(view, "#meshtastic-send-channel-modal")
+    assert has_element?(view, "#meshtastic-send-channel-form")
+    assert render(view) =~ "Send to Primary"
+
+    view
+    |> form("#meshtastic-send-channel-form", %{"body" => "hello primary"})
+    |> render_submit()
+
+    assert render(view) =~ "Meshtastic companion is not connected."
   end
 end

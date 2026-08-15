@@ -133,6 +133,18 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
              product_id: 0x8029
            })
 
+    assert Discover.ambiguous_nrf_board?(%{
+             description: "T1000-E",
+             vendor_id: 0x2886,
+             product_id: 0x0057
+           })
+
+    assert Discover.ambiguous_nrf_board?(%{
+             description: "T1000-E",
+             vendor_id: 0x239A,
+             product_id: 0x8029
+           })
+
     assert Discover.serial_firmware_ambiguous?(%{
              description: "CP2102 USB to UART Bridge Controller",
              vendor_id: 0x10C4,

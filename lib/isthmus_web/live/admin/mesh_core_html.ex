@@ -288,10 +288,24 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                       <% end %>
                     </p>
                   <% end %>
-                  <%= if device.kind == :unknown do %>
-                    <p class="text-sm text-warning" id={"#{device_dom_id(device.id)}-identify-hint"}>
-                      Isthmus has not identified this radio’s role yet. Power it on and Rescan USB.
-                    </p>
+                  <%= cond do %>
+                    <% AdminCopy.bootloader_usb?(device) -> %>
+                      <p
+                        class="text-sm text-warning"
+                        id={"#{device_dom_id(device.id)}-identify-hint"}
+                      >
+                        USB is the DFU bootloader (T1000-E-BOOT), not a companion port. Flash
+                        MeshCore <strong class="font-medium">USB Serial Companion</strong>
+                        — not Companion Bluetooth, which only talks to the phone app.
+                      </p>
+                    <% device.kind == :unknown -> %>
+                      <p
+                        class="text-sm text-warning"
+                        id={"#{device_dom_id(device.id)}-identify-hint"}
+                      >
+                        Isthmus has not identified this radio’s role yet. Power it on and Rescan USB.
+                      </p>
+                    <% true -> %>
                   <% end %>
                 </div>
                 <div class="flex flex-wrap items-center gap-2">

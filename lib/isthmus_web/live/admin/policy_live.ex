@@ -93,7 +93,7 @@ defmodule IsthmusWeb.Admin.PolicyLive do
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-8">
         <.admin_header current={:policy} title="Policy">
-          Registration, budgets, and gateway direction rules.
+          Registration, budgets, message retention, and gateway direction rules.
         </.admin_header>
 
         <div class="rounded-box border border-base-300 bg-base-200 p-4 space-y-2">

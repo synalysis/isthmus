@@ -61,6 +61,18 @@ defmodule Isthmus.MCP.ToolsTest do
     assert {:error, "group not found: missing"} = Tools.get_group(%{group: "missing"})
   end
 
+  test "set_group_store_messages is per group" do
+    owner = owner_hex()
+    {:ok, group} = Registrations.create_bridge_group(owner, %{display_name: "Keep Chat"})
+    refute group.store_messages
+
+    assert {:ok, updated} =
+             Tools.set_group_store_messages(%{group: "Keep Chat", enabled: true})
+
+    assert updated.store_messages
+    assert Registrations.get_group!(group.id).store_messages
+  end
+
   test "get_policy and set_policy round-trip" do
     assert {:ok, %{settings: settings}} = Tools.get_policy(%{})
     assert is_boolean(settings["registration_open"])

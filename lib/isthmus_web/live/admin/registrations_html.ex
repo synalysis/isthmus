@@ -320,6 +320,29 @@ defmodule IsthmusWeb.Admin.RegistrationsHTML do
               <strong class="font-medium">External</strong>
               identities are attached peers Isthmus sends to.
             </p>
+            <div class="mt-4 rounded-box border border-base-300 bg-base-200 p-3 space-y-2">
+              <p class="text-sm font-medium">Message retention</p>
+              <p class="text-xs opacity-70">
+                Public radio-channel text is always kept on Messages. This group's
+                bodies are discarded after forwarding unless you opt in (for tests
+                and debugging).
+              </p>
+              <button
+                type="button"
+                id={"toggle-store-messages-#{@selected_bridge.id}"}
+                class={[
+                  "btn btn-sm",
+                  @selected_bridge.store_messages && "btn-warning",
+                  not @selected_bridge.store_messages && "btn-ghost"
+                ]}
+                phx-click="toggle_store_messages"
+                phx-value-id={@selected_bridge.id}
+              >
+                {if @selected_bridge.store_messages,
+                  do: "Storing group messages",
+                  else: "Group messages not stored"}
+              </button>
+            </div>
             <div class="mt-4 overflow-x-auto">
               <table class="table table-sm" id="bridge-members-table">
                 <thead>

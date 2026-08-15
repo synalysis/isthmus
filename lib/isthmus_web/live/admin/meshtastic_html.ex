@@ -229,7 +229,18 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                         </td>
                         <td>
                           <%= if ch.index == 0 do %>
-                            <span class="opacity-60">—</span>
+                            <div class="flex w-full flex-wrap items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                class="btn btn-outline btn-xs shrink-0"
+                                id={"send-channel-#{device_dom_id(device)}-#{ch.index}"}
+                                phx-click="open_send_channel"
+                                phx-value-port={device.path}
+                                phx-value-channel_idx={ch.index}
+                              >
+                                Send message
+                              </button>
+                            </div>
                           <% else %>
                             <% radio_id = meshtastic_radio_id(device) %>
                             <% linked =
@@ -359,6 +370,53 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
             </div>
           </div>
           <div class="modal-backdrop" phx-click="hide_channel_invite"></div>
+        </div>
+
+        <div
+          :if={@send_channel}
+          class="modal modal-open"
+          role="dialog"
+          id="meshtastic-send-channel-modal"
+        >
+          <div class="modal-box">
+            <h3 class="text-lg font-semibold">
+              Send to {@send_channel.name}
+            </h3>
+            <p class="mt-1 text-sm opacity-70">
+              Transmits on this radio's Primary channel (slot {@send_channel.channel_idx}).
+              It is not sent through an Isthmus group.
+            </p>
+            <.form
+              for={@send_form}
+              id="meshtastic-send-channel-form"
+              phx-submit="send_channel_text"
+              class="mt-4 space-y-4"
+            >
+              <input type="hidden" name="port" value={@send_channel.port} />
+              <input type="hidden" name="channel_idx" value={@send_channel.channel_idx} />
+              <.input
+                field={@send_form[:body]}
+                type="textarea"
+                label="Message"
+                placeholder="Hello from Isthmus…"
+                rows="5"
+              />
+              <div class="modal-action">
+                <button
+                  class="btn btn-ghost btn-sm"
+                  type="button"
+                  id="close-send-channel-btn"
+                  phx-click="close_send_channel"
+                >
+                  Cancel
+                </button>
+                <button class="btn btn-primary btn-sm" type="submit" id="send-channel-submit">
+                  Send
+                </button>
+              </div>
+            </.form>
+          </div>
+          <div class="modal-backdrop" phx-click="close_send_channel"></div>
         </div>
 
         <div

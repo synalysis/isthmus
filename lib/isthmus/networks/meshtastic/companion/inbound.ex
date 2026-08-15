@@ -6,6 +6,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
   alias Isthmus.Announce.Inbound, as: Sightings
   alias Isthmus.Networks.Meshtastic.Companion.Admin
   alias Isthmus.Networks.Meshtastic.Companion.Status
+  alias Isthmus.Networks.Meshtastic.MessageStore
   alias Isthmus.Networks.Meshtastic.Protocol
 
   @spec consume(map(), binary()) :: map()
@@ -49,13 +50,25 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
           |> Status.persist_lora()
           |> Status.broadcast_lora()
           |> Admin.maybe_begin_time_sync()
+          |> schedule_message_store()
         else
           state
         end
 
+      {:file_info, info} ->
+        if is_binary(info[:name]) and info[:name] != "" do
+          Logger.info("Meshtastic file #{info.name} (#{info.size} bytes)")
+        end
+
+        files = [info | state[:files] || []]
+        %{state | files: files}
+
+      {:xmodem, xmodem} ->
+        handle_xmodem(state, xmodem)
+
       :rebooted ->
         Logger.info("Meshtastic companion rebooted — re-requesting config")
-        Admin.request_config(state)
+        reset_message_store(state) |> Admin.request_config()
 
       {:other, _} ->
         state
@@ -83,18 +96,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
         state
 
       pkt.to == Protocol.broadcast() ->
-        publish_channel_msg(%{
-          channel_idx: pkt.channel,
-          body: sanitize_text(pkt.payload),
-          from_ref: Protocol.node_id_hex(pkt.from),
-          meta: %{
-            from: pkt.from,
-            id: pkt.id,
-            radio_id: get_in(state, [:my_info, :node_id]),
-            port: state.port
-          }
-        })
-
+        record_meshtastic_broadcast(state, pkt, pkt.payload)
         state
 
       is_integer(my_num) and pkt.to == my_num ->
@@ -110,6 +112,16 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
       true ->
         state
     end
+  end
+
+  def handle_packet(state, %{portnum: port} = pkt) when port == 65 do
+    sf = Protocol.parse_store_forward(pkt.payload)
+
+    if sf.rr == Protocol.sf_router_text_broadcast() do
+      record_meshtastic_broadcast(state, pkt, sf.text)
+    end
+
+    state
   end
 
   def handle_packet(state, %{portnum: port} = pkt) when port == 4 do
@@ -133,6 +145,223 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
   end
 
   def handle_packet(state, _), do: state
+
+  defp record_meshtastic_broadcast(state, pkt, body) do
+    attrs = %{
+      channel_idx: pkt.channel,
+      body: sanitize_text(body),
+      from_ref: Protocol.node_id_hex(pkt.from),
+      seen_at: unix_seen_at(pkt[:rx_time]),
+      external_id: pkt.id,
+      meta: %{
+        from: pkt.from,
+        id: pkt.id,
+        rx_time: pkt[:rx_time],
+        radio_id: get_in(state, [:my_info, :node_id]),
+        port: state.port,
+        source: "companion_sync"
+      }
+    }
+
+    _ = Isthmus.Messages.maybe_record_meshtastic_channel(attrs)
+    publish_channel_msg(attrs)
+  end
+
+  @store_pull_ms 2_000
+  @store_retry_ms 1_000
+  @xmodem_start_ms 20_000
+  @xmodem_idle_ms 15_000
+
+  def reset_message_store(state) do
+    state
+    |> cancel_timer(:store_pull_timer)
+    |> cancel_timer(:xmodem_timer)
+    |> Map.put(:history_requested, false)
+    |> Map.put(:files, [])
+    |> Map.put(:xmodem, nil)
+    |> Map.put(:xmodem_timer, nil)
+    |> Map.put(:store_pull_timer, nil)
+  end
+
+  defp schedule_message_store(state, delay \\ @store_pull_ms) do
+    state = cancel_timer(state, :store_pull_timer)
+    ref = Process.send_after(self(), :pull_message_store, delay)
+    %{state | store_pull_timer: ref, history_requested: false}
+  end
+
+  @doc "Start (or resume) an XModem pull of `/Messages_*.msgs` after handshake."
+  def request_message_store(state) do
+    cond do
+      is_map(state[:xmodem]) ->
+        state
+
+      state[:history_requested] ->
+        state
+
+      is_map(state[:admin]) ->
+        schedule_message_store(state, @store_retry_ms)
+
+      true ->
+        start_message_store(state, store_filename_candidates(state))
+    end
+  end
+
+  def retry_or_finish_xmodem(state) do
+    xfer = state[:xmodem]
+    rest = (xfer && xfer[:candidates]) || []
+
+    cond do
+      is_list(rest) and rest != [] ->
+        Logger.warning("Meshtastic message-log download timed out; retrying #{hd(rest)}")
+        start_message_store(%{state | xmodem: nil, history_requested: false}, rest)
+
+      true ->
+        Logger.warning("Meshtastic message-log download timed out")
+        finish_xmodem(state)
+    end
+  end
+
+  defp start_message_store(state, [filename | rest]) do
+    write_xmodem(state, Protocol.xmodem_download_frame(filename))
+    Logger.info("Meshtastic requesting on-device message log #{filename}")
+
+    state
+    |> cancel_timer(:xmodem_timer)
+    |> Map.put(:history_requested, true)
+    |> Map.put(:xmodem, %{filename: filename, candidates: rest, acc: <<>>, seq: 0})
+    |> Map.put(:xmodem_timer, Process.send_after(self(), :xmodem_timeout, @xmodem_start_ms))
+  end
+
+  defp start_message_store(state, _) do
+    Logger.info("Meshtastic has no on-device message-log filename left to try")
+    finish_xmodem(%{state | history_requested: true})
+  end
+
+  defp store_filename_candidates(state) do
+    from_manifest =
+      (state[:files] || [])
+      |> Enum.map(& &1[:name])
+      |> Enum.filter(fn name ->
+        is_binary(name) and String.contains?(name, "Messages_") and
+          String.ends_with?(String.trim_trailing(name, <<0>>), ".msgs")
+      end)
+      |> Enum.map(&String.trim_trailing(&1, <<0>>))
+
+    Enum.uniq(from_manifest ++ [MessageStore.filename(), "Messages_default.msgs"])
+  end
+
+  defp handle_xmodem(state, %{control: control} = xmodem) do
+    cond do
+      control == Protocol.xmodem_nak() ->
+        rest = get_in(state, [:xmodem, :candidates]) || []
+        Logger.info("Meshtastic has no on-device message log (#{xmodem_name(state)})")
+        start_message_store(%{state | xmodem: nil, history_requested: false}, rest)
+
+      control == Protocol.xmodem_can() ->
+        Logger.warning("Meshtastic cancelled message-log transfer")
+        finish_xmodem(state)
+
+      control == Protocol.xmodem_ack() and is_map(state[:xmodem]) ->
+        # Older PhoneAPI ACKs the filename before the first SOH.
+        write_xmodem(state, Protocol.xmodem_frame(Protocol.xmodem_ack()))
+        refresh_xmodem_timer(state, @xmodem_start_ms)
+
+      control == Protocol.xmodem_eot() ->
+        write_xmodem(state, Protocol.xmodem_frame(Protocol.xmodem_ack()))
+        ingest_message_store(state)
+
+      control == Protocol.xmodem_soh() ->
+        xfer = state[:xmodem] || %{filename: MessageStore.filename(), acc: <<>>, seq: 0}
+        acc = (xfer[:acc] || <<>>) <> (xmodem.buffer || <<>>)
+        write_xmodem(state, Protocol.xmodem_frame(Protocol.xmodem_ack(), xmodem.seq))
+
+        state
+        |> Map.put(:xmodem, Map.merge(xfer, %{acc: acc, seq: xmodem.seq}))
+        |> refresh_xmodem_timer(@xmodem_idle_ms)
+
+      true ->
+        state
+    end
+  end
+
+  defp write_xmodem(%{uart: uart}, frame) when is_pid(uart), do: Circuits.UART.write(uart, frame)
+  defp write_xmodem(_, _), do: :ok
+
+  defp ingest_message_store(state) do
+    blob = get_in(state, [:xmodem, :acc]) || <<>>
+    rows = MessageStore.parse(blob)
+    broadcasts = Enum.filter(rows, &(&1.type == :broadcast and &1.body != ""))
+
+    Enum.each(broadcasts, fn row ->
+      record_store_row(state, row)
+    end)
+
+    if rows == [] and blob != <<>> do
+      preview = blob |> binary_part(0, min(byte_size(blob), 16)) |> Base.encode16(case: :lower)
+
+      Logger.warning(
+        "Meshtastic message log: 0 rows from #{byte_size(blob)} bytes (#{preview}...)"
+      )
+    else
+      Logger.info(
+        "Meshtastic message log: #{length(broadcasts)} channel broadcasts of #{length(rows)} stored (#{byte_size(blob)} bytes)"
+      )
+    end
+
+    finish_xmodem(state)
+  end
+
+  defp record_store_row(state, row) do
+    attrs = %{
+      channel_idx: row.channel_idx,
+      body: row.body,
+      from_ref: Protocol.node_id_hex(row.sender),
+      seen_at: unix_seen_at(row.timestamp),
+      external_id: store_external_id(row),
+      force: true,
+      meta: %{
+        from: row.sender,
+        rx_time: row.timestamp,
+        radio_id: get_in(state, [:my_info, :node_id]),
+        port: state[:port],
+        source: "message_store"
+      }
+    }
+
+    _ = Isthmus.Messages.maybe_record_meshtastic_channel(attrs)
+    publish_channel_msg(attrs)
+  end
+
+  defp store_external_id(row) do
+    digest = row.body |> :erlang.phash2() |> Integer.to_string(16) |> String.downcase()
+    "mt-store-#{row.sender}-#{row.timestamp}-#{digest}"
+  end
+
+  defp xmodem_name(state), do: get_in(state, [:xmodem, :filename]) || MessageStore.filename()
+
+  defp finish_xmodem(state) do
+    state
+    |> cancel_timer(:xmodem_timer)
+    |> Map.put(:xmodem, nil)
+    |> Map.put(:xmodem_timer, nil)
+  end
+
+  defp refresh_xmodem_timer(state, ms) do
+    state = cancel_timer(state, :xmodem_timer)
+    %{state | xmodem_timer: Process.send_after(self(), :xmodem_timeout, ms)}
+  end
+
+  defp cancel_timer(state, key) do
+    ref = state[key]
+    if is_reference(ref), do: Process.cancel_timer(ref)
+    Map.put(state, key, nil)
+  end
+
+  defp unix_seen_at(ts) when is_integer(ts) and ts > 1_600_000_000 and ts < 2_200_000_000 do
+    DateTime.from_unix!(ts) |> DateTime.truncate(:second)
+  end
+
+  defp unix_seen_at(_), do: nil
 
   def publish_channel_msg(attrs) do
     Phoenix.PubSub.broadcast(

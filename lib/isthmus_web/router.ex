@@ -84,6 +84,7 @@ defmodule IsthmusWeb.Router do
       live "/admin/relays", Admin.NostrLive
       live "/admin/registrations", Admin.RegistrationsLive
       live "/admin/adverts", Admin.AdvertsLive
+      live "/admin/messages", Admin.MessagesLive
       live "/admin/topology", Admin.TopologyLive
       live "/admin/tunnels", Admin.TunnelsLive
       live "/admin/gateway", Admin.GatewayLive

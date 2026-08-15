@@ -330,6 +330,58 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     assert user.name == "Trail Node"
   end
 
+  test "xmodem_download_frame is STX seq 0 with the filename" do
+    frame = Protocol.xmodem_download_frame("/Messages_default.msgs")
+    assert <<0x94, 0xC3, len::big-16, payload::binary-size(len)>> = frame
+    fields = Protobuf.decode(payload)
+    xmodem = Protocol.parse_xmodem(Protobuf.bytes(fields, 5))
+    assert xmodem.control == Protocol.xmodem_stx()
+    assert xmodem.seq == 0
+    assert xmodem.buffer == "/Messages_default.msgs" <> <<0>>
+  end
+
+  test "heartbeat_frame includes a distinct nonce" do
+    frame = Protocol.heartbeat_frame(7)
+    assert <<0x94, 0xC3, len::big-16, payload::binary-size(len)>> = frame
+    fields = Protobuf.decode(payload)
+    inner = Protobuf.decode(Protobuf.bytes(fields, 7))
+    assert Protobuf.varint(inner, 1, 0) == 7
+  end
+
+  test "store_forward_history_frame asks the local node for CLIENT_HISTORY" do
+    frame = Protocol.store_forward_history_frame(0xAABBCCDD, 240)
+    assert <<0x94, 0xC3, len::big-16, payload::binary-size(len)>> = frame
+    fields = Protobuf.decode(payload)
+    packet = Protocol.parse_mesh_packet(Protobuf.bytes(fields, 1))
+    assert packet.to == 0xAABBCCDD
+    assert packet.portnum == Protocol.port_store_forward()
+    sf = Protocol.parse_store_forward(packet.payload)
+    assert sf.rr == Protocol.sf_client_history()
+    assert sf.window == 240
+  end
+
+  test "parse_store_forward reads ROUTER_TEXT_BROADCAST text" do
+    payload =
+      Protobuf.encode_varint_field(1, Protocol.sf_router_text_broadcast()) <>
+        Protobuf.encode_bytes_field(5, "cached primary")
+
+    sf = Protocol.parse_store_forward(payload)
+    assert sf.rr == Protocol.sf_router_text_broadcast()
+    assert sf.text == "cached primary"
+  end
+
+  test "parse_mesh_packet includes rx_time" do
+    decoded = Protobuf.encode_varint_field(1, Protocol.port_text())
+
+    packet =
+      Protobuf.encode_varint_field(1, 1) <>
+        Protobuf.encode_message_field(4, decoded) <>
+        Protobuf.encode_fixed32_field(7, 1_700_000_200)
+
+    parsed = Protocol.parse_mesh_packet(packet)
+    assert parsed.rx_time == 1_700_000_200
+  end
+
   test "parse_mesh_packet computes hops from hop_start minus hop_limit" do
     decoded = Protobuf.encode_varint_field(1, Protocol.port_nodeinfo())
 

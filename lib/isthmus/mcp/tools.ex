@@ -10,6 +10,7 @@ defmodule Isthmus.MCP.Tools do
   alias Isthmus.Gateway
   alias Isthmus.Gateway.Message
   alias Isthmus.Gateway.Translator
+  alias Isthmus.Messages
   alias Isthmus.Networks.Agent.Settings
   alias Isthmus.Networks.Health
   alias Isthmus.Networks.MeshCore.Companion, as: MeshCoreCompanion
@@ -184,6 +185,17 @@ defmodule Isthmus.MCP.Tools do
     end
   end
 
+  @spec set_group_store_messages(args()) :: result()
+  def set_group_store_messages(args) do
+    with {:ok, group} <- resolve_group(fetch(args, :group)),
+         {:ok, enabled} <- require_bool(args, :enabled) do
+      case Registrations.set_store_messages(group, enabled) do
+        {:ok, group} -> {:ok, dump_group(group)}
+        {:error, reason} -> {:error, format_error(reason)}
+      end
+    end
+  end
+
   @spec revoke_group(args()) :: result()
   def revoke_group(args) do
     with {:ok, group} <- resolve_group(fetch(args, :group)) do
@@ -221,6 +233,35 @@ defmodule Isthmus.MCP.Tools do
       end)
 
     {:ok, %{adverts: rows}}
+  end
+
+  @spec list_messages(args()) :: result()
+  def list_messages(args) do
+    limit = clamp_int(fetch(args, :limit), 50, 1, 200)
+    network = optional_text(args, :network)
+    kind = optional_text(args, :kind)
+
+    opts =
+      []
+      |> then(fn opts -> if network, do: Keyword.put(opts, :networks, [network]), else: opts end)
+      |> then(fn opts -> if kind, do: Keyword.put(opts, :kinds, [kind]), else: opts end)
+      |> Keyword.put(:per_network, true)
+
+    rows =
+      Messages.list_recent(limit, opts)
+      |> Enum.map(fn m ->
+        %{
+          id: m.id,
+          at: m.seen_at,
+          kind: m.kind,
+          network: m.network,
+          channel: m.channel_name,
+          sender: m.sender_name || m.from_ref,
+          body: m.body
+        }
+      end)
+
+    {:ok, %{messages: rows}}
   end
 
   @spec list_tunnels(args()) :: result()
@@ -496,6 +537,7 @@ defmodule Isthmus.MCP.Tools do
       status: group.status,
       owner: group.owner_pubkey_hex,
       token: Registrations.token_slug(group.display_name),
+      store_messages: group.store_messages == true,
       members:
         Enum.map(group.legs, fn leg ->
           %{

@@ -56,6 +56,7 @@ defmodule Isthmus.Networks.MeshCore.Companion.Frames do
            }}
         )
 
+        send(self(), :poll_messages)
         state
 
       {:channel_info, channel} ->
@@ -73,21 +74,8 @@ defmodule Isthmus.Networks.MeshCore.Companion.Frames do
         end
 
       {:channel_msg, msg} ->
-        Phoenix.PubSub.broadcast(
-          Isthmus.PubSub,
-          "meshcore:inbound",
-          {:meshcore_channel,
-           %{
-             channel_idx: msg.channel_idx,
-             body: sanitize_text(msg.body),
-             meta:
-               Map.merge(Map.take(msg, [:timestamp, :txt_type, :snr]), %{
-                 radio_id: get_in(state, [:self_info, :public_key])
-               })
-           }}
-        )
-
-        state
+        send(self(), :poll_messages)
+        ingest_channel_msg(state, msg)
 
       {:device_info, rest} ->
         %{state | max_channels: Channels.parse_max_channels(rest, state.max_channels)}
@@ -96,6 +84,7 @@ defmodule Isthmus.Networks.MeshCore.Companion.Frames do
         Status.publish(%{state | self_info: info})
 
       {:no_more_messages, _} ->
+        send(self(), :schedule_msg_poll)
         state
 
       other ->
@@ -103,6 +92,68 @@ defmodule Isthmus.Networks.MeshCore.Companion.Frames do
         state
     end
   end
+
+  @doc "Record Public channel messages that arrived before channel slots were known."
+  def flush_pending(state) when is_map(state) do
+    pending = Enum.reverse(state[:pending_channel_msgs] || [])
+
+    Enum.each(pending, fn attrs ->
+      idx = attrs[:channel_idx]
+      attrs = Map.put(attrs, :slot, attrs[:slot] || get_in(state, [:channels, idx]))
+      _ = Isthmus.Messages.maybe_record_meshcore_channel(attrs)
+
+      Phoenix.PubSub.broadcast(
+        Isthmus.PubSub,
+        "meshcore:inbound",
+        {:meshcore_channel, attrs}
+      )
+    end)
+
+    Map.put(state, :pending_channel_msgs, [])
+  end
+
+  defp ingest_channel_msg(state, msg) do
+    body = sanitize_text(msg.body)
+
+    attrs = %{
+      channel_idx: msg.channel_idx,
+      body: body,
+      seen_at: unix_seen_at(msg[:timestamp]),
+      slot: get_in(state, [:channels, msg.channel_idx]),
+      meta:
+        Map.merge(Map.take(msg, [:timestamp, :txt_type, :snr]), %{
+          radio_id: get_in(state, [:self_info, :public_key]),
+          source: "companion_sync"
+        })
+    }
+
+    if channels_ready?(state) do
+      _ = Isthmus.Messages.maybe_record_meshcore_channel(attrs)
+
+      Phoenix.PubSub.broadcast(
+        Isthmus.PubSub,
+        "meshcore:inbound",
+        {:meshcore_channel, attrs}
+      )
+
+      state
+    else
+      pending = [attrs | state[:pending_channel_msgs] || []]
+      Map.put(state, :pending_channel_msgs, pending)
+    end
+  end
+
+  defp channels_ready?(state) do
+    is_nil(state[:channel_sync_awaiting]) and
+      (state[:channel_sync_queue] || []) == [] and
+      map_size(state[:channels] || %{}) > 0
+  end
+
+  defp unix_seen_at(ts) when is_integer(ts) and ts > 1_600_000_000 and ts < 2_200_000_000 do
+    DateTime.from_unix!(ts) |> DateTime.truncate(:second)
+  end
+
+  defp unix_seen_at(_), do: nil
 
   defp record_advert(pubkey_hex, contacts) when is_binary(pubkey_hex) and is_map(contacts) do
     name =

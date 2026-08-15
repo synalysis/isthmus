@@ -14,6 +14,13 @@ defmodule IsthmusWeb.Admin.CopyTest do
     assert {"Island tunnel radio", _} = Copy.device_purpose(%{kind: :bridge_repeater})
   end
 
+  test "bootloader USB is called out separately" do
+    boot = %{kind: :unknown, description: "T1000-E-BOOT", label: "T1000-E-BOOT"}
+    assert Copy.bootloader_usb?(boot)
+    assert {"USB bootloader", _} = Copy.device_purpose(boot)
+    assert {:unknown, "Bootloader"} = Copy.device_status(boot)
+  end
+
   test "role_plain avoids Unassigned" do
     assert Copy.role_plain(:unassigned) == "Not identified yet"
     assert Copy.role_plain(:bridge_packet) == "Mesh traffic port"

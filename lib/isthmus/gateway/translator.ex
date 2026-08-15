@@ -280,6 +280,7 @@ defmodule Isthmus.Gateway.Translator do
         Gateway.log(Deliver.log_attrs(msg, "none", "dropped", "no_registration"))
 
       group ->
+        _ = Isthmus.Messages.maybe_record_group(msg, group)
         targets = Registrations.other_legs(group, msg.from_network, msg.from_ref)
 
         Enum.each(targets, fn dest_leg ->

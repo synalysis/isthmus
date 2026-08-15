@@ -145,7 +145,12 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     |> Enum.uniq()
   end
 
-  @doc "Re-scan serial ports and notify link processes to reconnect."
+  @doc """
+  Re-scan unclaimed serial ports and attach any new radios.
+
+  Companions that are already online keep their UART — reopening CP210x/CH340
+  pulses DTR and reboots ESP32 Meshtastic firmware.
+  """
   def refresh(name \\ __MODULE__) do
     case safe_call(name, :refresh, {:error, :not_started}, 15_000) do
       {:ok, roles} ->
@@ -428,10 +433,17 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       String.contains?(desc, "boot") ->
         false
 
-      port[:vendor_id] == 0x2886 and port[:product_id] == 0x1667 ->
+      port[:vendor_id] == 0x2886 and port[:product_id] in [0x1667, 0x0057] ->
+        true
+
+      # Adafruit TinyUSB CDC used by T1000-E application firmware (not DFU).
+      port[:vendor_id] == 0x239A ->
         true
 
       String.contains?(desc, "wio tracker") ->
+        true
+
+      String.contains?(desc, "t1000") ->
         true
 
       true ->
@@ -870,6 +882,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end
 
     reconnect_disconnected_meshcore_extras()
+    reconnect_disconnected_meshtastic_extras()
 
     if Code.ensure_loaded?(Isthmus.Networks.Meshtastic.Supervisor) and
          function_exported?(Isthmus.Networks.Meshtastic.Supervisor, :sync, 0) do
@@ -881,6 +894,22 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end
 
     :ok
+  end
+
+  defp reconnect_disconnected_meshtastic_extras do
+    primary = Isthmus.Networks.MeshCore.Discover.resolve_port(:meshtastic)
+
+    Isthmus.Networks.Meshtastic.Companion.list_health()
+    |> Enum.each(fn health ->
+      port = health[:port]
+
+      if is_binary(port) and port != "" and port != primary and
+           health[:status] in [:disconnected, :error] do
+        Isthmus.Networks.Meshtastic.Companion.reconnect(port)
+      end
+    end)
+  rescue
+    _ -> :ok
   end
 
   defp reconnect_disconnected_meshcore_extras do

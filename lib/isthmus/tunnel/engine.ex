@@ -86,6 +86,7 @@ defmodule Isthmus.Tunnel.Engine do
   @impl true
   def init(_opts) do
     Sightings.purge_expired()
+    Isthmus.Messages.purge_expired()
 
     state = %{
       reassembly: %{},
@@ -103,6 +104,7 @@ defmodule Isthmus.Tunnel.Engine do
   @impl true
   def handle_info(:tick, state) do
     Sightings.purge_expired()
+    Isthmus.Messages.purge_expired()
     _ = maybe_requeue_reachable(state)
     state = state |> prune_reassembly() |> drain_outbox()
     schedule_tick()

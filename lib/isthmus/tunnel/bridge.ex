@@ -45,6 +45,7 @@ defmodule Isthmus.Tunnel.Bridge do
       # Sightings are independent of tunnel forward dedup — an advert may still
       # need to show on Adverts even when we collapse a re-flood for the outbox.
       _ = maybe_record_meshcore_advert(payload_network, packet)
+      _ = maybe_record_public_channel(payload_network, packet)
 
       peers =
         peers_for_payload(payload_network)
@@ -195,6 +196,14 @@ defmodule Isthmus.Tunnel.Bridge do
   end
 
   defp maybe_record_meshcore_advert(_, _), do: :ok
+
+  defp maybe_record_public_channel("meshcore", packet) do
+    Isthmus.Messages.maybe_record_meshcore_packet(packet)
+  rescue
+    _ -> :ok
+  end
+
+  defp maybe_record_public_channel(_, _), do: :ok
 
   defp dedup_key("meshcore", packet) do
     case Packet.decode(packet) do

@@ -274,7 +274,9 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       channel_sync_monitor: nil,
       channel_sync_queue: [],
       channel_sync_awaiting: nil,
-      channel_sync_timer: nil
+      channel_sync_timer: nil,
+      pending_channel_msgs: [],
+      msg_poll_timer: nil
     }
 
     state = maybe_connect(state)
@@ -485,40 +487,12 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   @impl true
-  def handle_cast(:reconnect, %{fixed_port: true} = state) do
-    if state.transport, do: state.transport_mod.close(state.transport)
-
-    state = %{
-      state
-      | transport: nil,
-        buffer: <<>>,
-        status: :disconnected,
-        self_info: nil
-    }
-
-    {:noreply, maybe_connect(state)}
-  end
-
   def handle_cast(:reconnect, state) do
-    if state.transport, do: state.transport_mod.close(state.transport)
-
-    port =
-      if state.transport_kind == :usb do
-        Discover.resolve_port(:companion)
-      else
-        state.port
-      end
-
-    state = %{
-      state
-      | transport: nil,
-        buffer: <<>>,
-        status: :disconnected,
-        port: port,
-        self_info: nil
-    }
-
-    {:noreply, maybe_connect(state)}
+    if stay_connected?(state) do
+      {:noreply, state}
+    else
+      {:noreply, reconnect_state(state)}
+    end
   end
 
   def handle_cast(:sync_contacts, %{status: :online, transport: t, transport_mod: mod} = state)
@@ -565,13 +539,19 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def handle_info(:poll_messages, %{status: :online, transport: t, transport_mod: mod} = state)
       when not is_nil(t) do
     _ = mod.write(t, Protocol.encode_usb_frame(Protocol.sync_next_message_frame()))
-    schedule_poll()
+    {:noreply, %{state | msg_poll_timer: nil}}
+  end
+
+  def handle_info(:poll_messages, state), do: {:noreply, state}
+
+  def handle_info(:drain_messages, state) do
+    state = Frames.flush_pending(state)
+    {:noreply, state} = handle_info(:poll_messages, state)
     {:noreply, state}
   end
 
-  def handle_info(:poll_messages, state) do
-    schedule_poll()
-    {:noreply, state}
+  def handle_info(:schedule_msg_poll, state) do
+    {:noreply, schedule_poll(state)}
   end
 
   def handle_info(:sync_contacts_boot, state) do
@@ -657,6 +637,58 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     end
   end
 
+  defp stay_connected?(state) when is_map(state) do
+    online? = state[:status] == :online and not is_nil(state[:transport])
+
+    cond do
+      not online? ->
+        false
+
+      state[:fixed_port] == true ->
+        true
+
+      state[:transport_kind] != :usb ->
+        true
+
+      true ->
+        Discover.resolve_port(:companion) == state[:port]
+    end
+  end
+
+  defp reconnect_state(%{fixed_port: true} = state) do
+    if state.transport, do: state.transport_mod.close(state.transport)
+
+    %{
+      state
+      | transport: nil,
+        buffer: <<>>,
+        status: :disconnected,
+        self_info: nil
+    }
+    |> maybe_connect()
+  end
+
+  defp reconnect_state(state) do
+    if state.transport, do: state.transport_mod.close(state.transport)
+
+    port =
+      if state.transport_kind == :usb do
+        Discover.resolve_port(:companion)
+      else
+        state.port
+      end
+
+    %{
+      state
+      | transport: nil,
+        buffer: <<>>,
+        status: :disconnected,
+        port: port,
+        self_info: nil
+    }
+    |> maybe_connect()
+  end
+
   defp maybe_connect(%{transport_kind: :usb, port: nil} = state) do
     Status.publish(%{
       state
@@ -700,7 +732,6 @@ defmodule Isthmus.Networks.MeshCore.Companion do
           )
 
         Logger.info("MeshCore companion online via #{state.transport_kind}")
-        schedule_poll()
         Process.send_after(self(), :sync_contacts_boot, 1_000)
 
         Status.publish(%{
@@ -749,7 +780,10 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     Logger.warning("MeshCore connect failed: #{inspect(reason)} (retry in #{div(delay, 1000)}s)")
   end
 
-  defp schedule_poll, do: Process.send_after(self(), :poll_messages, 2_000)
+  defp schedule_poll(state) do
+    if is_reference(state[:msg_poll_timer]), do: Process.cancel_timer(state.msg_poll_timer)
+    %{state | msg_poll_timer: Process.send_after(self(), :poll_messages, 2_000)}
+  end
 
   # Keyword lists only support atom Access keys — never use opts["k"] on them.
   defp truthy_opt?(opts, key) when is_list(opts) do

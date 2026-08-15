@@ -96,6 +96,14 @@ defmodule Isthmus.MCP.Server do
     run(fn args, state -> reply(Tools.mint_proxy(args), state) end)
   end
 
+  tool "set_group_store_messages",
+       "Keep this group's message bodies on Messages after forwarding (off by default)" do
+    param(:group, :string, required: true, description: "Group UUID or display name")
+    param(:enabled, :boolean, required: true)
+
+    run(fn args, state -> reply(Tools.set_group_store_messages(args), state) end)
+  end
+
   tool "revoke_group", "Revoke a group" do
     param(:group, :string, required: true)
 
@@ -108,6 +116,16 @@ defmodule Isthmus.MCP.Server do
     annotations(readOnlyHint: true)
 
     run(fn args, state -> reply(Tools.list_adverts(args), state) end)
+  end
+
+  tool "list_messages",
+       "Heard Public channel text and group messages for groups with retention on" do
+    param(:network, :string, description: "Optional network filter")
+    param(:kind, :string, description: "channel | group")
+    param(:limit, :integer, default: 50)
+    annotations(readOnlyHint: true)
+
+    run(fn args, state -> reply(Tools.list_messages(args), state) end)
   end
 
   tool "list_tunnels", "List island tunnel peers" do

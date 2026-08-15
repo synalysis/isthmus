@@ -90,6 +90,11 @@ defmodule IsthmusWeb.Admin.RegistrationsLiveTest do
     assert has_element?(view, "#manage-group-modal")
     assert has_element?(view, "#bridge-members-table")
     assert has_element?(view, "#manage-group-modal", "Camp")
+    assert has_element?(view, "#toggle-store-messages-#{group.id}", "Group messages not stored")
+
+    view |> element("#toggle-store-messages-#{group.id}") |> render_click()
+    assert has_element?(view, "#toggle-store-messages-#{group.id}", "Storing group messages")
+    assert Registrations.get_group!(group.id).store_messages
   end
 
   test "attaching a reticulum member closes the modal and lists the member",
