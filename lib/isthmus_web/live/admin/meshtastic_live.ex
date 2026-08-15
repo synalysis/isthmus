@@ -4,10 +4,13 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   alias IsthmusWeb.Admin.MeshtasticHTML
 
   alias Isthmus.Messages
+  alias Isthmus.Networks.BLERemembered
+  alias Isthmus.Networks.MeshCore.BLESidecar
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.Meshtastic.Companion
   alias Isthmus.Networks.Meshtastic.Devices
   alias Isthmus.Networks.Meshtastic.Settings
+  alias Isthmus.Networks.Meshtastic.Supervisor, as: MeshtasticSupervisor
   alias Isthmus.Registrations
   alias IsthmusWeb.Admin.RadioChannels
 
@@ -17,7 +20,9 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
       Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshtastic:channels")
       Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshtastic:lora")
       Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshtastic:device")
+      Phoenix.PubSub.subscribe(Isthmus.PubSub, BLESidecar.pin_topic())
       :timer.send_interval(5_000, self(), :refresh)
+      BLERemembered.remember_healths(:meshtastic, Companion.list_health())
     end
 
     timezone =
@@ -29,6 +34,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
      socket
      |> assign(:page_title, "Meshtastic")
      |> assign(:channel_syncing, false)
+     |> assign(:channel_sync_timed_out, false)
      |> assign(:settings_applying, false)
      |> assign(:time_syncing_port, nil)
      |> assign(:timezone, timezone)
@@ -37,6 +43,11 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
      |> assign(:send_channel, nil)
      |> assign(:send_form, to_form(%{"body" => ""}))
      |> assign(:settings_form, to_form(Settings.to_form_params(Settings.empty()), as: :settings))
+     |> assign(:ble_scan, [])
+     |> assign(:ble_scanning, false)
+     |> assign(:ble_connecting, nil)
+     |> assign(:ble_pin_prompt, nil)
+     |> assign(:ble_pin_form, to_form(%{"pin" => "123456", "address" => ""}))
      |> refresh()}
   end
 
@@ -46,10 +57,13 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
 
     if health.status == :online do
       Companion.sync_channels_async(port)
+      timeout = if health[:transport] == :ble, do: 35_000, else: 20_000
+      Process.send_after(self(), :channel_sync_timeout, timeout)
 
       {:noreply,
        socket
        |> assign(:channel_syncing, true)
+       |> assign(:channel_sync_timed_out, false)
        |> put_flash(:info, "Syncing Meshtastic channels…")}
     else
       {:noreply,
@@ -62,12 +76,16 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   end
 
   def handle_event("reconnect", %{"port" => port}, socket) do
-    Companion.reconnect(port)
+    if ble_port?(port) and socket.assigns.ble_busy do
+      {:noreply, socket}
+    else
+      Companion.reconnect(port)
 
-    {:noreply,
-     socket
-     |> put_flash(:info, "Reconnecting Meshtastic companion…")
-     |> refresh()}
+      {:noreply,
+       socket
+       |> put_flash(:info, "Reconnecting Meshtastic companion…")
+       |> refresh()}
+    end
   end
 
   def handle_event("sync_time", %{"port" => port}, socket) do
@@ -110,6 +128,128 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
          socket
          |> assign(:time_syncing_port, nil)
          |> put_flash(:error, "Could not set radio time: #{inspect(reason)}")}
+    end
+  end
+
+  def handle_event("scan_bluetooth", _params, socket) do
+    if socket.assigns.ble_busy do
+      {:noreply, socket}
+    else
+      lv = self()
+
+      Task.start(fn ->
+        send(lv, {:ble_scan_done, BLESidecar.scan(5_000)})
+      end)
+
+      {:noreply, socket |> assign(:ble_scanning, true) |> assign_ble_busy()}
+    end
+  end
+
+  def handle_event("connect_ble", params, socket) do
+    address = String.trim(to_string(params["address"] || ""))
+    name = String.trim(to_string(params["name"] || ""))
+
+    cond do
+      address == "" ->
+        {:noreply, put_flash(socket, :error, "Pick a Bluetooth radio from the scan list.")}
+
+      socket.assigns.ble_busy ->
+        {:noreply, socket}
+
+      true ->
+        opts = if name != "", do: [name: name], else: []
+
+        case MeshtasticSupervisor.start_ble(address, nil, opts) do
+          :ok ->
+            {:noreply,
+             socket
+             |> assign(:ble_connecting, address)
+             |> put_flash(
+               :info,
+               "Connecting — a PIN is only needed if this radio has not been paired yet."
+             )
+             |> refresh()}
+
+          {:error, reason} ->
+            {:noreply,
+             put_flash(socket, :error, "Bluetooth connect failed: #{format_err(reason)}")}
+        end
+    end
+  end
+
+  def handle_event("submit_ble_pin", params, socket) do
+    address =
+      String.trim(
+        to_string(params["address"] || get_in(socket.assigns, [:ble_pin_prompt, :address]) || "")
+      )
+
+    pin = params["pin"] |> to_string() |> String.trim()
+
+    cond do
+      address == "" ->
+        {:noreply, put_flash(socket, :error, "Bluetooth pairing expired — Connect again.")}
+
+      not String.match?(pin, ~r/^\d{4,8}$/) ->
+        {:noreply,
+         socket
+         |> assign(:ble_pin_form, to_form(%{"pin" => pin, "address" => address}))
+         |> put_flash(:error, "Enter the 4–8 digit PIN shown on the radio.")}
+
+      true ->
+        case BLESidecar.provide_pin(address, pin) do
+          :ok ->
+            {:noreply,
+             socket
+             |> assign(:ble_pin_prompt, nil)
+             |> assign(:ble_pin_form, to_form(%{"pin" => "123456", "address" => ""}))
+             |> put_flash(:info, "PIN sent — finishing Bluetooth pairing…")
+             |> refresh()}
+
+          {:error, reason} ->
+            {:noreply, put_flash(socket, :error, "Could not send PIN: #{format_err(reason)}")}
+        end
+    end
+  end
+
+  def handle_event("cancel_ble_pin", _params, socket) do
+    address =
+      get_in(socket.assigns, [:ble_pin_prompt, :address]) || socket.assigns[:ble_connecting]
+
+    if is_binary(address) and address != "" do
+      _ = BLESidecar.cancel_pin(address)
+      _ = MeshtasticSupervisor.stop_ble(address)
+    end
+
+    {:noreply,
+     socket
+     |> assign(:ble_pin_prompt, nil)
+     |> assign(:ble_connecting, nil)
+     |> assign(:ble_pin_form, to_form(%{"pin" => "123456", "address" => ""}))
+     |> put_flash(:info, "Bluetooth pairing cancelled.")
+     |> refresh()}
+  end
+
+  def handle_event("disconnect_ble", params, socket) do
+    address = String.trim(to_string(params["address"] || params["port"] || ""))
+
+    cond do
+      address == "" ->
+        {:noreply, put_flash(socket, :error, "No Bluetooth address on that radio.")}
+
+      true ->
+        _ = MeshtasticSupervisor.stop_ble(address)
+
+        connecting =
+          if socket.assigns[:ble_connecting] &&
+               Companion.same_ble_address?(socket.assigns.ble_connecting, address),
+             do: nil,
+             else: socket.assigns[:ble_connecting]
+
+        {:noreply,
+         socket
+         |> assign(:ble_connecting, connecting)
+         |> put_flash(:info, "Disconnected Bluetooth companion.")
+         |> refresh()}
     end
   end
 
@@ -297,8 +437,14 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
              |> assign(:send_form, to_form(%{"body" => ""}))
              |> put_flash(:info, "Sent to #{name}.")}
 
-          {:error, reason} when reason in [:not_connected, :timeout] ->
-            {:noreply, put_flash(socket, :error, "Meshtastic companion is not connected.")}
+          {:error, reason}
+          when reason in [:not_connected, :timeout, "not_connected", "disconnected"] ->
+            {:noreply,
+             put_flash(
+               socket,
+               :error,
+               "Bluetooth link dropped — Isthmus is reconnecting. Try Send again in a moment."
+             )}
 
           {:error, reason} ->
             {:noreply, put_flash(socket, :error, "Send failed: #{format_err(reason)}")}
@@ -310,7 +456,38 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
 
   def handle_info({:meshtastic_channels, channels, _port}, socket) when is_list(channels) do
-    {:noreply, socket |> assign(:channel_syncing, false) |> refresh()}
+    socket =
+      socket
+      |> assign(:channel_syncing, false)
+      |> refresh()
+
+    socket =
+      if socket.assigns[:channel_sync_timed_out] do
+        socket
+        |> assign(:channel_sync_timed_out, false)
+        |> clear_flash(:error)
+        |> put_flash(:info, "Channel list updated.")
+      else
+        socket
+      end
+
+    {:noreply, socket}
+  end
+
+  def handle_info(:channel_sync_timeout, socket) do
+    if socket.assigns[:channel_syncing] do
+      {:noreply,
+       socket
+       |> assign(:channel_syncing, false)
+       |> assign(:channel_sync_timed_out, true)
+       |> put_flash(
+         :error,
+         "Channel sync is still running — names may appear in a moment."
+       )
+       |> refresh()}
+    else
+      {:noreply, socket}
+    end
   end
 
   def handle_info({:meshtastic_lora, lora, port}, socket) when is_map(lora) do
@@ -319,6 +496,35 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
 
   def handle_info({:meshtastic_device, device, port}, socket) when is_map(device) do
     {:noreply, refresh_settings_form(socket, port, device: device)}
+  end
+
+  def handle_info({:ble_pin_request, info}, socket) when is_map(info) do
+    address = to_string(info[:address] || "")
+
+    {:noreply,
+     socket
+     |> assign(:ble_connecting, address)
+     |> assign(:ble_pin_prompt, info)
+     |> assign(:ble_pin_form, to_form(%{"pin" => "123456", "address" => address}))
+     |> refresh()}
+  end
+
+  def handle_info({:ble_scan_done, {:ok, devices}}, socket) do
+    devices = Enum.filter(devices, &(&1[:kind] == :meshtastic))
+
+    {:noreply,
+     socket
+     |> assign(:ble_scanning, false)
+     |> assign(:ble_scan, devices)
+     |> assign_ble_busy()}
+  end
+
+  def handle_info({:ble_scan_done, {:error, reason}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:ble_scanning, false)
+     |> assign_ble_busy()
+     |> put_flash(:error, "Bluetooth scan failed: #{format_err(reason)}")}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}
@@ -330,12 +536,50 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     groups = Registrations.list_all()
     bridges = Enum.filter(groups, &(&1.kind == "bridge" and &1.status == "active"))
 
+    connecting = socket.assigns[:ble_connecting]
+
+    connecting =
+      if is_binary(connecting) and
+           Enum.any?(devices, fn d ->
+             d[:ble?] == true and d[:active?] == true and
+               Companion.same_ble_address?(d.ble_address, connecting)
+           end) do
+        nil
+      else
+        connecting
+      end
+
     socket
     |> assign(:groups, groups)
     |> assign(:bridges, bridges)
     |> assign(:devices, devices)
+    |> assign(:ble_connecting, connecting)
     |> assign(:settings_applying, socket.assigns[:settings_applying] || false)
+    |> assign_ble_busy()
   end
+
+  defp assign_ble_busy(socket) do
+    devices = socket.assigns[:devices] || []
+
+    busy =
+      socket.assigns[:ble_scanning] == true or
+        is_binary(socket.assigns[:ble_connecting]) or
+        Enum.any?(devices, &ble_connecting_device?/1)
+
+    online =
+      devices
+      |> Enum.filter(&(&1[:ble?] == true and &1[:active?] == true))
+      |> Enum.map(&Companion.normalize_ble_address(&1.ble_address || ""))
+      |> Enum.reject(&(&1 == ""))
+      |> MapSet.new()
+
+    socket
+    |> assign(:ble_busy, busy)
+    |> assign(:ble_online_addrs, online)
+  end
+
+  defp ble_connecting_device?(%{ble?: true, health: %{status: :connecting}}), do: true
+  defp ble_connecting_device?(_), do: false
 
   defp refresh_settings_form(socket, port, _overrides) do
     socket = refresh(socket)
@@ -414,7 +658,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
          put_flash(socket, :error, "This group already has a Meshtastic channel on this radio.")}
 
       {:error, :timeout} ->
-        {:noreply, put_flash(socket, :error, "Timed out talking to Meshtastic companion.")}
+        recover_provision_timeout(socket, group, opts)
 
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Could not create channel: #{inspect(reason)}")}
@@ -445,6 +689,53 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
       {:error, reason} ->
         {:noreply,
          put_flash(socket, :error, "Could not clear radio slot #{idx}: #{format_err(reason)}")}
+    end
+  end
+
+  # BLE set_channel can finish after the LiveView call times out. If the slot
+  # already shows the group name, finish the DB link instead of flashing failure.
+  defp recover_provision_timeout(socket, group, opts) do
+    idx = Keyword.get(opts, :idx)
+    port = Keyword.get(opts, :port)
+    expected = String.trim(to_string(Keyword.get(opts, :name) || group.display_name || "Channel"))
+    slot = is_integer(idx) && Companion.get_channel(idx, port)
+    got = slot && String.trim(to_string(slot[:name] || ""))
+    hex = slot && (slot[:psk_hex] || slot[:secret_hex])
+    radio_id = Registrations.normalize_radio_id(Companion.health(port)[:node_id])
+
+    cond do
+      is_map(slot) and not slot.empty? and got != "" and
+        String.downcase(got) == String.downcase(expected) and
+        is_binary(hex) and hex != "" ->
+        case Registrations.link_meshtastic_channel(group, idx, hex, device_id: radio_id) do
+          {:ok, _} ->
+            {:noreply,
+             socket
+             |> assign(:channel_invite, nil)
+             |> put_flash(:info, "Private Meshtastic channel created on slot #{idx}.")
+             |> refresh()}
+
+          {:error, :already_linked} ->
+            {:noreply,
+             socket
+             |> put_flash(:info, "Private Meshtastic channel created on slot #{idx}.")
+             |> refresh()}
+
+          {:error, :channel_already_linked} ->
+            {:noreply, put_flash(socket, :error, "Channel already linked to another group.")}
+
+          {:error, reason} ->
+            {:noreply,
+             socket
+             |> put_flash(
+               :info,
+               "Radio slot #{idx} was written, but linking did not finish (#{format_err(reason)}). Sync and assign again if needed."
+             )
+             |> refresh()}
+        end
+
+      true ->
+        {:noreply, put_flash(socket, :error, "Timed out talking to Meshtastic companion.")}
     end
   end
 
@@ -518,6 +809,11 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   end
 
   defp parse_channel_idx(_), do: nil
+
+  defp ble_port?(port) when is_binary(port),
+    do: String.starts_with?(String.downcase(port), "ble:")
+
+  defp ble_port?(_), do: false
 
   defp channel_send_name(port, idx) do
     slot = if is_integer(idx), do: Companion.get_channel(idx, port)

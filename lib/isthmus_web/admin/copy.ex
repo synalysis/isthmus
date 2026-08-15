@@ -19,6 +19,7 @@ defmodule IsthmusWeb.Admin.Copy do
 
   @doc "User-facing status for process/link health atoms."
   def status_plain(:online), do: "Connected"
+  def status_plain(:connecting), do: "Connecting"
   def status_plain(:disabled), do: "Offline"
   def status_plain(:disconnected), do: "Offline"
   def status_plain(:down), do: "Offline"
@@ -32,6 +33,7 @@ defmodule IsthmusWeb.Admin.Copy do
   def status_plain(_), do: "Unknown"
 
   def status_badge_class(:online), do: "badge-success"
+  def status_badge_class(:connecting), do: "badge-info"
   def status_badge_class(:disabled), do: "badge-ghost"
   def status_badge_class(:disconnected), do: "badge-warning"
   def status_badge_class(:error), do: "badge-error"
@@ -52,7 +54,12 @@ defmodule IsthmusWeb.Admin.Copy do
         {"Companion radio", blurb}
 
       device[:kind] == :meshtastic ->
-        {"Companion radio", "Private channels and LoRa configuration"}
+        blurb =
+          if device[:ble?] == true,
+            do: "Bluetooth companion — private channels and LoRa configuration",
+            else: "Private channels and LoRa configuration"
+
+        {"Companion radio", blurb}
 
       device[:kind] == :bridge_repeater ->
         {"Island tunnel radio", "Carries MeshCore mesh traffic for tunnels"}

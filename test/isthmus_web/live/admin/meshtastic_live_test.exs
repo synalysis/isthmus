@@ -26,6 +26,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
     assert has_element?(view, "#connected-radios")
     assert has_element?(view, "#devices-empty")
     assert has_element?(view, "#rescan-meshtastic-btn")
+    assert has_element?(view, "#scan-bluetooth-btn")
     refute has_element?(view, "#groups-channels")
     refute has_element?(view, "#companion-setup-card")
     refute has_element?(view, "#channel-bridge-detail")
@@ -67,6 +68,53 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
     |> form("#meshtastic-send-channel-form", %{"body" => "hello primary"})
     |> render_submit()
 
-    assert render(view) =~ "Meshtastic companion is not connected."
+    assert render(view) =~ "Try Send again"
+  end
+
+  test "Bluetooth scan results offer a connect form", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
+
+    send(
+      view.pid,
+      {:ble_scan_done,
+       {:ok,
+        [
+          %{
+            address: "11:22:33:44:55:66",
+            name: "Meshtastic_Andreas",
+            rssi: -50,
+            kind: :meshtastic
+          },
+          %{address: "AA:BB:CC:DD:EE:FF", name: "MeshCore-1", rssi: -40, kind: :meshcore}
+        ]}}
+    )
+
+    assert has_element?(view, "#ble-scan-results")
+    assert render(view) =~ "existing Bluetooth bond"
+    assert render(view) =~ "come back after a server restart"
+    assert has_element?(view, "#ble-connect-11-22-33-44-55-66")
+    refute has_element?(view, "#ble-pin-11-22-33-44-55-66")
+    refute has_element?(view, "#ble-connect-AA-BB-CC-DD-EE-FF")
+  end
+
+  test "Scan Bluetooth disables while a scan is running", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
+
+    view |> element("#scan-bluetooth-btn") |> render_click()
+    assert has_element?(view, "#scan-bluetooth-btn[disabled]")
+  end
+
+  test "Bluetooth PIN modal opens after the radio requests a PIN", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
+
+    send(
+      view.pid,
+      {:ble_pin_request, %{address: "11:22:33:44:55:66", name: "Meshtastic_Andreas"}}
+    )
+
+    assert has_element?(view, "#ble-pin-modal")
+    assert has_element?(view, "#ble-pin-form")
+    assert has_element?(view, "#ble-pin-input")
+    assert render(view) =~ "Meshtastic_Andreas"
   end
 end

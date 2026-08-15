@@ -12,9 +12,13 @@ defmodule Isthmus.MCP.Tools do
   alias Isthmus.Gateway.Translator
   alias Isthmus.Messages
   alias Isthmus.Networks.Agent.Settings
+  alias Isthmus.Networks.BLERemembered
   alias Isthmus.Networks.Health
+  alias Isthmus.Networks.MeshCore.BLESidecar
   alias Isthmus.Networks.MeshCore.Companion, as: MeshCoreCompanion
+  alias Isthmus.Networks.MeshCore.Supervisor, as: MeshCoreSupervisor
   alias Isthmus.Networks.Meshtastic.Companion, as: MeshtasticCompanion
+  alias Isthmus.Networks.Meshtastic.Supervisor, as: MeshtasticSupervisor
   alias Isthmus.Policy
   alias Isthmus.Registrations
   alias Isthmus.Relays
@@ -468,6 +472,98 @@ defmodule Isthmus.MCP.Tools do
      }}
   end
 
+  @spec bluetooth_status(args()) :: result()
+  def bluetooth_status(_args \\ %{}) do
+    adapter =
+      case BLESidecar.adapter_status() do
+        {:ok, msg} -> dump_adapter(msg)
+        {:error, reason} -> %{error: format_error(reason)}
+      end
+
+    {:ok,
+     %{
+       sidecar: BLESidecar.health(),
+       adapter: adapter,
+       remembered: %{
+         meshtastic: BLERemembered.list(:meshtastic),
+         meshcore: BLERemembered.list(:meshcore)
+       },
+       radios: %{
+         meshtastic: ble_radios(safe_health(&MeshtasticCompanion.list_health/0)),
+         meshcore: ble_radios(safe_health(&MeshCoreCompanion.list_health/0))
+       }
+     }}
+  end
+
+  @spec scan_bluetooth(args()) :: result()
+  def scan_bluetooth(args) do
+    timeout = clamp_int(fetch(args, :timeout_ms), 5_000, 500, 15_000)
+
+    case BLESidecar.scan(timeout) do
+      {:ok, devices} ->
+        {:ok,
+         %{
+           devices:
+             Enum.map(devices, fn d ->
+               %{
+                 address: d.address,
+                 name: d.name,
+                 rssi: d.rssi,
+                 kind: d.kind
+               }
+             end)
+         }}
+
+      {:error, reason} ->
+        {:error, format_error(reason)}
+    end
+  end
+
+  @spec connect_bluetooth(args()) :: result()
+  def connect_bluetooth(args) do
+    with {:ok, network} <- require_ble_network(args),
+         {:ok, address} <- require_text(args, :address) do
+      pin = optional_text(args, :pin)
+      name = optional_text(args, :name)
+      wait_ms = clamp_int(fetch(args, :wait_ms), 0, 0, 15_000)
+
+      result =
+        case network do
+          :meshtastic -> MeshtasticSupervisor.start_ble(address, pin, name: name)
+          :meshcore -> MeshCoreSupervisor.start_ble(address, pin)
+        end
+
+      case result do
+        :ok ->
+          radio = maybe_await_ble(network, address, wait_ms)
+
+          {:ok,
+           %{
+             ok: true,
+             network: network,
+             address: norm_ble_addr(address),
+             radio: dump_radio(radio)
+           }}
+
+        {:error, reason} ->
+          {:error, format_error(reason)}
+      end
+    end
+  end
+
+  @spec disconnect_bluetooth(args()) :: result()
+  def disconnect_bluetooth(args) do
+    with {:ok, network} <- require_ble_network(args),
+         {:ok, address} <- require_text(args, :address) do
+      case network do
+        :meshtastic -> MeshtasticSupervisor.stop_ble(address)
+        :meshcore -> MeshCoreSupervisor.stop_ble(address)
+      end
+
+      {:ok, %{ok: true, network: network, address: norm_ble_addr(address)}}
+    end
+  end
+
   @spec set_meshtastic_time(args()) :: result()
   def set_meshtastic_time(args) do
     port = optional_text(args, :port)
@@ -591,6 +687,98 @@ defmodule Isthmus.MCP.Tools do
   defp coerce_policy(_key, value) when is_list(value), do: Enum.map(value, &to_string/1)
   defp coerce_policy(_key, value) when is_binary(value), do: value
   defp coerce_policy(_key, value), do: value
+
+  defp require_ble_network(args) do
+    case args |> fetch(:network) |> to_string() |> String.downcase() |> String.trim() do
+      "meshtastic" -> {:ok, :meshtastic}
+      "meshcore" -> {:ok, :meshcore}
+      "" -> {:error, "network is required (meshtastic or meshcore)"}
+      other -> {:error, "unknown network: #{other}"}
+    end
+  end
+
+  defp maybe_await_ble(_network, _address, wait_ms) when wait_ms <= 0, do: nil
+
+  defp maybe_await_ble(network, address, wait_ms) do
+    await_ble(network, address, System.monotonic_time(:millisecond) + wait_ms)
+  end
+
+  defp await_ble(network, address, deadline) do
+    health = find_ble_health(network, address)
+    status = health && (health[:status] || health["status"])
+
+    cond do
+      status in [:online, "online"] ->
+        health
+
+      System.monotonic_time(:millisecond) >= deadline ->
+        health
+
+      true ->
+        Process.sleep(400)
+        await_ble(network, address, deadline)
+    end
+  end
+
+  defp find_ble_health(network, address) do
+    want = norm_ble_addr(address)
+
+    healths =
+      case network do
+        :meshtastic -> safe_health(&MeshtasticCompanion.list_health/0)
+        :meshcore -> safe_health(&MeshCoreCompanion.list_health/0)
+      end
+
+    Enum.find(healths, fn health ->
+      addr = health[:ble_address] || health["ble_address"]
+      is_binary(addr) and norm_ble_addr(addr) == want
+    end)
+  end
+
+  defp ble_radios(healths) when is_list(healths) do
+    healths
+    |> Enum.filter(fn health ->
+      (health[:transport] || health["transport"]) in [:ble, "ble"] or
+        is_binary(health[:ble_address] || health["ble_address"])
+    end)
+    |> Enum.map(&dump_radio/1)
+  end
+
+  defp ble_radios(_), do: []
+
+  defp dump_radio(nil), do: nil
+
+  defp dump_radio(health) when is_map(health) do
+    %{
+      status: health[:status] || health["status"],
+      last_error: health[:last_error] || health["last_error"],
+      ble_address: health[:ble_address] || health["ble_address"],
+      port: health[:port] || health["port"],
+      name: health[:name] || health["name"] || health[:self_name] || health["self_name"]
+    }
+  end
+
+  defp dump_adapter(msg) when is_map(msg) do
+    %{
+      discovering: Map.get(msg, "discovering", Map.get(msg, :discovering)),
+      clients: msg["clients"] || msg[:clients] || [],
+      connecting: msg["connecting"] || msg[:connecting] || [],
+      devices: msg["devices"] || msg[:devices] || []
+    }
+  end
+
+  defp norm_ble_addr(address) when is_binary(address) do
+    address
+    |> String.trim()
+    |> then(fn
+      "ble:" <> rest -> rest
+      "BLE:" <> rest -> rest
+      other -> other
+    end)
+    |> String.upcase()
+  end
+
+  defp norm_ble_addr(_), do: ""
 
   defp safe_health(fun) do
     fun.()

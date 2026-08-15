@@ -9,6 +9,11 @@ defmodule Isthmus.Networks.MeshCore.CompanionTest do
     assert {:error, :not_connected} = Companion.clear_channel(2)
   end
 
+  test "ble_key normalizes address case" do
+    assert Companion.ble_key("aa:bb:cc") == "ble:AA:BB:CC"
+    assert Companion.same_ble_address?("ble:aa:bb:cc", "AA:BB:CC")
+  end
+
   test "contact frame records hops on the advert sighting" do
     Phoenix.PubSub.subscribe(Isthmus.PubSub, "announce:sightings")
 

@@ -159,7 +159,7 @@ defmodule Isthmus.Networks.Health do
   end
 
   defp summary(:meshtastic, :disabled, _),
-    do: "Companion offline — plug in a radio or set ISTHMUS_MESHTASTIC_PORT"
+    do: "Companion offline — plug in USB, Scan Bluetooth, or set ISTHMUS_MESHTASTIC_PORT"
 
   defp summary(:meshtastic, :stub, _), do: "Adapter stub — radio not wired yet"
 
@@ -355,7 +355,7 @@ defmodule Isthmus.Networks.Health do
     cond do
       health[:status] in [:disabled, "disabled"] ->
         {nil,
-         "Plug in a Meshtastic companion (USB serial API) and Rescan, or pin ISTHMUS_MESHTASTIC_PORT."}
+         "Plug in a Meshtastic companion (USB serial API) and Rescan, use Scan Bluetooth, or pin ISTHMUS_MESHTASTIC_PORT."}
 
       String.contains?(err, "eacces") or String.contains?(err, ":eacces") ->
         {"Permission denied opening #{port || "serial port"}",

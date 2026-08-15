@@ -63,4 +63,11 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
     assert has_element?(view, "#ble-connect-AA-BB-CC-DD-EE-FF")
     assert has_element?(view, "#ble-pin-AA-BB-CC-DD-EE-FF")
   end
+
+  test "Scan Bluetooth disables while a scan is running", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshcore")
+
+    view |> element("#scan-bluetooth-btn") |> render_click()
+    assert has_element?(view, "#scan-bluetooth-btn[disabled]")
+  end
 end

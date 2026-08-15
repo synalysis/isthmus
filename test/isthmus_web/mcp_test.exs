@@ -46,6 +46,11 @@ defmodule IsthmusWeb.MCPTest do
     assert "inject_message" in names
     assert "get_acp" in names
     assert "set_acp" in names
+    assert "list_radios" in names
+    assert "bluetooth_status" in names
+    assert "scan_bluetooth" in names
+    assert "connect_bluetooth" in names
+    assert "disconnect_bluetooth" in names
   end
 
   test "GET /mcp with text/event-stream is a Bandit-safe SSE handshake" do

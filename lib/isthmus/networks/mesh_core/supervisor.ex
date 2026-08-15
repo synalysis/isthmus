@@ -8,7 +8,10 @@ defmodule Isthmus.Networks.MeshCore.Supervisor do
   """
   use DynamicSupervisor
 
+  alias Isthmus.Networks.BLERemembered
+  alias Isthmus.Networks.MeshCore.BLESidecar
   alias Isthmus.Networks.MeshCore.Companion
+  alias Isthmus.Networks.MeshCore.Companion.Status
   alias Isthmus.Networks.MeshCore.Discover
 
   def start_link(opts \\ []) do
@@ -47,6 +50,7 @@ defmodule Isthmus.Networks.MeshCore.Supervisor do
     end
 
     maybe_start_env_ble()
+    restore_remembered_ble()
     :ok
   catch
     :exit, _ -> :ok
@@ -54,6 +58,46 @@ defmodule Isthmus.Networks.MeshCore.Supervisor do
 
   @doc "Start a BLE companion extra keyed by bleak address."
   def start_ble(address, pin \\ nil) when is_binary(address) do
+    case do_start_ble(address, pin) do
+      :ok ->
+        BLERemembered.remember(:meshcore, address)
+        :ok
+
+      other ->
+        other
+    end
+  end
+
+  @doc "Stop a BLE companion extra and do not reconnect it after restart."
+  def stop_ble(address) when is_binary(address) do
+    addr = Companion.ble_address(address)
+    BLERemembered.forget(:meshcore, addr)
+    _ = BLESidecar.disconnect(addr)
+
+    running_keys()
+    |> Enum.filter(&Companion.same_ble_address?(&1, addr))
+    |> Enum.each(&stop_extra/1)
+
+    Status.drop_matching_ble(addr)
+    :ok
+  end
+
+  defp maybe_start_env_ble do
+    case System.get_env("ISTHMUS_MESHCORE_BLE_ADDRESS") do
+      addr when is_binary(addr) and addr != "" -> start_ble(addr)
+      _ -> :ok
+    end
+  end
+
+  defp restore_remembered_ble do
+    for %{"address" => addr} <- BLERemembered.list(:meshcore) do
+      _ = do_start_ble(addr, nil)
+    end
+
+    :ok
+  end
+
+  defp do_start_ble(address, pin) do
     key = Companion.ble_key(address)
     pin = pin || System.get_env("ISTHMUS_MESHCORE_BLE_PIN") || "123456"
 
@@ -78,18 +122,6 @@ defmodule Isthmus.Networks.MeshCore.Supervisor do
       {:ok, _} -> :ok
       {:error, {:already_started, _}} -> Companion.reconnect(key)
       {:error, reason} -> {:error, reason}
-    end
-  end
-
-  @doc "Stop a BLE companion extra."
-  def stop_ble(address) when is_binary(address) do
-    stop_extra(Companion.ble_key(address))
-  end
-
-  defp maybe_start_env_ble do
-    case System.get_env("ISTHMUS_MESHCORE_BLE_ADDRESS") do
-      addr when is_binary(addr) and addr != "" -> start_ble(addr)
-      _ -> :ok
     end
   end
 

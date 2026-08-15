@@ -55,7 +55,7 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
       <section class="space-y-10">
         <.admin_header current={:meshtastic} title="Meshtastic">
           Connect <strong class="font-medium">companion radios</strong>
-          over USB serial and link a private channel to an Isthmus group.
+          over USB serial or Bluetooth and link a private channel to an Isthmus group.
         </.admin_header>
 
         <div class="space-y-4" id="connected-radios">
@@ -79,18 +79,90 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
               >
                 Rescan USB
               </button>
+              <button
+                class={["btn btn-outline btn-sm", @ble_scanning && "loading"]}
+                phx-click="scan_bluetooth"
+                id="scan-bluetooth-btn"
+                type="button"
+                disabled={@ble_busy}
+                title={@ble_busy && "Wait for Bluetooth to finish"}
+              >
+                {if(@ble_scanning, do: "Scanning…", else: "Scan Bluetooth")}
+              </button>
               <.link navigate={~p"/admin/registrations"} class="link link-hover text-sm">
                 Manage groups →
               </.link>
             </div>
           </div>
 
+          <div
+            :if={@ble_scan != [] or @ble_scanning}
+            class="rounded-lg border border-base-300 bg-base-200/50 p-4"
+            id="ble-scan-results"
+          >
+            <h3 class="text-sm font-medium">Nearby Meshtastic Bluetooth</h3>
+            <p class="text-xs opacity-70 mt-1">
+              Connect uses the existing Bluetooth bond when this host already
+              paired the radio. A PIN appears only on first pairing.
+              Connected radios come back after a server restart until you Disconnect.
+            </p>
+            <p :if={@ble_scanning} class="text-sm opacity-70 mt-2">Scanning…</p>
+            <div :if={@ble_scan != []} class="mt-3 overflow-x-auto">
+              <table class="table table-sm">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Address</th>
+                    <th>RSSI</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    :for={dev <- @ble_scan}
+                    id={"ble-scan-#{port_dom_key(dev.address)}"}
+                  >
+                    <td class="text-sm">{dev.name || "Meshtastic"}</td>
+                    <td class="font-mono text-xs">{dev.address}</td>
+                    <td class="text-xs opacity-70">{dev.rssi || "—"}</td>
+                    <td>
+                      <form
+                        id={"ble-connect-#{port_dom_key(dev.address)}"}
+                        phx-submit="connect_ble"
+                        class="flex flex-wrap items-center justify-end gap-2"
+                      >
+                        <input type="hidden" name="address" value={dev.address} />
+                        <input type="hidden" name="name" value={dev.name || ""} />
+                        <button
+                          class={[
+                            "btn btn-primary btn-xs",
+                            @ble_connecting == dev.address && "loading"
+                          ]}
+                          type="submit"
+                          disabled={
+                            @ble_busy or
+                              MapSet.member?(@ble_online_addrs, String.upcase(dev.address || ""))
+                          }
+                          title={@ble_busy && "Wait for Bluetooth to finish"}
+                        >
+                          {if(@ble_connecting == dev.address, do: "Connecting…", else: "Connect")}
+                        </button>
+                      </form>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
           <%= if @devices == [] do %>
             <div class="rounded-lg border border-base-300 bg-base-200/50 p-4" id="devices-empty">
               <p class="text-sm opacity-70">
-                No Meshtastic companions found. Plug in a radio, then Rescan.
+                No Meshtastic companions found. Plug in a radio and Rescan USB, or use
+                <strong class="font-medium">Scan Bluetooth</strong>
+                for a pairing-mode companion.
                 Pin <code class="font-mono">ISTHMUS_MESHTASTIC_PORT</code>
-                only to override auto-detect.
+                only to override USB auto-detect.
               </p>
             </div>
           <% end %>
@@ -110,6 +182,7 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                   <div class="flex flex-wrap items-center gap-2">
                     <h3 class="card-title text-lg">{device.label}</h3>
                     <span class="badge badge-sm badge-outline">{purpose_title}</span>
+                    <span :if={device.ble?} class="badge badge-sm badge-info">Bluetooth</span>
                     <span class={["badge badge-sm", AdminCopy.status_badge_class(status_atom)]}>
                       {status_text}
                     </span>
@@ -151,12 +224,23 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                 </div>
                 <div class="flex flex-wrap items-center gap-2">
                   <button
+                    :if={device.ble?}
+                    class="btn btn-outline btn-sm"
+                    id={"disconnect-ble-#{device_dom_id(device)}"}
+                    phx-click="disconnect_ble"
+                    phx-value-address={device.ble_address}
+                    type="button"
+                  >
+                    Disconnect
+                  </button>
+                  <button
                     class="btn btn-outline btn-sm"
                     id={"reconnect-#{device_dom_id(device)}"}
                     phx-click="reconnect"
                     phx-value-port={device.path}
                     type="button"
-                    disabled={is_nil(device.path)}
+                    disabled={is_nil(device.path) or (device.ble? and @ble_busy)}
+                    title={(device.ble? and @ble_busy) && "Wait for Bluetooth to finish"}
                   >
                     Reconnect
                   </button>
@@ -312,6 +396,59 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
               </div>
             </div>
           </div>
+        </div>
+
+        <div
+          :if={@ble_pin_prompt}
+          class="modal modal-open"
+          role="dialog"
+          id="ble-pin-modal"
+        >
+          <div class="modal-box max-w-md">
+            <h3 class="text-lg font-semibold">Enter Bluetooth PIN</h3>
+            <p class="mt-1 text-sm opacity-70">
+              <%= cond do %>
+                <% is_binary(@ble_pin_prompt[:name]) and @ble_pin_prompt[:name] != "" -> %>
+                  <span class="font-medium text-base-content">{@ble_pin_prompt[:name]}</span>
+                  is pairing. Enter the PIN on its display, or 123456 if it does not show
+                  one (already paired, or default PIN).
+                <% true -> %>
+                  Enter the PIN on the radio display, or 123456 if it does not show one
+                  (already paired, or default PIN).
+              <% end %>
+            </p>
+            <.form
+              for={@ble_pin_form}
+              id="ble-pin-form"
+              phx-submit="submit_ble_pin"
+              class="mt-4 space-y-4"
+            >
+              <input type="hidden" name="address" value={@ble_pin_prompt[:address]} />
+              <.input
+                field={@ble_pin_form[:pin]}
+                id="ble-pin-input"
+                type="text"
+                label="PIN"
+                autocomplete="one-time-code"
+                maxlength="8"
+                class="input input-bordered font-mono tracking-widest"
+              />
+              <div class="modal-action">
+                <button
+                  class="btn btn-ghost btn-sm"
+                  type="button"
+                  id="cancel-ble-pin-btn"
+                  phx-click="cancel_ble_pin"
+                >
+                  Cancel
+                </button>
+                <button class="btn btn-primary btn-sm" type="submit" id="submit-ble-pin-btn">
+                  Pair
+                </button>
+              </div>
+            </.form>
+          </div>
+          <div class="modal-backdrop" phx-click="cancel_ble_pin"></div>
         </div>
 
         <div

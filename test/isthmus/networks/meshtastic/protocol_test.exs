@@ -9,6 +9,12 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     assert <<0x94, 0xC3, 0x00, 0x02, 0x18, 0x7B>> = frame
   end
 
+  test "ble_payload unwraps the USB header and leaves raw protobuf alone" do
+    frame = Protocol.want_config_frame(123)
+    assert Protocol.ble_payload(frame) == <<0x18, 0x7B>>
+    assert Protocol.ble_payload(<<0x18, 0x7B>>) == <<0x18, 0x7B>>
+  end
+
   test "decode_stream splits complete frames and keeps a partial" do
     first = Protocol.want_config_frame(1)
     {frames, rest} = Protocol.decode_stream(first <> <<0x94, 0xC3, 0x00>>)
@@ -180,6 +186,44 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     assert {:config, {:lora, lora}} = Protocol.parse_frame(payload)
     assert lora.region == 1
     assert lora.use_preset
+  end
+
+  test "parse_frame reads LoRa region when FromRadio also has a BLE fifo id" do
+    inner =
+      Protocol.encode_lora_config(%{use_preset: true, modem_preset: 0, region: 1, hop_limit: 3})
+
+    config = Protobuf.encode_message_field(6, inner)
+
+    payload =
+      Protobuf.encode_varint_field(1, 42) <> Protobuf.encode_message_field(5, config)
+
+    assert {:config, {:lora, lora}} = Protocol.parse_frame(payload)
+    assert lora.region == 1
+  end
+
+  test "parse_frame prefers Config over a non-integer field 7" do
+    inner =
+      Protocol.encode_lora_config(%{use_preset: true, modem_preset: 0, region: 1, hop_limit: 3})
+
+    config = Protobuf.encode_message_field(6, inner)
+
+    payload =
+      Protobuf.encode_message_field(5, config) <> Protobuf.encode_message_field(7, <<1, 2, 3>>)
+
+    assert {:config, {:lora, lora}} = Protocol.parse_frame(payload)
+    assert lora.region == 1
+  end
+
+  test "parse_config keeps both device and LoRa when encoded together" do
+    device = Protocol.encode_device_config(%{role: 1, buzzer_mode: 2})
+    lora = Protocol.encode_lora_config(%{use_preset: true, region: 1, hop_limit: 3})
+
+    bin =
+      Protobuf.encode_message_field(1, device) <> Protobuf.encode_message_field(6, lora)
+
+    assert {:both, parsed_device, parsed_lora} = Protocol.parse_config(bin)
+    assert parsed_device.role == 1
+    assert parsed_lora.region == 1
   end
 
   test "get_config_admin_frame requests LORA_CONFIG" do

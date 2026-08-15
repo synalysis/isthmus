@@ -71,6 +71,16 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
     <<@start1, @start2, byte_size(payload)::big-16, payload::binary>>
   end
 
+  @doc "USB frames keep the 0x94 0xC3 header; BLE ToRadio is the raw protobuf."
+  def ble_payload(<<@start1, @start2, len::16, payload::binary-size(len), _rest::binary>>),
+    do: payload
+
+  def ble_payload(<<@start1, @start2, len::16, payload::binary>>)
+      when byte_size(payload) >= len,
+      do: :binary.part(payload, 0, len)
+
+  def ble_payload(other) when is_binary(other), do: other
+
   def decode_stream(buffer) when is_binary(buffer), do: do_decode(buffer, [])
 
   def want_config_frame(nonce) when is_integer(nonce) and nonce > 0 do
@@ -401,12 +411,17 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
 
   def parse_config(bin) when is_binary(bin) do
     fields = Protobuf.decode(bin)
+    device = Protobuf.bytes(fields, 1)
+    lora = Protobuf.bytes(fields, 6)
 
     cond do
-      device = Protobuf.bytes(fields, 1) ->
+      is_binary(device) and is_binary(lora) ->
+        {:both, parse_device_config(device), parse_lora_config(lora)}
+
+      is_binary(device) ->
         {:device, parse_device_config(device)}
 
-      lora = Protobuf.bytes(fields, 6) ->
+      is_binary(lora) ->
         {:lora, parse_lora_config(lora)}
 
       true ->
@@ -471,7 +486,13 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
       node_info = Protobuf.bytes(fields, 4) ->
         {:node_info, parse_node_info(node_info)}
 
-      complete = Protobuf.field(fields, 7) ->
+      # Config (field 5) before config_complete_id (field 7). Field 7 is only
+      # the sentinel when it is a varint; a length-delimited field 7 is not
+      # FromRadio.config_complete_id (Config.bluetooth is also field 7).
+      config = Protobuf.bytes(fields, 5) ->
+        {:config, parse_config(config)}
+
+      is_integer(complete = Protobuf.field(fields, 7)) ->
         {:config_complete, complete}
 
       Protobuf.varint(fields, 8, 0) == 1 ->
@@ -479,9 +500,6 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
 
       channel = Protobuf.bytes(fields, 10) ->
         {:channel, parse_channel(channel)}
-
-      config = Protobuf.bytes(fields, 5) ->
-        {:config, parse_config(config)}
 
       xmodem = Protobuf.bytes(fields, 12) ->
         {:xmodem, parse_xmodem(xmodem)}

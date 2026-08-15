@@ -3,6 +3,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
   alias IsthmusWeb.Admin.MeshCoreHTML
 
+  alias Isthmus.Networks.BLERemembered
   alias Isthmus.Networks.MeshCore.BLESidecar
   alias Isthmus.Networks.MeshCore.BridgeCLI
   alias Isthmus.Networks.MeshCore.BridgeLink
@@ -21,6 +22,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
       Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshcore:channels")
       Phoenix.PubSub.subscribe(Isthmus.PubSub, "meshcore:status")
       :timer.send_interval(5_000, self(), :refresh)
+      BLERemembered.remember_healths(:meshcore, Companion.list_health())
     end
 
     {:ok,
@@ -34,6 +36,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
      |> assign(:radio_form, to_form(RadioParams.empty_form_params(), as: :radio))
      |> assign(:ble_scan, [])
      |> assign(:ble_scanning, false)
+     |> assign(:ble_connecting, nil)
      |> assign(:ble_pin, "123456")
      |> refresh()}
   end
@@ -60,12 +63,18 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   end
 
   def handle_event("reconnect_companion", params, socket) do
-    Companion.reconnect(RadioChannels.blank_port(params["port"]))
+    port = RadioChannels.blank_port(params["port"])
 
-    {:noreply,
-     socket
-     |> put_flash(:info, "Reconnecting MeshCore companion…")
-     |> refresh()}
+    if ble_port?(port) and socket.assigns.ble_busy do
+      {:noreply, socket}
+    else
+      Companion.reconnect(port)
+
+      {:noreply,
+       socket
+       |> put_flash(:info, "Reconnecting MeshCore companion…")
+       |> refresh()}
+    end
   end
 
   def handle_event("assign_slot_group", params, socket) do
@@ -122,13 +131,17 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   end
 
   def handle_event("scan_bluetooth", _params, socket) do
-    lv = self()
+    if socket.assigns.ble_busy do
+      {:noreply, socket}
+    else
+      lv = self()
 
-    Task.start(fn ->
-      send(lv, {:ble_scan_done, BLESidecar.scan(5_000)})
-    end)
+      Task.start(fn ->
+        send(lv, {:ble_scan_done, BLESidecar.scan(5_000)})
+      end)
 
-    {:noreply, assign(socket, :ble_scanning, true)}
+      {:noreply, socket |> assign(:ble_scanning, true) |> assign_ble_busy()}
+    end
   end
 
   def handle_event("connect_ble", params, socket) do
@@ -139,12 +152,16 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
       address == "" ->
         {:noreply, put_flash(socket, :error, "Pick a Bluetooth radio from the scan list.")}
 
+      socket.assigns.ble_busy ->
+        {:noreply, socket}
+
       true ->
         case MeshCoreSupervisor.start_ble(address, pin) do
           :ok ->
             {:noreply,
              socket
              |> assign(:ble_pin, pin)
+             |> assign(:ble_connecting, address)
              |> put_flash(:info, "Connecting MeshCore Bluetooth companion…")
              |> refresh()}
 
@@ -155,13 +172,28 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     end
   end
 
-  def handle_event("disconnect_ble", %{"address" => address}, socket) do
-    _ = MeshCoreSupervisor.stop_ble(address)
+  def handle_event("disconnect_ble", params, socket) do
+    address = String.trim(to_string(params["address"] || params["port"] || ""))
 
-    {:noreply,
-     socket
-     |> put_flash(:info, "Disconnected Bluetooth companion.")
-     |> refresh()}
+    cond do
+      address == "" ->
+        {:noreply, put_flash(socket, :error, "No Bluetooth address on that radio.")}
+
+      true ->
+        _ = MeshCoreSupervisor.stop_ble(address)
+
+        connecting =
+          if socket.assigns[:ble_connecting] &&
+               Companion.same_ble_address?(socket.assigns.ble_connecting, address),
+             do: nil,
+             else: socket.assigns[:ble_connecting]
+
+        {:noreply,
+         socket
+         |> assign(:ble_connecting, connecting)
+         |> put_flash(:info, "Disconnected Bluetooth companion.")
+         |> refresh()}
+    end
   end
 
   def handle_event("rescan_devices", _params, socket) do
@@ -300,13 +332,20 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   end
 
   def handle_info({:ble_scan_done, {:ok, devices}}, socket) do
-    {:noreply, socket |> assign(:ble_scanning, false) |> assign(:ble_scan, devices)}
+    devices = Enum.reject(devices, &(&1[:kind] == :meshtastic))
+
+    {:noreply,
+     socket
+     |> assign(:ble_scanning, false)
+     |> assign(:ble_scan, devices)
+     |> assign_ble_busy()}
   end
 
   def handle_info({:ble_scan_done, {:error, reason}}, socket) do
     {:noreply,
      socket
      |> assign(:ble_scanning, false)
+     |> assign_ble_busy()
      |> put_flash(:error, "Bluetooth scan failed: #{format_err(reason)}")}
   end
 
@@ -331,6 +370,8 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
         bridge_link: bridge_link
       )
 
+    connecting = clear_ble_connecting(socket.assigns[:ble_connecting], devices)
+
     socket
     |> assign(:groups, groups)
     |> assign(:bridges, bridges)
@@ -340,9 +381,47 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     |> assign(:synthetic_health, SyntheticNode.health())
     |> assign(:discovered_roles, roles)
     |> assign(:devices, devices)
+    |> assign(:ble_connecting, connecting)
     |> assign(:channel_syncing, socket.assigns[:channel_syncing] || false)
     |> assign(:radio_applying, socket.assigns[:radio_applying] || false)
+    |> assign_ble_busy()
   end
+
+  defp assign_ble_busy(socket) do
+    devices = socket.assigns[:devices] || []
+
+    busy =
+      socket.assigns[:ble_scanning] == true or
+        is_binary(socket.assigns[:ble_connecting]) or
+        Enum.any?(devices, &ble_connecting_device?/1)
+
+    online =
+      devices
+      |> Enum.filter(&(&1[:ble?] == true and &1[:active_companion?] == true))
+      |> Enum.map(&Companion.ble_address(&1.ble_address || ""))
+      |> Enum.reject(&(&1 == ""))
+      |> MapSet.new()
+
+    socket
+    |> assign(:ble_busy, busy)
+    |> assign(:ble_online_addrs, online)
+  end
+
+  defp ble_connecting_device?(%{ble?: true, companion_health: %{status: :connecting}}), do: true
+  defp ble_connecting_device?(_), do: false
+
+  defp clear_ble_connecting(address, devices) when is_binary(address) do
+    if Enum.any?(devices, fn d ->
+         d[:ble?] == true and d[:active_companion?] == true and
+           Companion.same_ble_address?(d.ble_address, address)
+       end) do
+      nil
+    else
+      address
+    end
+  end
+
+  defp clear_ble_connecting(_, _), do: nil
 
   defp claim_meshcore_slots(companions) when is_list(companions) do
     Enum.each(companions, fn companion ->
@@ -364,6 +443,11 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   end
 
   defp radio_form_from_health(_), do: RadioParams.empty_form_params()
+
+  defp ble_port?(port) when is_binary(port),
+    do: String.starts_with?(String.downcase(port), "ble:")
+
+  defp ble_port?(_), do: false
 
   defp format_err(reason) when is_binary(reason), do: reason
   defp format_err(reason), do: inspect(reason)

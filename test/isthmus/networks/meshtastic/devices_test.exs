@@ -57,5 +57,29 @@ defmodule Isthmus.Networks.Meshtastic.DevicesTest do
     assert extra.path == "/dev/ttyUSB1"
     assert extra.label == "!11223344"
     refute extra.primary?
+    refute extra.ble?
+  end
+
+  test "inventory includes Bluetooth companions from health" do
+    devices =
+      Devices.inventory(
+        ports: [],
+        roles: %{meshtastic: nil, meshtastic_ports: []},
+        healths: [
+          %{
+            status: :online,
+            port: "ble:11:22:33:44:55:66",
+            ble_address: "11:22:33:44:55:66",
+            name: "Meshtastic_Andreas",
+            node_id: nil
+          }
+        ]
+      )
+
+    assert [device] = devices
+    assert device.ble?
+    assert device.ble_address == "11:22:33:44:55:66"
+    assert device.label == "Meshtastic_Andreas"
+    assert device.path == "ble:11:22:33:44:55:66"
   end
 end

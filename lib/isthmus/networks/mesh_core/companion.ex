@@ -41,16 +41,25 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   @doc "Registry / ETS key for a BLE companion (`ble:<address>`)."
   def ble_key(address) when is_binary(address) do
-    addr = String.trim(address)
-    if String.starts_with?(addr, "ble:"), do: addr, else: "ble:" <> addr
+    "ble:" <> ble_address(address)
   end
 
   def ble_address(key) when is_binary(key) do
-    cond do
-      String.starts_with?(key, "ble:") -> String.trim_leading(key, "ble:")
-      true -> key
-    end
+    key
+    |> String.trim()
+    |> then(fn
+      "ble:" <> rest -> rest
+      "BLE:" <> rest -> rest
+      other -> other
+    end)
+    |> String.upcase()
   end
+
+  def same_ble_address?(a, b) when is_binary(a) and is_binary(b) do
+    ble_address(a) == ble_address(b)
+  end
+
+  def same_ble_address?(_, _), do: false
 
   @spec via(String.t()) :: {:via, module(), {module(), String.t()}}
   def via(port) when is_binary(port) do
@@ -307,9 +316,27 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       reconnect_gen: 0
     }
 
-    state = maybe_connect(state)
-    Status.publish(state)
-    {:ok, state}
+    cond do
+      transport_kind == :ble and is_binary(ble_address) and ble_address != "" ->
+        state =
+          Status.publish(%{
+            state
+            | status: :connecting,
+              last_error: "Connecting over Bluetooth…"
+          })
+
+        {:ok, state, {:continue, :connect}}
+
+      true ->
+        state = maybe_connect(state)
+        Status.publish(state)
+        {:ok, state}
+    end
+  end
+
+  @impl true
+  def handle_continue(:connect, state) do
+    {:noreply, maybe_connect(state)}
   end
 
   @impl true
@@ -820,6 +847,11 @@ defmodule Isthmus.Networks.MeshCore.Companion do
           end
 
         Logger.info("MeshCore companion online via #{state.transport_kind}")
+
+        if state.transport_kind == :ble do
+          _ = Isthmus.Networks.BLERemembered.remember(:meshcore, state.ble_address)
+        end
+
         Process.send_after(self(), :sync_contacts_boot, 1_000)
 
         Status.publish(%{
@@ -837,8 +869,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
         Status.publish(%{
           state
-          | status: :error,
-            last_error: inspect(reason),
+          | status: if(ble_transient_error?(reason), do: :connecting, else: :error),
+            last_error: format_connect_error(reason),
             fail_count: (state[:fail_count] || 0) + 1
         })
     end
@@ -852,8 +884,35 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   defp reconnect_gen(state), do: state[:reconnect_gen] || 0
 
-  defp reconnect_delay(reason, state) do
+  defp format_connect_error(reason) do
+    text = reason |> to_string() |> String.trim()
+    down = String.downcase(text)
+
     cond do
+      String.contains?(down, "timeout") ->
+        "Bluetooth connect timed out — retrying…"
+
+      String.contains?(down, "not_found") ->
+        "Radio is not advertising yet — retrying Bluetooth…"
+
+      String.contains?(down, "inprogress") ->
+        "Waiting for the Bluetooth adapter…"
+
+      true ->
+        text
+    end
+  end
+
+  defp reconnect_delay(reason, state) do
+    text = reason |> to_string() |> String.downcase()
+
+    cond do
+      String.contains?(text, "inprogress") or String.contains?(text, "already in progress") ->
+        12_000
+
+      String.contains?(text, "timeout") or String.contains?(text, "not_found") ->
+        8_000
+
       ble_transient_error?(reason) ->
         2_000
 
@@ -881,7 +940,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       String.contains?(text, "device disconnected") or
       String.contains?(text, "timeout") or
       String.contains?(text, "powered_off") or
-      String.contains?(text, "no powered bluetooth")
+      String.contains?(text, "no powered bluetooth") or
+      String.contains?(text, "not_found")
   end
 
   defp log_connect_failure(:eacces, delay) do

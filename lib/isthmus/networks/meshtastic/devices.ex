@@ -1,9 +1,10 @@
 defmodule Isthmus.Networks.Meshtastic.Devices do
   @moduledoc """
-  USB inventory for Meshtastic companion radios.
+  Inventory for Meshtastic companion radios (USB serial and Bluetooth).
 
-  One serial port is one device. Runtime health comes from the named primary
-  companion plus any extra companions started by `Meshtastic.Supervisor`.
+  One serial port is one USB device. BLE companions are keyed `ble:<address>`.
+  Runtime health comes from the named primary companion plus extras started by
+  `Meshtastic.Supervisor`.
   """
 
   alias Isthmus.Networks.MeshCore.Discover
@@ -24,7 +25,9 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
           health: map(),
           channels: [map()],
           primary?: boolean(),
-          active?: boolean()
+          active?: boolean(),
+          ble?: boolean(),
+          ble_address: String.t() | nil
         }
 
   def inventory(opts \\ []) do
@@ -55,15 +58,61 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
       |> Enum.map(& &1[:port])
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
 
-    (discover_paths ++ [primary_path] ++ running_paths)
-    |> Enum.reject(&is_nil/1)
-    |> Enum.uniq()
-    |> Enum.map(fn path ->
-      meta = by_path[path] || synthetic_port(path, roles)
-      health = health_by_port[path] || %{status: :disconnected, port: path}
-      build_device(meta, health, path == primary_path)
+    usb =
+      (discover_paths ++ [primary_path] ++ running_paths)
+      |> Enum.reject(&is_nil/1)
+      |> Enum.reject(&String.starts_with?(&1, "ble:"))
+      |> Enum.uniq()
+      |> Enum.map(fn path ->
+        meta = by_path[path] || synthetic_port(path, roles)
+        health = health_by_port[path] || %{status: :disconnected, port: path}
+        build_device(meta, health, path == primary_path)
+      end)
+
+    (usb ++ ble_devices(healths))
+    |> Enum.sort_by(
+      &{if(&1.primary?, do: 0, else: 1), if(&1.ble?, do: 1, else: 0), String.downcase(&1.label)}
+    )
+  end
+
+  defp ble_devices(healths) do
+    healths
+    |> List.wrap()
+    |> Enum.filter(fn h ->
+      is_binary(h[:port]) and String.starts_with?(h[:port], "ble:")
     end)
-    |> Enum.sort_by(&{if(&1.primary?, do: 0, else: 1), String.downcase(&1.label)})
+    |> Enum.map(&build_ble_device/1)
+  end
+
+  defp build_ble_device(health) do
+    address = health[:ble_address] || Companion.ble_address(health[:port])
+    node = health[:node_id]
+    name = blank(health[:name])
+
+    label =
+      cond do
+        is_binary(node) and node != "" -> "!" <> node
+        is_binary(name) -> name
+        true -> "Meshtastic Bluetooth"
+      end
+
+    %{
+      id: health[:port],
+      label: label,
+      path: health[:port],
+      kind: :meshtastic,
+      serial_number: nil,
+      vendor_id: nil,
+      product_id: nil,
+      manufacturer: "Bluetooth",
+      description: address,
+      health: health,
+      channels: Companion.list_channels(health[:port]),
+      primary?: false,
+      active?: health[:status] == :online,
+      ble?: true,
+      ble_address: address
+    }
   end
 
   defp synthetic_port(path, roles) do
@@ -106,7 +155,9 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
       health: health,
       channels: Companion.list_channels(health[:port]),
       primary?: primary? or health[:primary?] == true,
-      active?: health[:status] == :online
+      active?: health[:status] == :online,
+      ble?: false,
+      ble_address: nil
     }
   end
 

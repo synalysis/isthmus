@@ -5,6 +5,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
 
   alias Isthmus.Announce.Inbound, as: Sightings
   alias Isthmus.Networks.Meshtastic.Companion.Admin
+  alias Isthmus.Networks.Meshtastic.Companion.Link
   alias Isthmus.Networks.Meshtastic.Companion.Status
   alias Isthmus.Networks.Meshtastic.MessageStore
   alias Isthmus.Networks.Meshtastic.Protocol
@@ -31,27 +32,41 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
         note_own_node_time(%{state | received: state.received + 1}, info)
 
       {:channel, channel} ->
-        Status.put_channel(state, channel)
+        state = Status.put_channel(state, channel)
+        Status.broadcast_channels(state)
 
       {:config, {:lora, lora}} ->
-        Status.persist_lora(%{state | lora: lora})
+        apply_lora(state, lora)
 
       {:config, {:device, device}} ->
-        Status.persist_device(%{state | device: device})
+        apply_device(state, device)
+
+      {:config, {:both, device, lora}} ->
+        state |> apply_device(device) |> apply_lora(lora)
 
       {:config, _} ->
         state
 
       {:config_complete, nonce} ->
-        if state.config_nonce == nonce do
+        if is_reference(state[:config_timer]), do: Process.cancel_timer(state.config_timer)
+        state = Map.put(state, :config_timer, nil)
+
+        if state.config_nonce == nonce or is_nil(state.config_nonce) do
+          Logger.info("Meshtastic config dump complete (nonce=#{nonce})")
+
           state
           |> Status.persist_channels()
           |> Status.broadcast_channels()
           |> Status.persist_lora()
           |> Status.broadcast_lora()
-          |> Admin.maybe_begin_time_sync()
-          |> schedule_message_store()
+          |> Status.persist_device()
+          |> Status.broadcast_device()
+          |> finish_config_dump(history: true)
         else
+          Logger.debug(
+            "Meshtastic config_complete nonce #{inspect(nonce)} != #{inspect(state.config_nonce)}"
+          )
+
           state
         end
 
@@ -145,6 +160,32 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
   end
 
   def handle_packet(state, _), do: state
+
+  def apply_lora(state, lora) when is_map(lora) do
+    state = Status.persist_lora(%{state | lora: lora})
+    Status.broadcast_lora(state)
+  end
+
+  def apply_device(state, device) when is_map(device) do
+    state = Status.persist_device(%{state | device: device})
+    Status.broadcast_device(state)
+  end
+
+  @doc "After want_config finishes or times out: fill missing LoRa, then time-sync."
+  def finish_config_dump(state, opts \\ []) do
+    state =
+      state
+      |> Admin.maybe_refresh_lora()
+      |> then(fn state ->
+        if is_map(state[:admin]), do: state, else: Admin.maybe_begin_time_sync(state)
+      end)
+
+    if Keyword.get(opts, :history, false) do
+      schedule_message_store(state)
+    else
+      state
+    end
+  end
 
   defp record_meshtastic_broadcast(state, pkt, body) do
     attrs = %{
@@ -284,8 +325,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
     end
   end
 
-  defp write_xmodem(%{uart: uart}, frame) when is_pid(uart), do: Circuits.UART.write(uart, frame)
-  defp write_xmodem(_, _), do: :ok
+  defp write_xmodem(state, frame), do: Link.write(state, frame)
 
   defp ingest_message_store(state) do
     blob = get_in(state, [:xmodem, :acc]) || <<>>

@@ -6,6 +6,7 @@ defmodule IsthmusWeb.Admin.CopyTest do
   test "status_plain never exposes disabled" do
     assert Copy.status_plain(:disabled) == "Offline"
     assert Copy.status_plain(:online) == "Connected"
+    assert Copy.status_plain(:connecting) == "Connecting"
   end
 
   test "device_purpose for unknown radios" do
@@ -13,6 +14,8 @@ defmodule IsthmusWeb.Admin.CopyTest do
     assert {"Companion radio", _} = Copy.device_purpose(%{kind: :companion})
     assert {"Companion radio", blurb} = Copy.device_purpose(%{kind: :companion, ble?: true})
     assert blurb =~ "Bluetooth"
+    assert {"Companion radio", mt} = Copy.device_purpose(%{kind: :meshtastic, ble?: true})
+    assert mt =~ "Bluetooth"
     assert {"Island tunnel radio", _} = Copy.device_purpose(%{kind: :bridge_repeater})
   end
 

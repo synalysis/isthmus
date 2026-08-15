@@ -253,7 +253,8 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                 phx-click="scan_bluetooth"
                 id="scan-bluetooth-btn"
                 type="button"
-                disabled={@ble_scanning}
+                disabled={@ble_busy}
+                title={@ble_busy && "Wait for Bluetooth to finish"}
               >
                 {if(@ble_scanning, do: "Scanning…", else: "Scan Bluetooth")}
               </button>
@@ -271,6 +272,7 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
             <h3 class="text-sm font-medium">Nearby MeshCore Bluetooth</h3>
             <p class="text-xs opacity-70 mt-1">
               Companion Bluetooth radios (T1000-E default PIN 123456). USB radios stay connected.
+              Bluetooth companions come back after a server restart until you Disconnect.
             </p>
             <p :if={@ble_scanning} class="text-sm opacity-70 mt-2">Scanning…</p>
             <div :if={@ble_scan != []} class="mt-3 overflow-x-auto">
@@ -305,7 +307,20 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                           value={@ble_pin}
                           class="input input-sm w-24"
                         />
-                        <button class="btn btn-primary btn-xs" type="submit">Connect</button>
+                        <button
+                          class={[
+                            "btn btn-primary btn-xs",
+                            @ble_connecting == dev.address && "loading"
+                          ]}
+                          type="submit"
+                          disabled={
+                            @ble_busy or
+                              MapSet.member?(@ble_online_addrs, String.upcase(dev.address || ""))
+                          }
+                          title={@ble_busy && "Wait for Bluetooth to finish"}
+                        >
+                          {if(@ble_connecting == dev.address, do: "Connecting…", else: "Connect")}
+                        </button>
                       </form>
                     </td>
                   </tr>
@@ -404,6 +419,8 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                     phx-click="reconnect_companion"
                     phx-value-port={companion_port(device)}
                     type="button"
+                    disabled={device.ble? and @ble_busy}
+                    title={(device.ble? and @ble_busy) && "Wait for Bluetooth to finish"}
                   >
                     Reconnect
                   </button>

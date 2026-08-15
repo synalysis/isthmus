@@ -37,7 +37,8 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Status do
     channel = channel_map(channel)
     key = state_ets_key(state)
     :ets.insert(@channels_table, {{idx, key}, channel})
-    %{state | channels: Map.put(state.channels, idx, channel)}
+    state = %{state | channels: Map.put(state.channels, idx, channel)}
+    persist_channels(state)
   end
 
   def persist_channels(state) do
@@ -49,7 +50,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Status do
   def persist_lora(state) do
     lora = state.lora || RadioConfig.empty()
     :ets.insert(@status_table, {{:lora, state_ets_key(state)}, lora})
-    state
+    publish_status(state)
   end
 
   def persist_device(state) do
@@ -135,8 +136,14 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Status do
       port: port,
       id: port || "none",
       primary?: state[:fixed_port] != true,
-      transport: :usb,
-      detail: "Meshtastic serial companion",
+      transport: if(state[:transport_kind] == :ble, do: :ble, else: :usb),
+      ble_address: state[:ble_address],
+      name: state[:ble_name],
+      detail:
+        if(state[:transport_kind] == :ble,
+          do: "Meshtastic Bluetooth companion",
+          else: "Meshtastic serial companion"
+        ),
       last_error: state.last_error,
       sent: state.sent,
       received: state.received,
@@ -168,11 +175,35 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Status do
   def state_ets_key(_), do: :none
 
   def drop_ets(state) do
-    key = state_ets_key(state)
+    drop_port(state_ets_key(state))
+  end
+
+  def drop_port(key) do
     :ets.delete(@status_table, {:health, key})
     :ets.delete(@status_table, {:lora, key})
     :ets.delete(@status_table, {:device, key})
     :ets.delete(@channels_table, {:all, key})
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  def drop_matching_ble(address) when is_binary(address) do
+    want = Isthmus.Networks.Meshtastic.Companion.normalize_ble_address(address)
+
+    @status_table
+    |> :ets.match({{:health, :"$1"}, :"$2"})
+    |> Enum.each(fn [key, health] ->
+      have =
+        health[:ble_address] ||
+          if(is_binary(key), do: Isthmus.Networks.Meshtastic.Companion.ble_address(key))
+
+      if is_binary(key) and String.starts_with?(key, "ble:") and is_binary(have) and
+           Isthmus.Networks.Meshtastic.Companion.same_ble_address?(have, want) do
+        drop_port(key)
+      end
+    end)
+
     :ok
   rescue
     _ -> :ok

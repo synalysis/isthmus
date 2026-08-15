@@ -20,7 +20,9 @@ defmodule Isthmus.Networks.MeshCore.BLETransportTest do
   test "ble_key prefixes bleak addresses" do
     assert Companion.ble_key("AA:BB") == "ble:AA:BB"
     assert Companion.ble_key("ble:AA:BB") == "ble:AA:BB"
+    assert Companion.ble_key("aa:bb") == "ble:AA:BB"
     assert Companion.ble_address("ble:AA:BB") == "AA:BB"
+    assert Companion.same_ble_address?("aa:bb", "ble:AA:BB")
   end
 
   test "sidecar health is a map" do
@@ -33,9 +35,16 @@ defmodule Isthmus.Networks.MeshCore.BLETransportTest do
     start_supervised!({BLESidecar, name: @sidecar, script: @fake_script})
     await_live(@sidecar)
 
-    assert {:ok, [dev]} = BLESidecar.scan(500, @sidecar)
-    assert dev.address == "AA:BB:CC:DD:EE:FF"
-    assert dev.name == "MeshCore-1"
+    assert {:ok, status} = BLESidecar.adapter_status(@sidecar)
+    assert status["discovering"] == false or status[:discovering] == false
+
+    assert {:ok, devices} = BLESidecar.scan(500, @sidecar)
+    meshcore = Enum.find(devices, &(&1.address == "AA:BB:CC:DD:EE:FF"))
+    meshtastic = Enum.find(devices, &(&1.address == "11:22:33:44:55:66"))
+    assert meshcore.name == "MeshCore-1"
+    assert meshcore.kind == :meshcore
+    assert meshtastic.name == "Meshtastic_Andreas"
+    assert meshtastic.kind == :meshtastic
 
     BLESidecar.watch("AA:BB:CC:DD:EE:FF", self(), @sidecar)
 

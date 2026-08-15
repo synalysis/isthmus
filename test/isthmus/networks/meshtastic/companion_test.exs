@@ -2,6 +2,7 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
   use Isthmus.DataCase, async: false
 
   alias Isthmus.Networks.Meshtastic.Companion
+  alias Isthmus.Networks.Meshtastic.Companion.Admin
 
   test "stay_connected? is true only for an online UART on the same port" do
     online = %{status: :online, uart: self(), port: "/dev/ttyUSB0", fixed_port: true}
@@ -10,6 +11,31 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
     refute Companion.stay_connected?(%{online | status: :error})
     refute Companion.stay_connected?(%{online | uart: nil})
     refute Companion.stay_connected?(%{status: :disconnected, uart: nil, port: nil})
+  end
+
+  test "stay_connected? treats an online BLE transport as connected" do
+    online = %{
+      status: :online,
+      transport_kind: :ble,
+      transport: %{type: :ble},
+      uart: nil,
+      fixed_port: true
+    }
+
+    assert Companion.stay_connected?(online)
+    refute Companion.stay_connected?(%{online | transport: nil})
+  end
+
+  test "ble_key prefixes bleak addresses" do
+    assert Companion.ble_key("AA:BB") == "ble:AA:BB"
+    assert Companion.ble_key("ble:AA:BB") == "ble:AA:BB"
+    assert Companion.ble_key("aa:bb") == "ble:AA:BB"
+    assert Companion.ble_address("ble:AA:BB") == "AA:BB"
+    assert Companion.same_ble_address?("aa:bb:cc", "ble:AA:BB:CC")
+    assert Companion.ble_link_lost?("not_connected")
+    assert Companion.ble_link_lost?(:not_connected)
+    refute Companion.ble_link_lost?(:timeout)
+    assert Companion.ble_retryable_error?("not_found:F7:DE:1C:90:E1:EC")
   end
 
   test "disconnect_unidentified is a no-op when no radio is online" do
@@ -46,6 +72,13 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
 
   test "clear_channel fails when disconnected" do
     assert {:error, :not_connected} = Companion.clear_channel(2)
+  end
+
+  test "admin handshake waits longer on BLE than USB" do
+    assert Admin.timeout_ms() == 4_000
+    assert Admin.timeout_ms(%{transport_kind: :usb}) == 4_000
+    assert Admin.timeout_ms(%{}) == 4_000
+    assert Admin.timeout_ms(%{transport_kind: :ble}) == 15_000
   end
 
   test "list_channels returns eight placeholder slots before a dump" do
@@ -176,5 +209,114 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
              row.network == "meshtastic" and row.body == "sf replay" and
                row.external_id == "mt-8802"
            end)
+  end
+
+  test "ble_frame notify is applied like a USB FromRadio payload" do
+    alias Isthmus.Networks.Meshtastic.Companion.Inbound
+    alias Isthmus.Networks.Meshtastic.Companion.Status
+    alias Isthmus.Networks.Meshtastic.Protobuf
+
+    inner = Protobuf.encode_varint_field(1, 0xAABBCCDD)
+    payload = Protobuf.encode_message_field(3, inner)
+
+    state =
+      Inbound.handle_payload(
+        %{
+          my_info: nil,
+          last_error: "x",
+          received: 0,
+          sent: 0,
+          port: "/dev/ttyBLETEST",
+          status: :online,
+          lora: %{},
+          device: %{},
+          channels: %{},
+          fixed_port: true
+        },
+        payload
+      )
+
+    assert get_in(state, [:my_info, :node_id]) == "aabbccdd"
+    Status.drop_ets(state)
+  end
+
+  test "FromRadio LoRa config is stored so the settings dialog can show region" do
+    alias Isthmus.Networks.Meshtastic.Companion.Inbound
+    alias Isthmus.Networks.Meshtastic.Companion.Status
+    alias Isthmus.Networks.Meshtastic.Protobuf
+    alias Isthmus.Networks.Meshtastic.Protocol
+
+    inner =
+      Protocol.encode_lora_config(%{use_preset: true, modem_preset: 0, region: 1, hop_limit: 3})
+
+    payload =
+      Protobuf.encode_varint_field(1, 7) <>
+        Protobuf.encode_message_field(5, Protobuf.encode_message_field(6, inner))
+
+    state =
+      Inbound.handle_payload(
+        %{
+          my_info: %{my_node_num: 1, node_id: "aabbccdd"},
+          last_error: nil,
+          received: 0,
+          sent: 0,
+          port: "/dev/ttyLORATEST",
+          status: :online,
+          lora: %{},
+          device: %{},
+          channels: %{},
+          fixed_port: true,
+          transport_kind: :usb,
+          uart: nil
+        },
+        payload
+      )
+
+    assert state.lora.region == 1
+    assert Companion.lora_config("/dev/ttyLORATEST").region == 1
+    assert Companion.health("/dev/ttyLORATEST").region == 1
+    Status.drop_ets(state)
+  end
+
+  test "FromRadio channel is published immediately so Sync can show names before dump complete" do
+    alias Isthmus.Networks.Meshtastic.Companion.Inbound
+    alias Isthmus.Networks.Meshtastic.Companion.Status
+    alias Isthmus.Networks.Meshtastic.Protobuf
+    alias Isthmus.Networks.Meshtastic.Protocol
+
+    inner =
+      Protocol.encode_channel(%{
+        index: 4,
+        name: "Lobby",
+        psk: :crypto.strong_rand_bytes(16),
+        role: Protocol.role_secondary()
+      })
+
+    payload = Protobuf.encode_message_field(10, inner)
+    port = "/dev/ttyCHANTTEST"
+
+    state =
+      Inbound.handle_payload(
+        %{
+          my_info: %{my_node_num: 1, node_id: "aabbccdd"},
+          last_error: nil,
+          received: 0,
+          sent: 0,
+          port: port,
+          status: :online,
+          lora: %{},
+          device: %{},
+          channels: %{},
+          fixed_port: true,
+          transport_kind: :usb,
+          uart: nil
+        },
+        payload
+      )
+
+    slots = Companion.list_channels(port)
+    assert Enum.at(slots, 4).name == "Lobby"
+    refute Enum.at(slots, 4).empty?
+    Status.drop_ets(state)
   end
 end

@@ -30,12 +30,40 @@ defmodule Isthmus.Networks.MeshCore.Companion.Status do
 
   @spec drop_ets(map()) :: :ok
   def drop_ets(state) do
-    key = ets_port_key(state.port)
+    drop_port(ets_port_key(state.port))
+  end
+
+  @spec drop_port(term()) :: :ok
+  def drop_port(key) do
     :ets.delete(@status_table, {:health, key})
     :ets.delete(@channels_table, {:all, key})
 
     Enum.each(0..(@max_channel_slots - 1), fn idx ->
       :ets.delete(@channels_table, {idx, key})
+    end)
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  @doc "Remove leftover BLE health rows after Disconnect, even if the process is gone."
+  @spec drop_matching_ble(String.t()) :: :ok
+  def drop_matching_ble(address) when is_binary(address) do
+    want = Isthmus.Networks.MeshCore.Companion.ble_address(address)
+
+    @status_table
+    |> :ets.match({{:health, :"$1"}, :"$2"})
+    |> Enum.each(fn [key, health] ->
+      have =
+        health[:ble_address] ||
+          if(is_binary(key), do: Isthmus.Networks.MeshCore.Companion.ble_address(key))
+
+      if is_binary(key) and String.starts_with?(key, "ble:") and
+           is_binary(have) and
+           Isthmus.Networks.MeshCore.Companion.ble_address(have) == want do
+        drop_port(key)
+      end
     end)
 
     :ok

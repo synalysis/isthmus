@@ -12,8 +12,10 @@ defmodule Isthmus.MCP.Server do
   You are operating an Isthmus instance: a bridge between MeshCore, Meshtastic,
   Reticulum (LXMF), Nostr, and ACP agents. Use these tools to inspect health,
   manage groups/members, inject messages, and change tunnels, relays, ACP agent, and policy.
-  Identify groups by UUID or display name (e.g. "Lobby"). Never ask for vault
-  secrets or nsecs; this API does not expose private keys.
+  Use bluetooth_status, scan_bluetooth, connect_bluetooth, and disconnect_bluetooth
+  to drive MeshCore/Meshtastic BLE companions. Identify groups by UUID or display
+  name (e.g. "Lobby"). Never ask for vault secrets or nsecs; this API does not
+  expose private keys.
   """
 
   def instructions, do: @instructions
@@ -230,6 +232,40 @@ defmodule Isthmus.MCP.Server do
     annotations(readOnlyHint: true)
 
     run(fn args, state -> reply(Tools.list_radios(args), state) end)
+  end
+
+  tool "bluetooth_status",
+       "BLE sidecar, adapter discovering/paired devices, and remembered companions" do
+    annotations(readOnlyHint: true)
+
+    run(fn args, state -> reply(Tools.bluetooth_status(args), state) end)
+  end
+
+  tool "scan_bluetooth", "Scan for MeshCore and Meshtastic Bluetooth radios" do
+    param(:timeout_ms, :integer, default: 5000, description: "Scan window, 500–15000")
+    annotations(readOnlyHint: true)
+
+    run(fn args, state -> reply(Tools.scan_bluetooth(args), state) end)
+  end
+
+  tool "connect_bluetooth", "Start a MeshCore or Meshtastic BLE companion" do
+    param(:network, :string, required: true, description: "meshtastic or meshcore")
+    param(:address, :string, required: true, description: "Bluetooth MAC address")
+    param(:pin, :string, description: "Pairing PIN; omit unless the radio is prompting")
+    param(:name, :string, description: "Optional advertised name to remember")
+    param(:wait_ms, :integer,
+      default: 0,
+      description: "Wait up to 15s for online; omit and poll list_radios instead"
+    )
+
+    run(fn args, state -> reply(Tools.connect_bluetooth(args), state) end)
+  end
+
+  tool "disconnect_bluetooth", "Stop a BLE companion and forget it across restarts" do
+    param(:network, :string, required: true, description: "meshtastic or meshcore")
+    param(:address, :string, required: true, description: "Bluetooth MAC address")
+
+    run(fn args, state -> reply(Tools.disconnect_bluetooth(args), state) end)
   end
 
   tool "set_meshtastic_time", "Sync Unix time (and optional POSIX tzdef) to a Meshtastic radio" do

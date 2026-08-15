@@ -46,7 +46,14 @@ def main() -> None:
                             "address": "AA:BB:CC:DD:EE:FF",
                             "name": "MeshCore-1",
                             "rssi": -40,
-                        }
+                            "kind": "meshcore",
+                        },
+                        {
+                            "address": "11:22:33:44:55:66",
+                            "name": "Meshtastic_Andreas",
+                            "rssi": -50,
+                            "kind": "meshtastic",
+                        },
                     ],
                 }
             )
@@ -70,8 +77,24 @@ def main() -> None:
             )
         elif typ == "write":
             write_msg({"id": req_id, "type": "write_result", "ok": True})
+        elif typ == "adapter_status":
+            write_msg(
+                {
+                    "id": req_id,
+                    "type": "adapter_status_result",
+                    "ok": True,
+                    "discovering": False,
+                    "clients": [],
+                    "connecting": [],
+                    "devices": [],
+                }
+            )
         elif typ == "disconnect":
             write_msg({"id": req_id, "type": "disconnect_result", "ok": True})
+        elif typ == "pin_reply":
+            write_msg({"id": req_id, "type": "pin_reply_result", "ok": True})
+        elif typ == "pin_cancel":
+            write_msg({"id": req_id, "type": "pin_cancel_result", "ok": True})
         elif typ == "ping":
             write_msg({"id": req_id, "type": "pong", "ok": True})
         else:
