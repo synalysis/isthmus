@@ -62,7 +62,7 @@ view _ =
     { title = "Networks"
     , body =
         [ Ui.pageHero "Networks"
-            "Four live legs. Pick the stack you know, then see how Isthmus joins it to the others."
+            "Four messengers. Pick the stack you know, then see how Isthmus carries DMs and group chat to the others."
         , Html.section
             [ classes [ Tw.pt s6, Tw.pb s10 ] ]
             [ Ui.container []
@@ -75,19 +75,19 @@ view _ =
                     ]
                     [ protocol "RF mesh"
                         "MeshCore"
-                        "Companions, channels, and whole-packet island bridges."
+                        "USB companions: DMs, contacts, and channels that join Isthmus groups."
                         Route.Path.Meshcore
                         "https://meshcore.io"
                         "meshcore.io"
                     , protocol "RF mesh"
                         "Meshtastic"
-                        "USB companions; private channels linked to bridge groups."
+                        "USB companions: private channels linked into Isthmus groups."
                         Route.Path.Meshtastic
                         "https://meshtastic.org"
                         "meshtastic.org"
                     , protocol "Encrypted mesh"
                         "Reticulum / LXMF"
-                        "Isthmus-owned destinations that LXMF clients can message."
+                        "LXMF destinations Isthmus owns — clients send and receive DMs as usual."
                         Route.Path.Reticulum
                         "https://reticulum.network"
                         "reticulum.network"
@@ -110,11 +110,11 @@ view _ =
                             , Tw.raw "text-[clamp(1.55rem,3vw,1.9rem)]"
                             ]
                         ]
-                        [ Html.text "Island bridge vs message gateway" ]
+                        [ Html.text "Message gateway" ]
                     , Html.p [ classes [ Tw.m s0, Tw.mb s4, Tw.raw "max-w-[60ch]" ] ]
-                        [ Html.text "If you already know MeshCore path discovery, the island bridge is the interesting piece: two RF islands on different frequencies become one mesh because whole "
-                        , Html.code [] [ Html.text "mesh::Packet" ]
-                        , Html.text " frames cross the tunnel. Those payloads stay end-to-end encrypted between mesh endpoints. The identity gateway and bridge groups are different — they translate messages through Isthmus-owned or attached identities, which means decrypt on the way in and encrypt on the way out. Run that path only on hosts you fully control; a rented VPS can see cleartext at the gateway."
+                        [ Html.text "The main job is carrying "
+                        , Html.strong [] [ Html.text "direct messages and group chat" ]
+                        , Html.text " between MeshCore, Meshtastic, Reticulum/LXMF, and Nostr. Isthmus decrypts on the way in and encrypts on the way out, so that path belongs on a host you fully control — a rented VPS can see cleartext at the gateway. MeshCore can also join two RF islands with an optional whole-packet tunnel; that is a separate, opt-in feature, not the default story."
                         ]
                     , Html.p [ classes [ Tw.m s0 ] ]
                         [ Html.a [ Route.Path.href Route.Path.SelfHost ] [ Html.text "Ready to run your own node →" ]

@@ -62,7 +62,7 @@ view _ =
     { title = "MeshCore"
     , body =
         [ Ui.pageHero "MeshCore"
-            "A LoRa mesh built for roles: companions that talk, repeaters that route — and, with the right firmware, islands that join through Isthmus."
+            "A LoRa mesh built for roles: companions that talk, repeaters that route. Isthmus uses a USB companion for DMs and channels — island tunnels are optional."
         , Ui.container []
             [ Ui.officialSite "https://meshcore.io" "meshcore.io"
             ]
@@ -103,21 +103,17 @@ view _ =
                         [ Html.li [] [ Html.text "Off-grid and trail messaging — DMs and shared channels without a cell tower" ]
                         , Html.li [] [ Html.text "Neighbourhood or event meshes — a handful of solar repeaters plus phones on companions" ]
                         , Html.li [] [ Html.text "Emergency / backup text when internet and cellular fail" ]
-                        , Html.li [] [ Html.text "Experimenters bridging RF islands that sit on different frequencies or hills" ]
+                        , Html.li [] [ Html.text "Operators who want MeshCore DMs to reach Nostr, LXMF, or a Meshtastic group" ]
                         ]
-                    , Html.h2 [] [ Html.text "On Isthmus: two different jobs" ]
+                    , Html.h2 [] [ Html.text "On Isthmus: messaging first" ]
                     , Html.p []
-                        [ Html.text "Isthmus talks to MeshCore in two ways. Don’t confuse them:"
-                        ]
-                    , Html.h2 [] [ Html.text "1. Companion gateway (messages)" ]
-                    , Html.p []
-                        [ Html.text "A stock "
+                        [ Html.text "The usual path is a stock "
                         , Html.strong [] [ Html.text "companion" ]
-                        , Html.text " over USB is enough for the identity gateway: sync contacts and channels, register MeshCore as primary, attach real contacts to bridge groups, and fan DMs out to Nostr / LXMF. (BLE companion transport is not wired up in Isthmus yet.) One companion is one RF inbox — when several groups share it, address traffic with an "
+                        , Html.text " over USB: sync contacts and channels, register MeshCore as primary, attach real contacts to bridge groups, and fan DMs out to Nostr / LXMF / Meshtastic groups. (BLE companion transport is not wired up in Isthmus yet.) One companion is one RF inbox — when several groups share it, address traffic with an "
                         , Html.code [] [ Html.text "@token" ]
                         , Html.text "."
                         ]
-                    , Html.h2 [] [ Html.text "2. Tunnels / island bridges (raw packets)" ]
+                    , Html.h2 [] [ Html.text "Optional: tunnels / island bridges" ]
                     , Html.p []
                         [ Html.text "Joining two MeshCore islands so they behave as "
                         , Html.strong [] [ Html.text "one mesh" ]

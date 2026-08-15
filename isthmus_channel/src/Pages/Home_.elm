@@ -93,7 +93,7 @@ subscriptions _ =
 
 view : Model -> View Msg
 view _ =
-    { title = "Bridge the nets you already use"
+    { title = "Connect the messengers you already use"
     , body =
         [ Html.section
             [ Attr.attribute "aria-label" "Introduction"
@@ -138,7 +138,7 @@ view _ =
                         , Tw.raw "text-[clamp(1.45rem,3.2vw,2rem)] leading-snug max-w-[22ch]"
                         ]
                     ]
-                    [ Html.text "A narrow passage between mesh islands." ]
+                    [ Html.text "Direct messages across the nets you already use." ]
                 , Html.p
                     [ Attr.class "rise-in rise-in-delay-2"
                     , classes
@@ -148,7 +148,7 @@ view _ =
                         , Tw.raw "text-[1.08rem] max-w-[36ch]"
                         ]
                     ]
-                    [ Html.text "Self-host a gateway that tunnels and translates across MeshCore, Meshtastic, Reticulum, and Nostr — so the net you know can reach the ones you don't." ]
+                    [ Html.text "Self-host a gateway that connects MeshCore, Meshtastic, Reticulum, and Nostr direct messaging — so a person on one net can reach a person on another." ]
                 , Html.div
                     [ Attr.class "rise-in rise-in-delay-3"
                     , classes [ Tw.flex, Tw.flex_wrap, Tw.gap s3 ]
@@ -161,7 +161,7 @@ view _ =
         , Ui.section
             [ Ui.kicker "For protocol people"
             , Ui.sectionTitle "You already speak one of these."
-            , Ui.sectionLede "Isthmus is for operators who live on MeshCore, Meshtastic, Reticulum/LXMF, or Nostr and want a reliable bridge — not another siloed chat app."
+            , Ui.sectionLede "Isthmus is for operators who already message on MeshCore, Meshtastic, Reticulum/LXMF, or Nostr and want those inboxes to reach each other — not another siloed chat app."
             , Html.div
                 [ classes
                     [ Tw.grid
@@ -173,11 +173,11 @@ view _ =
                     ]
                 ]
                 [ teaser "How it works"
-                    "Tunnels carry opaque packets. Registration and bridge groups translate identities across networks."
+                    "Registration and bridge groups translate DMs and group chat across networks. MeshCore island tunnels are optional."
                     Route.Path.HowItWorks
                     "Read the model"
                     , teaser "Networks"
-                        "MeshCore, Meshtastic, Reticulum, and Nostr — dedicated guides for each leg of the bridge."
+                        "MeshCore, Meshtastic, Reticulum, and Nostr — how each one talks to Isthmus."
                         Route.Path.Networks
                         "Explore networks"
                 , teaser "Self-host"

@@ -273,7 +273,7 @@ siteFooter =
                 ]
             ]
             [ Html.p [ classes [ Tw.m s0 ] ]
-                [ Html.text "A narrow passage between "
+                [ Html.text "Direct messages across "
                 , Html.strong [ classes [ Tw.font_display, Tw.font_semibold, Tw.text_simple ink ] ] [ Html.text "MeshCore" ]
                 , Html.text ", "
                 , Html.strong [ classes [ Tw.font_display, Tw.font_semibold, Tw.text_simple ink ] ] [ Html.text "Meshtastic" ]

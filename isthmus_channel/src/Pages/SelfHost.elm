@@ -63,7 +63,7 @@ view _ =
     { title = "Self-host"
     , body =
         [ Ui.pageHero "Self-host"
-            "Run Isthmus where your radios and peers live. Start with a Nostr identity for login, then attach MeshCore, Meshtastic, and Reticulum as you need them."
+            "Run Isthmus where your radios and peers live. Start with a Nostr identity for login, then attach MeshCore, Meshtastic, and Reticulum so their DMs and channels can meet."
         , Html.section
             [ classes [ Tw.pt s6, Tw.pb s10 ] ]
             [ Ui.container []
@@ -235,11 +235,9 @@ docker compose up --build"""
                                 ]
                             , Html.p [ classes [ Tw.m s0 ] ]
                                 [ Html.strong [ classes [ Tw.text_simple ink ] ] [ Html.text "Encryption: " ]
-                                , Html.text "Opaque "
+                                , Html.text "Crossing protocols for DMs and groups means Isthmus must decrypt and re-encrypt — so do not run those gateways on a VPS or other machine you don’t fully control. Prefer hardware you administer. Opaque MeshCore "
                                 , Html.strong [] [ Html.text "tunnels" ]
-                                , Html.text " keep carried traffic end-to-end encrypted. "
-                                , Html.strong [] [ Html.text "Registration and bridge groups" ]
-                                , Html.text " must decrypt and re-encrypt to cross protocols — so do not run those gateways on a VPS or other machine you don’t fully control. Prefer hardware you administer."
+                                , Html.text " (optional) keep carried traffic end-to-end encrypted."
                                 ]
                             ]
                         ]

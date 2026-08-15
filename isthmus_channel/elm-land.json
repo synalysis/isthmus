@@ -17,13 +17,13 @@
         { "name": "viewport", "content": "width=device-width, initial-scale=1.0" },
         {
           "name": "description",
-          "content": "Isthmus bridges MeshCore, Reticulum, and Nostr — tunnels, identity gateways, and self-hosted mesh connectivity."
+          "content": "Isthmus connects MeshCore, Meshtastic, Reticulum, and Nostr direct messaging. Self-host a gateway so people keep the clients they already use."
         },
         { "name": "theme-color", "content": "#0B3D4A" },
-        { "property": "og:title", "content": "Isthmus — bridge the nets you already use" },
+        { "property": "og:title", "content": "Isthmus — connect the messengers you already use" },
         {
           "property": "og:description",
-          "content": "A multi-network mesh gateway for MeshCore, Reticulum, and Nostr. Self-host a narrow passage between radio islands and online relays."
+          "content": "A self-hosted gateway for MeshCore, Meshtastic, Reticulum, and Nostr DMs — not another siloed chat app."
         },
         { "property": "og:type", "content": "website" },
         { "property": "og:url", "content": "https://isthmus.channel" }

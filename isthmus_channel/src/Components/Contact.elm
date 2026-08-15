@@ -62,7 +62,7 @@ viewBand =
                 , Tw.raw "text-[1.08rem] max-w-[48ch]"
                 ]
             ]
-            [ Html.text "Questions about bridging, firmware, or a self-hosted setup — write by email or Nostr DM." ]
+            [ Html.text "Questions about connecting messengers, radios, or a self-hosted setup — write by email or Nostr DM." ]
         , Html.div
             [ classes [ Tw.grid, Tw.gap s3 ] ]
             [ contactRow "Email" ("mailto:" ++ email) email True
