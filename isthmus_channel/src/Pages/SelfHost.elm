@@ -187,9 +187,10 @@ docker compose up --build"""
                                 , Html.code [] [ Html.text "mix isthmus.meshcore.ports" ]
                                 ]
                             , Html.li []
-                                [ Html.text "Set "
-                                , Html.code [] [ Html.text "ISTHMUS_MESHCORE_TRANSPORT=usb" ]
-                                , Html.text " (BLE transport is not implemented yet)"
+                                [ Html.text "USB companions auto-detect, or pin "
+                                , Html.code [] [ Html.text "ISTHMUS_MESHCORE_PORT" ]
+                                , Html.text ". Bluetooth companions: Admin → MeshCore → Scan Bluetooth, or "
+                                , Html.code [] [ Html.text "ISTHMUS_MESHCORE_BLE_ADDRESS" ]
                                 ]
                             , Html.li []
                                 [ Html.text "Island bridges: flash a USB-serial repeater from "

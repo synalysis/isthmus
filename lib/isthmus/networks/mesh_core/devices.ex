@@ -73,10 +73,13 @@ defmodule Isthmus.Networks.MeshCore.Devices do
         Map.put_new(acc, path, synthetic_port(path, roles))
       end)
 
-    by_path
-    |> Map.values()
-    |> group_ports()
-    |> Enum.map(&build_device(&1, path_roles, companions, bridge_cli, bridge_link))
+    usb =
+      by_path
+      |> Map.values()
+      |> group_ports()
+      |> Enum.map(&build_device(&1, path_roles, companions, bridge_cli, bridge_link))
+
+    (usb ++ ble_devices(companions))
     |> Enum.sort_by(&device_sort/1)
   end
 
@@ -255,6 +258,8 @@ defmodule Isthmus.Networks.MeshCore.Devices do
       kind: kind,
       ports: ports,
       identity: identity,
+      ble?: false,
+      ble_address: nil,
       companion?: companion?,
       bridge_cli?: bridge_cli?,
       bridge_packet?: bridge_packet?,
@@ -272,6 +277,50 @@ defmodule Isthmus.Networks.MeshCore.Devices do
           do: Companion.list_channels(companion[:port]),
           else: []
         )
+    }
+  end
+
+  defp ble_devices(companions) do
+    companions
+    |> List.wrap()
+    |> Enum.filter(fn h ->
+      is_binary(h[:port]) and String.starts_with?(h[:port], "ble:")
+    end)
+    |> Enum.map(&build_ble_device/1)
+  end
+
+  defp build_ble_device(health) do
+    address = health[:ble_address] || Companion.ble_address(health[:port])
+    name = blank(health[:self_name]) || blank(health[:name])
+    online? = health[:status] == :online
+
+    %{
+      id: health[:port],
+      label: name || "MeshCore Bluetooth",
+      serial_number: nil,
+      vendor_id: nil,
+      product_id: nil,
+      manufacturer: "Bluetooth",
+      description: address,
+      kind: :companion,
+      ports: [%{path: health[:port], role: :companion}],
+      identity:
+        if(health[:self_ref],
+          do: %{name: name, public_key: blank(health[:self_ref])},
+          else: nil
+        ),
+      ble?: true,
+      ble_address: address,
+      companion?: true,
+      bridge_cli?: false,
+      bridge_packet?: false,
+      active_companion?: online?,
+      active_bridge_cli?: false,
+      active_bridge_link?: false,
+      companion_health: health,
+      bridge_cli_health: nil,
+      bridge_link_health: nil,
+      channels: Companion.list_channels(health[:port])
     }
   end
 

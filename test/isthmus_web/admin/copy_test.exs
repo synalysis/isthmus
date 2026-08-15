@@ -11,7 +11,19 @@ defmodule IsthmusWeb.Admin.CopyTest do
   test "device_purpose for unknown radios" do
     assert {"Radio not identified", _} = Copy.device_purpose(%{kind: :unknown})
     assert {"Companion radio", _} = Copy.device_purpose(%{kind: :companion})
+    assert {"Companion radio", blurb} = Copy.device_purpose(%{kind: :companion, ble?: true})
+    assert blurb =~ "Bluetooth"
     assert {"Island tunnel radio", _} = Copy.device_purpose(%{kind: :bridge_repeater})
+  end
+
+  test "device_status surfaces companion error" do
+    assert {:error, "Error"} =
+             Copy.device_status(%{
+               kind: :companion,
+               ble?: true,
+               active_companion?: false,
+               companion_health: %{status: :error, last_error: "InProgress"}
+             })
   end
 
   test "bootloader USB is called out separately" do

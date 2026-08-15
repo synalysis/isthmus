@@ -100,4 +100,26 @@ defmodule Isthmus.Networks.MeshCore.CompanionTest do
              row.body == "live now" and row.sender_name == "Ridge"
            end)
   end
+
+  test "ble_frame notify is applied like a USB companion frame" do
+    Phoenix.PubSub.subscribe(Isthmus.PubSub, "announce:sightings")
+
+    pubkey = :binary.copy(<<0xCD>>, 32)
+    hex = Base.encode16(pubkey, case: :lower)
+    path = <<0x01, 0x02>> <> :binary.copy(<<0>>, 62)
+    name = String.pad_trailing("RidgeBLE", 32, <<0>>)
+
+    frame =
+      <<0x03, pubkey::binary, 1, 0, 2::signed-8, path::binary, name::binary, 0::little-32,
+        0::signed-little-32, 0::signed-little-32, 0::little-32>>
+
+    pid = Process.whereis(Companion)
+    send(pid, {:ble_frame, frame})
+    _ = :sys.get_state(pid)
+
+    assert_receive {:sighting, %{network: "meshcore"}}, 1_000
+
+    assert %{hops: 2, meta: %{"name" => "RidgeBLE", "source" => "contact"}} =
+             Sightings.best_for("meshcore", hex)
+  end
 end

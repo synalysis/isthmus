@@ -2,13 +2,12 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   @moduledoc """
   MeshCore companion client.
 
-  The named process owns the primary port (`ISTHMUS_MESHCORE_PORT` or the first
-  detected companion). Extra USB companions are started via `MeshCore.Supervisor`
-  and addressed by port.
+  The named process owns the primary USB port (`ISTHMUS_MESHCORE_PORT` or the
+  first detected companion). Extra USB and BLE companions are started via
+  `MeshCore.Supervisor` and addressed by port (`/dev/…` or `ble:<address>`).
 
-  Transport selection via `ISTHMUS_MESHCORE_TRANSPORT` (`usb` default, `ble` stub):
-  - USB: auto-detected by `Discover`, or pin with `ISTHMUS_MESHCORE_PORT`
-  - BLE: `ISTHMUS_MESHCORE_BLE_ADDRESS=<mac>` (not implemented yet — see `BLETransport`)
+  Pin a BLE radio with `ISTHMUS_MESHCORE_BLE_ADDRESS` and optional
+  `ISTHMUS_MESHCORE_BLE_PIN` (default `123456`).
 
   Maintains a contact table (pubkey → out_path) for path-aware raw sends.
   """
@@ -36,7 +35,21 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   @spec start_link(keyword()) :: GenServer.on_start()
   def start_link(opts \\ []) do
-    GenServer.start_link(__MODULE__, opts, name: __MODULE__)
+    name = Keyword.get(opts, :name, __MODULE__)
+    GenServer.start_link(__MODULE__, opts, name: name)
+  end
+
+  @doc "Registry / ETS key for a BLE companion (`ble:<address>`)."
+  def ble_key(address) when is_binary(address) do
+    addr = String.trim(address)
+    if String.starts_with?(addr, "ble:"), do: addr, else: "ble:" <> addr
+  end
+
+  def ble_address(key) when is_binary(key) do
+    cond do
+      String.starts_with?(key, "ble:") -> String.trim_leading(key, "ble:")
+      true -> key
+    end
   end
 
   @spec via(String.t()) :: {:via, module(), {module(), String.t()}}
@@ -234,22 +247,35 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     Status.ensure_ets(@status_table)
 
     fixed_port? = Keyword.get(opts, :fixed_port, false)
+    opt_port = Keyword.get(opts, :port)
 
     transport_kind =
       cond do
-        fixed_port? ->
-          :usb
-
-        true ->
-          case System.get_env("ISTHMUS_MESHCORE_TRANSPORT", "usb") |> String.downcase() do
-            "ble" -> :ble
-            _ -> :usb
-          end
+        Keyword.get(opts, :transport) in [:ble, "ble"] -> :ble
+        is_binary(opt_port) and String.starts_with?(opt_port, "ble:") -> :ble
+        true -> :usb
       end
 
+    ble_address =
+      Keyword.get(opts, :ble_address) ||
+        if(transport_kind == :ble and is_binary(opt_port), do: ble_address(opt_port)) ||
+        nil
+
+    ble_pin =
+      Keyword.get(opts, :ble_pin) || System.get_env("ISTHMUS_MESHCORE_BLE_PIN") || "123456"
+
     port =
-      Keyword.get(opts, :port) ||
-        if(transport_kind == :usb, do: Discover.resolve_port(:companion), else: nil)
+      opt_port ||
+        cond do
+          transport_kind == :ble and is_binary(ble_address) and ble_address != "" ->
+            ble_key(ble_address)
+
+          transport_kind == :usb ->
+            Discover.resolve_port(:companion)
+
+          true ->
+            nil
+        end
 
     key = if is_binary(port) and port != "", do: port, else: :none
     :ets.insert(@channels_table, {{:all, key}, []})
@@ -260,7 +286,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       transport: nil,
       port: port,
       fixed_port: fixed_port?,
-      ble_address: System.get_env("ISTHMUS_MESHCORE_BLE_ADDRESS"),
+      ble_address: ble_address,
+      ble_pin: ble_pin,
       buffer: <<>>,
       status: :disconnected,
       last_error: nil,
@@ -276,7 +303,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       channel_sync_awaiting: nil,
       channel_sync_timer: nil,
       pending_channel_msgs: [],
-      msg_poll_timer: nil
+      msg_poll_timer: nil,
+      reconnect_gen: 0
     }
 
     state = maybe_connect(state)
@@ -336,13 +364,13 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def handle_call(
         {:set_channel, idx, name, secret},
         _from,
-        %{status: :online, transport: t, transport_mod: mod} = state
+        %{status: :online, transport: t} = state
       )
       when not is_nil(t) do
     secret_bin = Channels.channel_secret_bin(secret)
     frame = Protocol.set_channel_frame(idx, name, secret_bin)
 
-    case mod.write(t, Protocol.encode_usb_frame(frame)) do
+    case write_frame(state, frame) do
       :ok ->
         channel = %{
           index: idx,
@@ -366,7 +394,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def handle_call(
         {:set_radio_params, params},
         _from,
-        %{status: :online, transport: t, transport_mod: mod} = state
+        %{status: :online, transport: t} = state
       )
       when not is_nil(t) do
     frame =
@@ -377,9 +405,9 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         params.cr
       )
 
-    case mod.write(t, Protocol.encode_usb_frame(frame)) do
+    case write_frame(state, frame) do
       :ok ->
-        _ = mod.write(t, Protocol.encode_usb_frame(Protocol.app_start_frame()))
+        _ = write_frame(state, Protocol.app_start_frame())
         {:reply, :ok, state}
 
       {:error, reason} ->
@@ -394,14 +422,14 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def handle_call(
         {:set_tx_power, tx},
         _from,
-        %{status: :online, transport: t, transport_mod: mod} = state
+        %{status: :online, transport: t} = state
       )
       when not is_nil(t) do
     frame = Protocol.set_tx_power_frame(tx)
 
-    case mod.write(t, Protocol.encode_usb_frame(frame)) do
+    case write_frame(state, frame) do
       :ok ->
-        _ = mod.write(t, Protocol.encode_usb_frame(Protocol.app_start_frame()))
+        _ = write_frame(state, Protocol.app_start_frame())
         {:reply, :ok, state}
 
       {:error, reason} ->
@@ -416,11 +444,11 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def handle_call(
         {:send_channel_text, idx, text},
         _from,
-        %{status: :online, transport: t, transport_mod: mod} = state
+        %{status: :online, transport: t} = state
       )
       when not is_nil(t) do
     frame = Protocol.send_channel_txt_frame(idx, text)
-    reply_write(mod, t, frame, state)
+    reply_write(state, frame)
   end
 
   def handle_call({:send_channel_text, _, _}, _from, state) do
@@ -439,12 +467,12 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def handle_call(
         {:send_raw, payload, opts},
         _from,
-        %{status: :online, transport: t, transport_mod: mod, contacts: contacts} = state
+        %{status: :online, transport: t, contacts: contacts} = state
       )
       when not is_nil(t) do
     {path_len, path} = resolve_path(opts, contacts)
     frame = Protocol.send_raw_frame(path_len, path, payload)
-    reply_write(mod, t, frame, state)
+    reply_write(state, frame)
   end
 
   def handle_call({:send_raw, _payload, _opts}, _from, state) do
@@ -454,13 +482,13 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def handle_call(
         {:send_text, pubkey_hex, text},
         _from,
-        %{status: :online, transport: t, transport_mod: mod} = state
+        %{status: :online, transport: t} = state
       )
       when not is_nil(t) do
     case Base.decode16(pubkey_hex, case: :mixed) do
       {:ok, pk} when byte_size(pk) == 32 ->
         frame = Protocol.send_txt_msg_frame(pk, text)
-        reply_write(mod, t, frame, state)
+        reply_write(state, frame)
 
       _ ->
         {:reply, {:error, :invalid_pubkey}, state}
@@ -474,12 +502,12 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   def handle_call(
         {:send_self_advert, opts},
         _from,
-        %{status: :online, transport: t, transport_mod: mod} = state
+        %{status: :online, transport: t} = state
       )
       when not is_nil(t) do
     flood? = truthy_opt?(opts, :flood)
     frame = Protocol.send_self_advert_frame(flood?)
-    reply_write(mod, t, frame, state)
+    reply_write(state, frame)
   end
 
   def handle_call({:send_self_advert, _}, _from, state) do
@@ -488,14 +516,17 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   @impl true
   def handle_cast(:reconnect, state) do
-    if stay_connected?(state) do
-      {:noreply, state}
-    else
-      {:noreply, reconnect_state(state)}
+    cond do
+      stay_connected?(state) and state[:transport_kind] != :ble ->
+        {:noreply, state}
+
+      true ->
+        {:noreply,
+         reconnect_state(%{state | fail_count: 0, reconnect_gen: reconnect_gen(state) + 1})}
     end
   end
 
-  def handle_cast(:sync_contacts, %{status: :online, transport: t, transport_mod: mod} = state)
+  def handle_cast(:sync_contacts, %{status: :online, transport: t} = state)
       when not is_nil(t) do
     frame =
       if state.contacts_lastmod > 0 do
@@ -504,7 +535,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         Protocol.get_contacts_frame()
       end
 
-    _ = mod.write(t, Protocol.encode_usb_frame(frame))
+    _ = write_frame(state, frame)
     {:noreply, state}
   end
 
@@ -529,16 +560,66 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     {:noreply, state}
   end
 
+  def handle_info({:ble_frame, frame}, state) when is_binary(frame) do
+    {:noreply, Frames.apply(frame, state)}
+  end
+
+  def handle_info({:ble_disconnected, address}, state) do
+    current = state[:ble_address]
+
+    cond do
+      stay_connected?(state) and is_binary(current) and address != current ->
+        {:noreply, state}
+
+      is_nil(state.transport) ->
+        {:noreply, state}
+
+      true ->
+        if state.transport, do: state.transport_mod.close(state.transport)
+        state = schedule_reconnect(state, 2_000)
+
+        {:noreply,
+         Status.publish(%{
+           state
+           | transport: nil,
+             status: :disconnected,
+             last_error: "ble disconnected"
+         })}
+    end
+  end
+
+  def handle_info({:reconnect, gen}, state) do
+    cond do
+      gen != reconnect_gen(state) ->
+        {:noreply, state}
+
+      stay_connected?(state) ->
+        {:noreply, state}
+
+      true ->
+        if state.transport, do: state.transport_mod.close(state.transport)
+        state = maybe_connect(%{state | transport: nil, status: :disconnected})
+        Status.publish(state)
+        {:noreply, state}
+    end
+  end
+
   def handle_info(:reconnect, state) do
-    if state.transport, do: state.transport_mod.close(state.transport)
-    state = maybe_connect(%{state | transport: nil, status: :disconnected})
-    Status.publish(state)
+    handle_info({:reconnect, reconnect_gen(state)}, state)
+  end
+
+  def handle_info(:ble_handshake, %{status: :online, transport: t} = state)
+      when not is_nil(t) do
+    _ = write_frame(state, Protocol.device_query_frame())
+    _ = write_frame(state, Protocol.app_start_frame())
     {:noreply, state}
   end
 
-  def handle_info(:poll_messages, %{status: :online, transport: t, transport_mod: mod} = state)
+  def handle_info(:ble_handshake, state), do: {:noreply, state}
+
+  def handle_info(:poll_messages, %{status: :online, transport: t} = state)
       when not is_nil(t) do
-    _ = mod.write(t, Protocol.encode_usb_frame(Protocol.sync_next_message_frame()))
+    _ = write_frame(state, Protocol.sync_next_message_frame())
     {:noreply, %{state | msg_poll_timer: nil}}
   end
 
@@ -630,12 +711,19 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     end
   end
 
-  defp reply_write(mod, transport, frame, state) do
-    case mod.write(transport, Protocol.encode_usb_frame(frame)) do
+  defp reply_write(state, frame) do
+    case write_frame(state, frame) do
       :ok -> {:reply, :ok, state}
       {:error, reason} -> {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
     end
   end
+
+  defp write_frame(%{transport: t, transport_mod: mod, transport_kind: kind}, frame)
+       when not is_nil(t) do
+    mod.write(t, Protocol.encode_outbound(kind, frame))
+  end
+
+  defp write_frame(_, _), do: {:error, :not_connected}
 
   defp stay_connected?(state) when is_map(state) do
     online? = state[:status] == :online and not is_nil(state[:transport])
@@ -714,22 +802,22 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     opts =
       case state.transport_kind do
         :usb -> %{port: state.port}
-        :ble -> %{address: state.ble_address}
+        :ble -> %{address: state.ble_address, pin: state[:ble_pin], owner: self()}
       end
 
     case state.transport_mod.connect(opts) do
       {:ok, transport} ->
-        _ =
-          state.transport_mod.write(
-            transport,
-            Protocol.encode_usb_frame(Protocol.device_query_frame())
-          )
+        state = %{state | transport: transport, reconnect_gen: reconnect_gen(state) + 1}
 
-        _ =
-          state.transport_mod.write(
-            transport,
-            Protocol.encode_usb_frame(Protocol.app_start_frame())
-          )
+        state =
+          if state.transport_kind == :ble do
+            Process.send_after(self(), :ble_handshake, 400)
+            state
+          else
+            _ = write_frame(state, Protocol.device_query_frame())
+            _ = write_frame(state, Protocol.app_start_frame())
+            state
+          end
 
         Logger.info("MeshCore companion online via #{state.transport_kind}")
         Process.send_after(self(), :sync_contacts_boot, 1_000)
@@ -745,7 +833,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       {:error, reason} ->
         delay = reconnect_delay(reason, state)
         log_connect_failure(reason, delay)
-        Process.send_after(self(), :reconnect, delay)
+        state = schedule_reconnect(state, delay)
 
         Status.publish(%{
           state
@@ -756,17 +844,44 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     end
   end
 
-  defp reconnect_delay(reason, state) do
-    base =
-      case reason do
-        :eacces -> 30_000
-        {:ble_not_implemented, _} -> 60_000
-        :missing_ble_address -> 60_000
-        _ -> 5_000
-      end
+  defp schedule_reconnect(state, delay) do
+    gen = reconnect_gen(state) + 1
+    Process.send_after(self(), {:reconnect, gen}, delay)
+    %{state | reconnect_gen: gen}
+  end
 
-    fails = state[:fail_count] || 0
-    min(120_000, base * max(1, fails + 1))
+  defp reconnect_gen(state), do: state[:reconnect_gen] || 0
+
+  defp reconnect_delay(reason, state) do
+    cond do
+      ble_transient_error?(reason) ->
+        2_000
+
+      true ->
+        base =
+          case reason do
+            :eacces -> 30_000
+            :bleak_missing -> 60_000
+            "bleak_missing" -> 60_000
+            :missing_ble_address -> 60_000
+            _ -> 5_000
+          end
+
+        fails = state[:fail_count] || 0
+        min(120_000, base * max(1, fails + 1))
+    end
+  end
+
+  defp ble_transient_error?(reason) do
+    text = reason |> to_string() |> String.downcase()
+
+    String.contains?(text, "inprogress") or
+      String.contains?(text, "already in progress") or
+      String.contains?(text, "failed to discover services") or
+      String.contains?(text, "device disconnected") or
+      String.contains?(text, "timeout") or
+      String.contains?(text, "powered_off") or
+      String.contains?(text, "no powered bluetooth")
   end
 
   defp log_connect_failure(:eacces, delay) do

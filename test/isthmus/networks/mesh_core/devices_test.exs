@@ -239,4 +239,30 @@ defmodule Isthmus.Networks.MeshCore.DevicesTest do
 
     assert devices == []
   end
+
+  test "inventory includes BLE companions from health" do
+    devices =
+      Devices.inventory(
+        ports: [],
+        roles: %{},
+        companions: [
+          %{
+            status: :online,
+            port: "ble:AA:BB:CC:DD:EE:FF",
+            ble_address: "AA:BB:CC:DD:EE:FF",
+            self_name: "MeshCore-T1000",
+            self_ref: "aabb"
+          }
+        ],
+        bridge_cli: %{},
+        bridge_link: %{}
+      )
+
+    assert [device] = devices
+    assert device.ble?
+    assert device.kind == :companion
+    assert device.id == "ble:AA:BB:CC:DD:EE:FF"
+    assert device.label == "MeshCore-T1000"
+    assert device.active_companion?
+  end
 end

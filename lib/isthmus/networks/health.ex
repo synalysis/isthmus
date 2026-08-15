@@ -254,9 +254,26 @@ defmodule Isthmus.Networks.Health do
         {"Serial port busy (#{port})",
          "Close other apps using the port (serial monitors, another Isthmus/MeshCore process), then retry."}
 
-      String.contains?(err, "ble_not_implemented") ->
-        {"BLE transport is not implemented yet",
-         "Use ISTHMUS_MESHCORE_TRANSPORT=usb with a USB companion, or wait for BLE support."}
+      String.contains?(err, "bleak_missing") or String.contains?(err, "ble_unavailable") ->
+        {"MeshCore Bluetooth sidecar is unavailable",
+         "Install bleak (`pip install -r sidecar/requirements.txt`) and grant Bluetooth to Python."}
+
+      String.contains?(err, "inprogress") or String.contains?(err, "already in progress") ->
+        {"Bluetooth adapter is busy",
+         "Stop other Bluetooth scans (KDE / bluetoothctl), then Reconnect. Isthmus retries shortly."}
+
+      String.contains?(err, "timeout") ->
+        {"Bluetooth companion timed out",
+         "The radio is advertising but GATT took too long. Keep it awake (not in a phone session), then Reconnect."}
+
+      String.contains?(err, "powered_off") or String.contains?(err, "no powered bluetooth") ->
+        {"Bluetooth adapter is off",
+         "Turn Bluetooth on in KDE (or `bluetoothctl power on`), then Reconnect."}
+
+      String.contains?(err, "failed to discover services") or
+          String.contains?(err, "device disconnected") ->
+        {"Bluetooth companion dropped during pairing",
+         "Disconnect the radio from a phone if it is still linked, then Reconnect. Default PIN is 123456."}
 
       is_binary(last_error) and last_error != "" and health[:status] not in [:online, "online"] ->
         {"Companion error: #{last_error}",

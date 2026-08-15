@@ -27,6 +27,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
     assert has_element?(view, "#island-mesh")
     assert has_element?(view, "#mesh-contacts")
     assert has_element?(view, "#rescan-devices-btn")
+    assert has_element?(view, "#scan-bluetooth-btn")
     refute has_element?(view, "#groups-channels")
     refute has_element?(view, "#companion-setup-card")
     refute has_element?(view, "#channel-bridge-detail")
@@ -48,5 +49,18 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
 
     view |> element("#rescan-devices-btn") |> render_click()
     assert render(view) =~ "Rescanned"
+  end
+
+  test "Bluetooth scan results offer a connect form", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshcore")
+
+    send(
+      view.pid,
+      {:ble_scan_done, {:ok, [%{address: "AA:BB:CC:DD:EE:FF", name: "MeshCore-1", rssi: -42}]}}
+    )
+
+    assert has_element?(view, "#ble-scan-results")
+    assert has_element?(view, "#ble-connect-AA-BB-CC-DD-EE-FF")
+    assert has_element?(view, "#ble-pin-AA-BB-CC-DD-EE-FF")
   end
 end

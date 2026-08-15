@@ -43,8 +43,13 @@ defmodule IsthmusWeb.Admin.Copy do
       bootloader_usb?(device) ->
         {"USB bootloader", "Not running companion firmware Isthmus can use"}
 
-      device[:kind] == :companion ->
-        {"Companion radio", "Channels, DMs, and contact sync"}
+      device[:ble?] == true or device[:kind] == :companion ->
+        blurb =
+          if device[:ble?] == true,
+            do: "Bluetooth companion — channels, DMs, and contact sync",
+            else: "Channels, DMs, and contact sync"
+
+        {"Companion radio", blurb}
 
       device[:kind] == :meshtastic ->
         {"Companion radio", "Private channels and LoRa configuration"}
@@ -85,6 +90,9 @@ defmodule IsthmusWeb.Admin.Copy do
 
       device[:kind] == :unknown ->
         {:unknown, "Not identified"}
+
+      is_map(device[:companion_health]) and device[:companion_health][:status] == :error ->
+        {:error, "Error"}
 
       true ->
         {:disabled, "Offline"}

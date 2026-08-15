@@ -49,6 +49,10 @@ defmodule Isthmus.Networks.MeshCore.Protocol do
     <<"<", byte_size(frame)::little-16, frame::binary>>
   end
 
+  @doc "USB wraps frames; BLE sends one raw companion frame per GATT write."
+  def encode_outbound(:ble, frame) when is_binary(frame), do: frame
+  def encode_outbound(_usb, frame) when is_binary(frame), do: encode_usb_frame(frame)
+
   def decode_usb_stream(buffer) when is_binary(buffer) do
     do_decode(buffer, [])
   end

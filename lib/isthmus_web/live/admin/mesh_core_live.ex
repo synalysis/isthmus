@@ -3,12 +3,14 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
   alias IsthmusWeb.Admin.MeshCoreHTML
 
+  alias Isthmus.Networks.MeshCore.BLESidecar
   alias Isthmus.Networks.MeshCore.BridgeCLI
   alias Isthmus.Networks.MeshCore.BridgeLink
   alias Isthmus.Networks.MeshCore.Companion
   alias Isthmus.Networks.MeshCore.Devices
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.MeshCore.RadioParams
+  alias Isthmus.Networks.MeshCore.Supervisor, as: MeshCoreSupervisor
   alias Isthmus.Networks.MeshCore.SyntheticNode
   alias Isthmus.Registrations
   alias IsthmusWeb.Admin.RadioChannels
@@ -30,6 +32,9 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
      |> assign(:radio_modal, nil)
      |> assign(:synthetic_health, %{status: :unknown, identities: []})
      |> assign(:radio_form, to_form(RadioParams.empty_form_params(), as: :radio))
+     |> assign(:ble_scan, [])
+     |> assign(:ble_scanning, false)
+     |> assign(:ble_pin, "123456")
      |> refresh()}
   end
 
@@ -114,6 +119,49 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
   def handle_event("hide_channel_invite", _params, socket) do
     {:noreply, assign(socket, :channel_invite, nil)}
+  end
+
+  def handle_event("scan_bluetooth", _params, socket) do
+    lv = self()
+
+    Task.start(fn ->
+      send(lv, {:ble_scan_done, BLESidecar.scan(5_000)})
+    end)
+
+    {:noreply, assign(socket, :ble_scanning, true)}
+  end
+
+  def handle_event("connect_ble", params, socket) do
+    address = String.trim(to_string(params["address"] || ""))
+    pin = String.trim(to_string(params["pin"] || socket.assigns.ble_pin || "123456"))
+
+    cond do
+      address == "" ->
+        {:noreply, put_flash(socket, :error, "Pick a Bluetooth radio from the scan list.")}
+
+      true ->
+        case MeshCoreSupervisor.start_ble(address, pin) do
+          :ok ->
+            {:noreply,
+             socket
+             |> assign(:ble_pin, pin)
+             |> put_flash(:info, "Connecting MeshCore Bluetooth companion…")
+             |> refresh()}
+
+          {:error, reason} ->
+            {:noreply,
+             put_flash(socket, :error, "Bluetooth connect failed: #{format_err(reason)}")}
+        end
+    end
+  end
+
+  def handle_event("disconnect_ble", %{"address" => address}, socket) do
+    _ = MeshCoreSupervisor.stop_ble(address)
+
+    {:noreply,
+     socket
+     |> put_flash(:info, "Disconnected Bluetooth companion.")
+     |> refresh()}
   end
 
   def handle_event("rescan_devices", _params, socket) do
@@ -249,6 +297,17 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
   def handle_info({:meshcore_status, _kind, _health}, socket) do
     {:noreply, refresh(socket)}
+  end
+
+  def handle_info({:ble_scan_done, {:ok, devices}}, socket) do
+    {:noreply, socket |> assign(:ble_scanning, false) |> assign(:ble_scan, devices)}
+  end
+
+  def handle_info({:ble_scan_done, {:error, reason}}, socket) do
+    {:noreply,
+     socket
+     |> assign(:ble_scanning, false)
+     |> put_flash(:error, "Bluetooth scan failed: #{format_err(reason)}")}
   end
 
   def handle_info(_msg, socket), do: {:noreply, socket}

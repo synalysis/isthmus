@@ -37,7 +37,12 @@ defmodule Isthmus.Networks.MeshCore.Companion.Channels do
       when not is_nil(t) do
     case state.channel_sync_queue do
       [idx | rest] ->
-        _ = mod.write(t, Protocol.encode_usb_frame(Protocol.get_channel_frame(idx)))
+        _ =
+          mod.write(
+            t,
+            Protocol.encode_outbound(state.transport_kind, Protocol.get_channel_frame(idx))
+          )
+
         Process.send_after(self(), {:channel_sync_step_timeout, idx}, @channel_step_ms)
         %{state | channel_sync_queue: rest, channel_sync_awaiting: idx}
 

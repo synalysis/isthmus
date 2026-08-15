@@ -95,6 +95,15 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
 
   defp port_status(_, _), do: nil
 
+  defp ble_error(%{ble?: true, companion_health: health}) when is_map(health) do
+    case health[:last_error] do
+      err when is_binary(err) and err != "" -> String.trim(err, "\"")
+      _ -> nil
+    end
+  end
+
+  defp ble_error(_), do: nil
+
   defp tunnel_radio(devices) do
     Enum.find(devices, &(&1.bridge_packet? or &1.kind == :bridge_repeater))
   end
@@ -239,9 +248,69 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
               >
                 Rescan USB
               </button>
+              <button
+                class={["btn btn-outline btn-sm", @ble_scanning && "loading"]}
+                phx-click="scan_bluetooth"
+                id="scan-bluetooth-btn"
+                type="button"
+                disabled={@ble_scanning}
+              >
+                {if(@ble_scanning, do: "Scanning…", else: "Scan Bluetooth")}
+              </button>
               <.link navigate={~p"/admin/registrations"} class="link link-hover text-sm">
                 Manage groups →
               </.link>
+            </div>
+          </div>
+
+          <div
+            :if={@ble_scan != [] or @ble_scanning}
+            class="rounded-lg border border-base-300 bg-base-200/50 p-4"
+            id="ble-scan-results"
+          >
+            <h3 class="text-sm font-medium">Nearby MeshCore Bluetooth</h3>
+            <p class="text-xs opacity-70 mt-1">
+              Companion Bluetooth radios (T1000-E default PIN 123456). USB radios stay connected.
+            </p>
+            <p :if={@ble_scanning} class="text-sm opacity-70 mt-2">Scanning…</p>
+            <div :if={@ble_scan != []} class="mt-3 overflow-x-auto">
+              <table class="table table-sm">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Address</th>
+                    <th>RSSI</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    :for={dev <- @ble_scan}
+                    id={"ble-scan-#{port_dom_key(dev.address)}"}
+                  >
+                    <td class="text-sm">{dev.name || "MeshCore"}</td>
+                    <td class="font-mono text-xs">{dev.address}</td>
+                    <td class="text-xs opacity-70">{dev.rssi || "—"}</td>
+                    <td>
+                      <form
+                        id={"ble-connect-#{port_dom_key(dev.address)}"}
+                        phx-submit="connect_ble"
+                        class="flex flex-wrap items-center justify-end gap-2"
+                      >
+                        <input type="hidden" name="address" value={dev.address} />
+                        <.input
+                          id={"ble-pin-#{port_dom_key(dev.address)}"}
+                          name="pin"
+                          type="text"
+                          value={@ble_pin}
+                          class="input input-sm w-24"
+                        />
+                        <button class="btn btn-primary btn-xs" type="submit">Connect</button>
+                      </form>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
 
@@ -273,11 +342,19 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                   <div class="flex flex-wrap items-center gap-2">
                     <h3 class="card-title text-lg">{device.label}</h3>
                     <span class="badge badge-sm badge-outline">{purpose_title}</span>
+                    <span :if={device.ble?} class="badge badge-sm badge-info">Bluetooth</span>
                     <span class={["badge badge-sm", AdminCopy.status_badge_class(status_atom)]}>
                       {status_text}
                     </span>
                   </div>
                   <p class="text-sm opacity-80">{purpose_blurb}</p>
+                  <p
+                    :if={ble_error(device)}
+                    class="text-sm text-error"
+                    id={"#{device_dom_id(device.id)}-ble-error"}
+                  >
+                    {ble_error(device)}
+                  </p>
                   <%= if device.identity && device.identity.name do %>
                     <p class="text-sm">
                       On-air name <span class="font-medium">{device.identity.name}</span>
@@ -294,9 +371,10 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                         class="text-sm text-warning"
                         id={"#{device_dom_id(device.id)}-identify-hint"}
                       >
-                        USB is the DFU bootloader (T1000-E-BOOT), not a companion port. Flash
-                        MeshCore <strong class="font-medium">USB Serial Companion</strong>
-                        — not Companion Bluetooth, which only talks to the phone app.
+                        USB is the DFU bootloader (T1000-E-BOOT), not a companion port. If this
+                        radio runs Companion Bluetooth, use
+                        <strong class="font-medium">Scan Bluetooth</strong>
+                        — or flash USB Serial Companion.
                       </p>
                     <% device.kind == :unknown -> %>
                       <p
@@ -309,6 +387,16 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                   <% end %>
                 </div>
                 <div class="flex flex-wrap items-center gap-2">
+                  <button
+                    :if={device.ble?}
+                    class="btn btn-outline btn-sm"
+                    id={"disconnect-ble-#{device_dom_id(device.id)}"}
+                    phx-click="disconnect_ble"
+                    phx-value-address={device.ble_address}
+                    type="button"
+                  >
+                    Disconnect
+                  </button>
                   <button
                     :if={device.companion?}
                     class="btn btn-outline btn-sm"

@@ -3,6 +3,34 @@ defmodule Isthmus.Networks.HealthTest do
 
   alias Isthmus.Networks.Health
 
+  test "diagnoses MeshCore BLE timeout" do
+    report =
+      Health.normalize(:meshcore, %{
+        status: :error,
+        port: "ble:F0:FC:59:52:BD:27",
+        transport: :ble,
+        last_error: ":timeout"
+      })
+
+    assert report.severity == :error
+    assert report.issue =~ "timed out"
+    assert report.fix =~ "Reconnect"
+  end
+
+  test "diagnoses MeshCore BLE InProgress" do
+    report =
+      Health.normalize(:meshcore, %{
+        status: :error,
+        port: "ble:F0:FC:59:52:BD:27",
+        transport: :ble,
+        last_error: "[org.bluez.Error.InProgress] Operation already in progress"
+      })
+
+    assert report.severity == :error
+    assert report.issue =~ "busy"
+    assert report.fix =~ "Reconnect"
+  end
+
   test "diagnoses MeshCore eacces with dialout fix" do
     report =
       Health.normalize(:meshcore, %{

@@ -3,6 +3,12 @@ defmodule Isthmus.Networks.MeshCore.ProtocolTest do
 
   alias Isthmus.Networks.MeshCore.Protocol
 
+  test "encode_outbound wraps USB and leaves BLE raw" do
+    frame = Protocol.device_query_frame()
+    assert Protocol.encode_outbound(:usb, frame) == Protocol.encode_usb_frame(frame)
+    assert Protocol.encode_outbound(:ble, frame) == frame
+  end
+
   test "device_query_frame includes app protocol version" do
     assert Protocol.device_query_frame() == <<0x16, 3>>
     assert Protocol.device_query_frame(10) == <<0x16, 10>>

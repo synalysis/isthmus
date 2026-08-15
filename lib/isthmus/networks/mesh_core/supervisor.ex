@@ -1,10 +1,10 @@
 defmodule Isthmus.Networks.MeshCore.Supervisor do
   @moduledoc """
-  Extra MeshCore companion processes (one per USB port besides the primary).
+  Extra MeshCore companion processes (USB ports besides the primary, plus BLE).
 
-  The named `Isthmus.Networks.MeshCore.Companion` still owns the primary port
-  (`ISTHMUS_MESHCORE_PORT` or the first detected companion). Additional
-  detected companions are started here via the MeshCore registry.
+  The named `Isthmus.Networks.MeshCore.Companion` still owns the primary USB
+  port. Additional USB companions and BLE companions are started here via the
+  MeshCore registry.
   """
   use DynamicSupervisor
 
@@ -27,7 +27,7 @@ defmodule Isthmus.Networks.MeshCore.Supervisor do
     DynamicSupervisor.init(strategy: :one_for_one)
   end
 
-  @doc "Start/stop extra companions so they match Discover's companion ports."
+  @doc "Start/stop extra USB companions so they match Discover. BLE extras stay."
   def sync do
     primary = Discover.resolve_port(:companion)
 
@@ -36,7 +36,7 @@ defmodule Isthmus.Networks.MeshCore.Supervisor do
       |> Enum.reject(&(&1 == primary))
       |> MapSet.new()
 
-    running = running_ports()
+    running = running_usb_ports()
 
     for port <- MapSet.difference(running, wanted) do
       stop_extra(port)
@@ -46,18 +46,65 @@ defmodule Isthmus.Networks.MeshCore.Supervisor do
       start_extra(port)
     end
 
+    maybe_start_env_ble()
     :ok
   catch
     :exit, _ -> :ok
   end
 
-  defp running_ports do
+  @doc "Start a BLE companion extra keyed by bleak address."
+  def start_ble(address, pin \\ nil) when is_binary(address) do
+    key = Companion.ble_key(address)
+    pin = pin || System.get_env("ISTHMUS_MESHCORE_BLE_PIN") || "123456"
+
+    spec = %{
+      id: {:meshcore_extra, key},
+      start:
+        {Companion, :start_link,
+         [
+           [
+             name: Companion.via(key),
+             port: key,
+             transport: :ble,
+             ble_address: Companion.ble_address(key),
+             ble_pin: pin,
+             fixed_port: true
+           ]
+         ]},
+      restart: :transient
+    }
+
+    case DynamicSupervisor.start_child(__MODULE__, spec) do
+      {:ok, _} -> :ok
+      {:error, {:already_started, _}} -> Companion.reconnect(key)
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @doc "Stop a BLE companion extra."
+  def stop_ble(address) when is_binary(address) do
+    stop_extra(Companion.ble_key(address))
+  end
+
+  defp maybe_start_env_ble do
+    case System.get_env("ISTHMUS_MESHCORE_BLE_ADDRESS") do
+      addr when is_binary(addr) and addr != "" -> start_ble(addr)
+      _ -> :ok
+    end
+  end
+
+  defp running_usb_ports do
+    running_keys()
+    |> Enum.reject(&String.starts_with?(&1, "ble:"))
+    |> MapSet.new()
+  end
+
+  defp running_keys do
     Registry.select(Isthmus.Networks.MeshCore.Registry, [
       {{:"$1", :_, :_}, [], [:"$1"]}
     ])
-    |> MapSet.new()
   rescue
-    _ -> MapSet.new()
+    _ -> []
   end
 
   defp start_extra(port) when is_binary(port) do

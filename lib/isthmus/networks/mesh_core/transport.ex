@@ -1,6 +1,6 @@
 defmodule Isthmus.Networks.MeshCore.Transport do
   @moduledoc """
-  Behaviour for MeshCore companion transports (USB serial today, BLE later).
+  Behaviour for MeshCore companion transports (USB serial and BLE / NUS).
   """
 
   @type state :: map()

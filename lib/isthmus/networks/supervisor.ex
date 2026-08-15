@@ -16,6 +16,7 @@ defmodule Isthmus.Networks.Supervisor do
       # Discover before any MeshCore link opens a port.
       Isthmus.Networks.MeshCore.Discover,
       {Registry, keys: :unique, name: Isthmus.Networks.MeshCore.Registry},
+      Isthmus.Networks.MeshCore.BLESidecar,
       Isthmus.Networks.MeshCore.Companion,
       Isthmus.Networks.MeshCore.Supervisor,
       Isthmus.Networks.MeshCore.BridgeCLI,
