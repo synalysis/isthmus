@@ -3,6 +3,10 @@ defmodule Isthmus.Application do
 
   use Application
 
+  # Mix is not in the release. Capture env at compile time so Docker/prod boot
+  # can skip test-only paths without calling Mix.env/0.
+  @env Mix.env()
+
   @impl true
   def start(_type, _args) do
     children = [
@@ -31,7 +35,7 @@ defmodule Isthmus.Application do
         _ -> :ok
       end
 
-      if Mix.env() != :test do
+      if @env != :test do
         try do
           Isthmus.Networks.Agent.Settings.hydrate_from_policy()
           Isthmus.Networks.Agent.Bridge.reconnect()
