@@ -16,6 +16,10 @@ defmodule IsthmusWeb.Endpoint do
     websocket: [connect_info: [session: @session_options]],
     longpoll: [connect_info: [session: @session_options]]
 
+  # Runtime FORCE_SSL (see IsthmusWeb.Plugs.ForceSSL). Do not set Endpoint
+  # :force_ssl — Phoenix compiles that in and a release cannot override it.
+  plug IsthmusWeb.Plugs.ForceSSL
+
   # Serve at "/" the static files from "priv/static" directory.
   #
   # When code reloading is disabled (e.g., in production),

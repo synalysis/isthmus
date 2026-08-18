@@ -74,7 +74,7 @@ The Blueprint is the public site only. Self-host the Phoenix gateway with Docker
 | `ISTHMUS_MESHTASTIC_PORT` | Optional pin for the **primary** Meshtastic companion (auto-detected otherwise) |
 | `ISTHMUS_RNS_CONFIGDIR` | Sidecar Reticulum config dir (default `~/.isthmus/reticulum`) |
 | `ISTHMUS_RNS_SOCKET` | Unix socket for `IsthmusInterface` (default `/tmp/isthmus.sock`) |
-| `FORCE_SSL` | `true` (default in prod) behind TLS; `false` for plain local Docker |
+| `FORCE_SSL` | `true` (prod default) redirects HTTP→HTTPS; `false` for LAN/Docker without TLS |
 | `CHECK_ORIGIN` | `false` or comma-separated origins; default allows `https://$PHX_HOST` |
 | `POOL_SIZE` | Ecto pool size (default 5) |
 

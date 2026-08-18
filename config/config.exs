@@ -11,7 +11,11 @@ config :isthmus,
   ecto_repos: [Isthmus.Repo],
   generators: [timestamp_type: :utc_datetime, binary_id: true]
 
+# Runtime Plug.SSL options. Phoenix Endpoint :force_ssl is compile-time only.
+config :isthmus, :force_ssl, false
+
 # Configure the endpoint
+
 config :isthmus, IsthmusWeb.Endpoint,
   url: [host: "localhost"],
   adapter: Bandit.PhoenixAdapter,

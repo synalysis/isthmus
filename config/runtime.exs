@@ -182,9 +182,13 @@ if config_env() == :prod do
 
   config :isthmus, :metrics_token, System.get_env("ISTHMUS_METRICS_TOKEN")
 
-  # :force_ssl is compile-time (config/prod.exs). Do not set it here.
-  # FORCE_SSL=false only adjusts generated URLs for plain-HTTP Docker.
-  force_ssl? = System.get_env("FORCE_SSL", "true") != "false"
+  # Do not set Endpoint :force_ssl here — Phoenix compiles that key in.
+  # IsthmusWeb.Plugs.ForceSSL reads :isthmus, :force_ssl at request time.
+  force_ssl? =
+    case System.get_env("FORCE_SSL", "true") do
+      val when val in ["0", "false", "FALSE", "no", "off"] -> false
+      _ -> true
+    end
 
   url =
     if force_ssl? do
@@ -192,6 +196,21 @@ if config_env() == :prod do
     else
       [host: host, port: port, scheme: "http"]
     end
+
+  force_ssl =
+    if force_ssl? do
+      [
+        rewrite_on: [:x_forwarded_proto],
+        exclude: [
+          paths: ["/healthz", "/readyz", "/metrics"],
+          hosts: ["localhost", "127.0.0.1"]
+        ]
+      ]
+    else
+      false
+    end
+
+  config :isthmus, :force_ssl, force_ssl
 
   config :isthmus, IsthmusWeb.Endpoint,
     url: url,

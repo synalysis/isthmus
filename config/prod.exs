@@ -6,17 +6,7 @@ import Config
 # which you should run after static files are built and
 # before starting your production server.
 config :isthmus, IsthmusWeb.Endpoint,
-  cache_static_manifest: "priv/static/cache_manifest.json",
-  # Must be set at compile time: Phoenix.Endpoint reads :force_ssl via
-  # Application.compile_env/2, so runtime-only overrides abort release boot.
-  # Health paths and localhost stay excluded for Docker / local HTTP.
-  force_ssl: [
-    rewrite_on: [:x_forwarded_proto],
-    exclude: [
-      paths: ["/healthz", "/readyz", "/metrics"],
-      hosts: ["localhost", "127.0.0.1"]
-    ]
-  ]
+  cache_static_manifest: "priv/static/cache_manifest.json"
 
 # Configure Swoosh API Client
 config :swoosh, api_client: Swoosh.ApiClient.Req
