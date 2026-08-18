@@ -1,6 +1,7 @@
 defmodule Isthmus.Networks.Agent.SettingsTest do
   use Isthmus.DataCase, async: false
 
+  alias Isthmus.Networks.Agent.Bridge
   alias Isthmus.Networks.Agent.Settings
   alias Isthmus.Policy
 
@@ -9,6 +10,7 @@ defmodule Isthmus.Networks.Agent.SettingsTest do
 
     on_exit(fn ->
       Application.put_env(:isthmus, Isthmus.Networks.Agent, previous)
+      _ = Bridge.reconnect()
     end)
 
     :ok
@@ -92,5 +94,17 @@ defmodule Isthmus.Networks.Agent.SettingsTest do
   test "apply rejects a blank command when enabled" do
     assert {:error, :blank_command} =
              Settings.apply(%{"enabled" => "true", "preset" => "custom", "command" => "  "})
+  end
+
+  test "a missing ACP binary is a stable error, not a spawn loop" do
+    Application.put_env(:isthmus, Isthmus.Networks.Agent,
+      enabled: true,
+      command: ["isthmus-missing-acp-binary"],
+      cwd: nil
+    )
+
+    assert {:ok, health} = Bridge.reconnect()
+    assert health.status == :error
+    assert health.last_error =~ "not found"
   end
 end

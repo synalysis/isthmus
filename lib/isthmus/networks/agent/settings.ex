@@ -63,7 +63,7 @@ defmodule Isthmus.Networks.Agent.Settings do
     command_string = Enum.join(command, " ")
 
     %{
-      enabled: Keyword.get(opts, :enabled, true) != false and command != [],
+      enabled: Keyword.get(opts, :enabled, false) == true and command != [],
       command: command_string,
       command_argv: command,
       cwd: cwd(opts),

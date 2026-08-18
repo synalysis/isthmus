@@ -64,7 +64,7 @@ config :logger, :default_formatter,
   metadata: [:request_id]
 
 config :isthmus, Isthmus.Networks.Agent,
-  enabled: true,
+  enabled: false,
   command: ["agent", "acp"],
   cwd: nil,
   prompt_timeout_ms: 120_000

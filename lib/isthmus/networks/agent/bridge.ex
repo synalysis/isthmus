@@ -93,14 +93,17 @@ defmodule Isthmus.Networks.Agent.Bridge do
 
   def handle_info({:EXIT, pid, reason}, %{client: pid} = state) when is_pid(pid) do
     Logger.warning("ACP client exited: #{inspect(reason)}")
-    Process.send_after(self(), :reconnect, @reconnect_ms)
+
+    if retryable_failure?(reason) do
+      Process.send_after(self(), :reconnect, @reconnect_ms)
+    end
 
     {:noreply,
      %{
        state
        | client: nil,
          status: :error,
-         last_error: inspect(reason),
+         last_error: format_connect_error(reason, command(agent_opts())),
          sessions: %{},
          chunks: %{},
          busy: false
@@ -164,7 +167,7 @@ defmodule Isthmus.Networks.Agent.Bridge do
     opts = Application.get_env(:isthmus, Isthmus.Networks.Agent, [])
 
     cond do
-      Keyword.get(opts, :enabled, true) == false ->
+      Keyword.get(opts, :enabled, false) == false ->
         %{state | status: :disabled, last_error: "ACP agent disabled"}
 
       command(opts) == [] ->
@@ -174,27 +177,38 @@ defmodule Isthmus.Networks.Agent.Bridge do
             last_error: "no ACP command (set Admin → ACP or ISTHMUS_ACP_COMMAND)"
         }
 
+      missing_program?(command(opts)) ->
+        argv = command(opts)
+        Logger.warning("ACP agent program not found: #{Enum.join(argv, " ")}")
+        %{state | status: :error, last_error: missing_program_message(argv)}
+
       true ->
         start_client(state, opts)
     end
   end
 
   defp start_client(state, opts) do
+    argv = command(opts)
+
     case ExMCP.ACP.start_client(
-           command: command(opts),
+           command: argv,
            handler: Isthmus.Networks.Agent.Handler,
            event_listener: self(),
            capabilities: %{},
            client_info: %{"name" => "isthmus", "version" => "0.1.0"}
          ) do
       {:ok, client} ->
-        Logger.info("ACP agent online via #{inspect(command(opts))}")
+        Logger.info("ACP agent online via #{inspect(argv)}")
         pump(%{state | client: client, status: :online, last_error: nil})
 
       {:error, reason} ->
         Logger.warning("ACP agent connect failed: #{inspect(reason)}")
-        Process.send_after(self(), :reconnect, @reconnect_ms)
-        %{state | status: :error, last_error: inspect(reason)}
+
+        if retryable_failure?(reason) do
+          Process.send_after(self(), :reconnect, @reconnect_ms)
+        end
+
+        %{state | status: :error, last_error: format_connect_error(reason, argv)}
     end
   end
 
@@ -296,6 +310,37 @@ defmodule Isthmus.Networks.Agent.Bridge do
       bin when is_binary(bin) -> String.split(bin)
       _ -> []
     end
+  end
+
+  defp agent_opts, do: Application.get_env(:isthmus, Isthmus.Networks.Agent, [])
+
+  defp missing_program?([bin | _]) when is_binary(bin) do
+    if String.contains?(bin, "/") do
+      not File.regular?(bin)
+    else
+      is_nil(System.find_executable(bin))
+    end
+  end
+
+  defp missing_program?(_), do: true
+
+  defp missing_program_message([bin | _] = argv) when is_binary(bin) do
+    "ACP program not found: #{bin} (#{Enum.join(argv, " ")}). " <>
+      "The Coolify/Docker image does not include Cursor/Hermes/etc. " <>
+      "Disable ACP under Admin → ACP, or mount a CLI and set ISTHMUS_ACP_COMMAND."
+  end
+
+  defp missing_program_message(_), do: "ACP program not found"
+
+  defp missing_binary_reason?(reason) do
+    text = reason |> inspect() |> String.downcase()
+    String.contains?(text, "enoent") or String.contains?(text, "spawn_failed")
+  end
+
+  defp retryable_failure?(reason), do: not missing_binary_reason?(reason)
+
+  defp format_connect_error(reason, argv) do
+    if missing_binary_reason?(reason), do: missing_program_message(argv), else: inspect(reason)
   end
 
   defp reply_text({:ok, result}, buffered) when is_map(result) do

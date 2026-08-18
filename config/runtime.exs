@@ -69,14 +69,22 @@ if config_env() != :test do
   acp_opts =
     case System.get_env("ISTHMUS_ACP_ENABLED") do
       val when val in ["0", "false", "FALSE"] -> Keyword.put(acp_opts, :enabled, false)
+      val when val in ["1", "true", "TRUE"] -> Keyword.put(acp_opts, :enabled, true)
       _ -> acp_opts
     end
 
   acp_opts =
     case System.get_env("ISTHMUS_ACP_COMMAND") do
-      nil -> acp_opts
-      "" -> Keyword.merge(acp_opts, enabled: false, command: [])
-      cmd -> Keyword.put(acp_opts, :command, String.split(cmd))
+      nil ->
+        acp_opts
+
+      "" ->
+        Keyword.merge(acp_opts, enabled: false, command: [])
+
+      cmd ->
+        acp_opts
+        |> Keyword.put(:command, String.split(cmd))
+        |> Keyword.put_new(:enabled, true)
     end
 
   acp_opts =

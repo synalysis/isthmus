@@ -67,6 +67,8 @@ The Blueprint is the public site only. Self-host the Phoenix gateway with Docker
 | `SECRET_KEY_BASE` | Phoenix cookie/session signing (`mix phx.gen.secret`) |
 | `ISTHMUS_VAULT_SECRET` | Encrypts proxy private keys at rest |
 | `ISTHMUS_ADMIN_NPUBS` | Comma-separated admin npubs |
+| `ISTHMUS_ACP_ENABLED` | `true` to spawn an ACP CLI (off by default; not in the Docker image) |
+| `ISTHMUS_ACP_COMMAND` | ACP argv, e.g. `agent acp` — implies enabled unless `ISTHMUS_ACP_ENABLED=false` |
 | `ISTHMUS_MCP_TOKEN` | Bearer token for the `/mcp` operator control plane |
 | `ISTHMUS_MCP_ENABLED` | `false` to disable `/mcp` (404) |
 | `ISTHMUS_MESHTASTIC_PORT` | Optional pin for the **primary** Meshtastic companion (auto-detected otherwise) |

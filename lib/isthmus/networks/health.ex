@@ -383,6 +383,10 @@ defmodule Isthmus.Networks.Health do
       health[:status] in [:disabled, "disabled"] ->
         {nil, "Enable the agent under Admin → ACP, or set ISTHMUS_ACP_COMMAND."}
 
+      String.contains?(err, "not found") or String.contains?(err, "enoent") ->
+        {"ACP program not installed in this environment",
+         "Coolify/Docker has no Cursor `agent` CLI. Disable ACP under Admin → ACP, or set ISTHMUS_ACP_ENABLED=false."}
+
       err != "" ->
         {"ACP agent not connected",
          "Check the command on Admin → ACP (Cursor needs `agent login`). Apply & reconnect."}
