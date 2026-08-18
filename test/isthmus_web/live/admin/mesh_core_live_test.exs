@@ -67,7 +67,9 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
   test "Scan Bluetooth disables while a scan is running", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/admin/meshcore")
 
-    view |> element("#scan-bluetooth-btn") |> render_click()
-    assert has_element?(view, "#scan-bluetooth-btn[disabled]")
+    # Assert the click reply, not a later render: without a radio the scan Task
+    # finishes immediately and has_element?/2 would see the button enabled again.
+    html = view |> element("#scan-bluetooth-btn") |> render_click()
+    assert html =~ ~r/id="scan-bluetooth-btn"[^>]*\bdisabled\b/
   end
 end
