@@ -49,7 +49,12 @@ defmodule IsthmusWeb.LoginLive do
         <div>
           <h1 class="text-3xl font-semibold">Sign in</h1>
           <p class="mt-2 text-base-content/70">
-            Use a NIP-07 Nostr browser extension (Alby, nos2x, …). Admin ops require an allowlisted npub.
+            Use a NIP-07 Nostr browser extension (Alby, nos2x, AKA Profiles, …).
+            Admin ops require an allowlisted npub. Extensions inject
+            <code class="text-sm">window.nostr</code>
+            only on HTTPS or localhost — a LAN
+            <code class="text-sm">http://</code>
+            origin will not see a signer.
           </p>
         </div>
 

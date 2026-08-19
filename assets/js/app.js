@@ -26,7 +26,17 @@ const NostrLogin = {
     }
 
     if (!window.nostr || typeof window.nostr.signEvent !== "function") {
-      setStatus("No NIP-07 extension detected. Install Alby or nos2x.")
+      const host = window.location.hostname
+      const insecureHttp =
+        window.location.protocol === "http:" &&
+        host !== "localhost" &&
+        host !== "127.0.0.1" &&
+        host !== "[::1]"
+      setStatus(
+        insecureHttp
+          ? "No NIP-07 signer on this page. Chrome only lets extensions inject window.nostr on HTTPS or localhost — not on a LAN http:// address. Open https://, or ssh -L 4000:127.0.0.1:4000 and use http://127.0.0.1:4000."
+          : "No NIP-07 extension detected. Install Alby or nos2x and allow this site."
+      )
       return
     }
 

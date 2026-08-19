@@ -346,18 +346,10 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
 
   defp close_port(%{port: port} = state) when is_port(port) do
     # RNS multiprocessing leaves child interpreters; kill the tree, not only the parent.
+    # Debian slim (Docker) has no pkill unless procps is installed — never raise :enoent.
     case Port.info(port, :os_pid) do
       {:os_pid, os_pid} when is_integer(os_pid) and os_pid > 1 ->
-        _ =
-          System.cmd("pkill", ["-TERM", "-P", Integer.to_string(os_pid)], stderr_to_stdout: true)
-
-        _ = System.cmd("kill", ["-TERM", Integer.to_string(os_pid)], stderr_to_stdout: true)
-        Process.sleep(300)
-
-        _ =
-          System.cmd("pkill", ["-KILL", "-P", Integer.to_string(os_pid)], stderr_to_stdout: true)
-
-        _ = System.cmd("kill", ["-KILL", Integer.to_string(os_pid)], stderr_to_stdout: true)
+        stop_os_tree(os_pid)
 
       _ ->
         :ok
@@ -371,6 +363,104 @@ defmodule Isthmus.Networks.Reticulum.Sidecar do
 
   defp catch_port_close(port) do
     Port.close(port)
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp stop_os_tree(os_pid) do
+    pids = [os_pid | descendant_pids(os_pid)]
+    signal_pids(pids, "-TERM")
+    Process.sleep(300)
+    signal_pids(pids, "-KILL")
+    :ok
+  rescue
+    _ -> :ok
+  catch
+    _, _ -> :ok
+  end
+
+  defp descendant_pids(os_pid) do
+    os_pid
+    |> collect_descendants(MapSet.new())
+    |> MapSet.delete(os_pid)
+    |> MapSet.to_list()
+  end
+
+  defp collect_descendants(os_pid, seen) do
+    if MapSet.member?(seen, os_pid) do
+      seen
+    else
+      seen = MapSet.put(seen, os_pid)
+      Enum.reduce(direct_children(os_pid), seen, &collect_descendants/2)
+    end
+  end
+
+  defp direct_children(os_pid) do
+    path = "/proc/#{os_pid}/task/#{os_pid}/children"
+
+    case File.read(path) do
+      {:ok, contents} -> parse_pids(contents)
+      {:error, _} -> children_from_proc_scan(os_pid)
+    end
+  end
+
+  defp children_from_proc_scan(ppid) do
+    case File.ls("/proc") do
+      {:ok, entries} ->
+        Enum.flat_map(entries, fn name ->
+          case Integer.parse(name) do
+            {pid, ""} ->
+              case File.read("/proc/#{pid}/stat") do
+                {:ok, stat} -> if(parse_ppid(stat) == ppid, do: [pid], else: [])
+                _ -> []
+              end
+
+            _ ->
+              []
+          end
+        end)
+
+      _ ->
+        []
+    end
+  end
+
+  defp parse_ppid(stat) when is_binary(stat) do
+    case Regex.run(~r/^\d+ \(.*\) [A-Za-z] (\d+)/s, stat) do
+      [_, ppid] -> String.to_integer(ppid)
+      _ -> nil
+    end
+  end
+
+  defp parse_pids(contents) do
+    contents
+    |> String.split()
+    |> Enum.flat_map(fn s ->
+      case Integer.parse(s) do
+        {n, ""} when n > 1 -> [n]
+        _ -> []
+      end
+    end)
+  end
+
+  defp signal_pids(pids, signal) do
+    Enum.each(Enum.uniq(pids), &safe_kill(signal, &1))
+  end
+
+  defp safe_kill(signal, pid) do
+    args = [signal, Integer.to_string(pid)]
+
+    case System.find_executable("kill") do
+      nil ->
+        _ = :os.cmd(String.to_charlist("kill #{signal} #{pid} 2>/dev/null"))
+        :ok
+
+      kill ->
+        _ = System.cmd(kill, args, stderr_to_stdout: true)
+        :ok
+    end
   rescue
     _ -> :ok
   catch
