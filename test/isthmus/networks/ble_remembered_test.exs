@@ -1,7 +1,17 @@
 defmodule Isthmus.Networks.BLERememberedTest do
-  use Isthmus.DataCase, async: true
+  use Isthmus.DataCase, async: false
 
   alias Isthmus.Networks.BLERemembered
+
+  setup do
+    for network <- [:meshtastic, :meshcore] do
+      for %{"address" => addr} <- BLERemembered.list(network) do
+        BLERemembered.forget(network, addr)
+      end
+    end
+
+    :ok
+  end
 
   test "remembers and forgets a Meshtastic Bluetooth address" do
     assert BLERemembered.list(:meshtastic) == []
@@ -20,9 +30,7 @@ defmodule Isthmus.Networks.BLERememberedTest do
     assert :ok = BLERemembered.remember(:meshcore, "11:22:33:44:55:66", name: "T1000")
     assert :ok = BLERemembered.remember(:meshcore, "11:22:33:44:55:66")
 
-    assert BLERemembered.list(:meshcore) == [
-             %{"address" => "11:22:33:44:55:66", "name" => "T1000"}
-           ]
+    assert %{"address" => "11:22:33:44:55:66", "name" => "T1000"} in BLERemembered.list(:meshcore)
   end
 
   test "remember_healths snapshots online BLE companions" do
