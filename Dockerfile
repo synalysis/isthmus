@@ -88,7 +88,14 @@ RUN apt-get update \
 
 ENV PATH="/opt/rns-venv/bin:${PATH}"
 
-USER nobody
+# Start as root so we can chmod host USB nodes (Fedora dialout GID ≠ Debian),
+# then drop to nobody. Coolify/compose should not set a non-root user.
+COPY rel/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod 0755 /usr/local/bin/docker-entrypoint.sh \
+  && usermod -aG dialout nobody
+
+USER root
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 
 EXPOSE 4000
 

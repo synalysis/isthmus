@@ -80,6 +80,19 @@ defmodule IsthmusWeb.Admin.Copy do
 
   def bootloader_usb?(_), do: false
 
+  @doc "True when Discover could not open the USB node (typical Docker nobody vs dialout)."
+  def usb_permission_denied?(device) when is_map(device) do
+    case device[:probe_error] do
+      :eacces -> true
+      :eperm -> true
+      {:error, :eacces} -> true
+      {:error, :eperm} -> true
+      _ -> false
+    end
+  end
+
+  def usb_permission_denied?(_), do: false
+
   @doc "Overall device status chip."
   def device_status(%{kind: :meshtastic, health: health}) when is_map(health) do
     status = health[:status] || :unknown

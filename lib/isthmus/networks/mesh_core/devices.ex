@@ -73,11 +73,13 @@ defmodule Isthmus.Networks.MeshCore.Devices do
         Map.put_new(acc, path, synthetic_port(path, roles))
       end)
 
+    probe_errors = roles[:probe_errors] || %{}
+
     usb =
       by_path
       |> Map.values()
       |> group_ports()
-      |> Enum.map(&build_device(&1, path_roles, companions, bridge_cli, bridge_link))
+      |> Enum.map(&build_device(&1, path_roles, companions, bridge_cli, bridge_link, probe_errors))
 
     (usb ++ ble_devices(companions))
     |> Enum.sort_by(&device_sort/1)
@@ -215,7 +217,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
     grouped ++ Enum.map(without, &[&1])
   end
 
-  defp build_device(port_group, path_roles, companions, bridge_cli, bridge_link) do
+  defp build_device(port_group, path_roles, companions, bridge_cli, bridge_link, probe_errors) do
     primary = List.first(port_group) || %{}
 
     ports =
@@ -247,6 +249,11 @@ defmodule Isthmus.Networks.MeshCore.Devices do
         }
       end
 
+    probe_error =
+      port_group
+      |> Enum.map(& &1.path)
+      |> Enum.find_value(&Map.get(probe_errors, &1))
+
     %{
       id: device_id(primary),
       label: device_label(primary, kind, identity),
@@ -263,6 +270,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
       companion?: companion?,
       bridge_cli?: bridge_cli?,
       bridge_packet?: bridge_packet?,
+      probe_error: probe_error,
       active_companion?:
         companion? and match_port?(companion, ports) and companion[:status] == :online,
       active_bridge_cli?:
@@ -314,6 +322,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
       companion?: true,
       bridge_cli?: false,
       bridge_packet?: false,
+      probe_error: nil,
       active_companion?: online?,
       active_bridge_cli?: false,
       active_bridge_link?: false,

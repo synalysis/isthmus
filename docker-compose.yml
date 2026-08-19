@@ -18,6 +18,11 @@ services:
       PHX_SERVER: "true"
     volumes:
       - isthmus_data:/data
+    # USB radios: pass the host device and start as root so the entrypoint can
+    # chmod it (host dialout GID often differs from Debian's).
+    # devices:
+    #   - /dev/ttyUSB0:/dev/ttyUSB0
+    # privileged: true
     restart: unless-stopped
     healthcheck:
       test:

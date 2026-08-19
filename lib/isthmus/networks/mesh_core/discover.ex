@@ -32,11 +32,12 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   @table :isthmus_meshcore_discover
   @baud 115_200
   @probe_timeout_ms 500
-  @meshtastic_probe_ms 2_000
+  @meshtastic_probe_ms 3_000
   @open_timeout_ms 1_500
   # Opening a CP210x/CH340 pulses DTR and resets ESP32. The radio emits a
   # FromRadio `:rebooted` frame plus the boot banner during that window.
-  @uart_boot_ms 2_000
+  # Docker USB passthrough is often slower than a native host open.
+  @uart_boot_ms 3_000
   @acm_idle_ms 400
   @write_timeout_ms 400
 
@@ -263,6 +264,17 @@ defmodule Isthmus.Networks.MeshCore.Discover do
                   {add_rnode(acc, entry), MapSet.put(claimed, port.path)}
 
                 other ->
+                  acc =
+                    case other do
+                      {:error, reason} ->
+                        Map.update(acc, :probe_errors, %{port.path => reason}, fn errs ->
+                          Map.put(errs, port.path, reason)
+                        end)
+
+                      _ ->
+                        acc
+                    end
+
                   Logger.debug("MeshCore discover: #{port.path} -> #{inspect(other)}")
                   {acc, claimed}
               end
@@ -293,6 +305,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       merge_port_list(detected[:companion_ports], roles[:companion])
     )
     |> Map.put(:rnode_ports, detected[:rnode_ports] || [])
+    |> Map.put(:probe_errors, detected[:probe_errors] || %{})
     |> maybe_primary_rnode(detected[:rnode])
   end
 
@@ -467,10 +480,24 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   defp usb_uart_bridge?(port) when is_map(port) do
     vid = port[:vendor_id]
-    is_integer(vid) and vid in @usb_uart_vids
-  end
 
-  defp usb_uart_bridge?(_), do: false
+    desc =
+      [port[:description], port[:manufacturer], port[:path], port[:name]]
+      |> Enum.reject(&is_nil/1)
+      |> Enum.join(" ")
+      |> String.downcase()
+
+    # Docker --device=/dev/ttyUSB0 often has no udev vendor_id. The CP2102
+    # product string (or ttyUSB path) still marks an ESP32 USB-UART board.
+    (is_integer(vid) and vid in @usb_uart_vids) or
+      String.contains?(desc, "cp210") or
+      String.contains?(desc, "ch340") or
+      String.contains?(desc, "ch341") or
+      String.contains?(desc, "silicon labs") or
+      String.contains?(desc, "qinheng") or
+      String.contains?(desc, "ftdi") or
+      String.contains?(desc, "ttyusb")
+  end
 
   defp acm_like?(path) do
     Isthmus.Networks.Uart.acm?(path)
@@ -507,7 +534,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
               {:error, reason} ->
                 Logger.warning("MeshCore discover: open #{path} failed: #{inspect(reason)}")
-                :unknown
+                {:error, reason}
             end
           catch
             :exit, reason ->
@@ -566,8 +593,18 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     # Do not flush. Opening CP210x/CH340 pulses DTR and the ESP32 Meshtastic
     # firmware immediately sends FromRadio `:rebooted` plus the boot banner.
     # Flushing that away leaves want_config landing in the ROM bootloader.
-    idle_ms = if usb_uart_bridge?(meta), do: @uart_boot_ms, else: @acm_idle_ms
-    {kind, acc} = read_until_kind(uart, idle_ms, <<>>)
+    idle_ms = if serial_firmware_ambiguous?(meta), do: @uart_boot_ms, else: @acm_idle_ms
+    # DEVICE_INFO is a reply to DEVICE_QUERY. Accepting companion during the
+    # idle window lets ESP32 boot noise steal a Meshtastic CP2102, especially
+    # in Docker where the first open always pulses DTR.
+    accept =
+      if serial_firmware_ambiguous?(meta) do
+        [:meshtastic, :bridge_cli, :bridge_packet]
+      else
+        [:companion, :bridge_cli, :bridge_packet, :meshtastic]
+      end
+
+    {kind, acc} = read_until_kind(uart, idle_ms, <<>>, accept)
 
     case kind do
       kind when kind in [:companion, :bridge_cli, :bridge_packet, :meshtastic] ->
@@ -716,12 +753,24 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   defp classified_role(data) when is_binary(data) do
     cond do
-      companion_response?(data) -> :companion
-      cli_response?(data) -> :bridge_cli
-      bridge_packet_response?(data) -> :bridge_packet
-      meshtastic_response?(data) -> :meshtastic
-      meshtastic_boot_banner?(data) -> :meshtastic
-      true -> nil
+      # Repeater CLIs echo want_config and prefix replies with "->".
+      cli_response?(data) ->
+        :bridge_cli
+
+      # ESP32 Meshtastic boot logs often contain `>` / CR that decode as a
+      # MeshCore DEVICE_INFO frame. A real companion never emits FromRadio or
+      # the MESHTASTIC banner, so those win when both are in the buffer.
+      meshtastic_response?(data) or meshtastic_boot_banner?(data) ->
+        :meshtastic
+
+      companion_response?(data) ->
+        :companion
+
+      bridge_packet_response?(data) ->
+        :bridge_packet
+
+      true ->
+        nil
     end
   end
 
@@ -769,17 +818,19 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       String.contains?(down, "booted, wake cause")
   end
 
-  defp read_until_kind(uart, timeout_ms, acc) do
+  @accept_all_roles [:companion, :bridge_cli, :bridge_packet, :meshtastic]
+
+  defp read_until_kind(uart, timeout_ms, acc, accept \\ @accept_all_roles) do
     deadline = System.monotonic_time(:millisecond) + timeout_ms
-    do_read_until_kind(uart, deadline, acc)
+    do_read_until_kind(uart, deadline, acc, accept)
   end
 
-  defp do_read_until_kind(uart, deadline, acc) do
+  defp do_read_until_kind(uart, deadline, acc, accept) do
     remaining = deadline - System.monotonic_time(:millisecond)
     kind = classified_role(acc)
 
     cond do
-      kind in [:companion, :bridge_cli, :bridge_packet, :meshtastic] ->
+      kind in accept ->
         {kind, acc}
 
       remaining <= 0 ->
@@ -795,7 +846,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
         acc = acc <> chunk
 
         if chunk == "" and remaining > 0, do: Process.sleep(min(40, remaining))
-        do_read_until_kind(uart, deadline, acc)
+        do_read_until_kind(uart, deadline, acc, accept)
     end
   end
 

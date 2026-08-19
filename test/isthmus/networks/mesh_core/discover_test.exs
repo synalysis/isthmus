@@ -151,6 +151,12 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
              product_id: 0xEA60
            })
 
+    assert Discover.serial_firmware_ambiguous?(%{
+             description: "CP2102 USB to UART Bridge Controller"
+           })
+
+    assert Discover.serial_firmware_ambiguous?(%{path: "/dev/ttyUSB0"})
+
     assert Discover.serial_firmware_ambiguous?(wio)
 
     refute Discover.serial_firmware_ambiguous?(%{
@@ -205,6 +211,27 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
     assert roles.bridge_cli.source == :env
     assert roles.bridge_packet.path == "/dev/custom_packet"
     assert roles.bridge_packet.source == :env
+  end
+
+  test "scan records USB open errors instead of leaving the port unidentified" do
+    ports = %{
+      "ttyUSB0" => %{
+        description: "CP2102 USB to UART Bridge Controller",
+        vendor_id: 0x10C4,
+        product_id: 0xEA60
+      }
+    }
+
+    roles =
+      Discover.scan(
+        enumerate: fn -> ports end,
+        probe: fn "/dev/ttyUSB0", _ -> {:error, :eacces} end,
+        env: fn _ -> nil end
+      )
+
+    assert roles.probe_errors["/dev/ttyUSB0"] == :eacces
+    refute Map.has_key?(roles, :companion)
+    refute Map.has_key?(roles, :meshtastic)
   end
 
   test "resolve_port prefers env then discovered role" do
@@ -600,6 +627,19 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
     meshtastic = MeshtasticProtocol.encode_frame(payload)
 
     assert Discover.classify_probe_buffer(boot <> meshtastic) == :meshtastic
+  end
+
+  test "classify_probe_buffer prefers a Meshtastic banner over a plausible DEVICE_INFO decoy" do
+    rest = <<3, 100, 8>> <> :binary.copy(<<0>>, 77)
+    frame = <<13, rest::binary>>
+    decoy = <<">", byte_size(frame)::little-16, frame::binary>>
+    banner = "\r\n//\\ E S H T /\\ S T / C\r\nINFO  | Booted, wake cause 0\r\n"
+
+    assert Discover.classify_probe_buffer(decoy) == :companion
+    assert Discover.classify_probe_buffer(decoy <> banner) == :meshtastic
+
+    rebooted = <<0x94, 0xC3, 0x00, 0x02, 0x40, 0x01>>
+    assert Discover.classify_probe_buffer(decoy <> rebooted) == :meshtastic
   end
 
   test "classify_probe_buffer accepts a MeshCore island-bridge packet frame" do

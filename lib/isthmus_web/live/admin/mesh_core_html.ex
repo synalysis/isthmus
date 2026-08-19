@@ -391,6 +391,18 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                         <strong class="font-medium">Scan Bluetooth</strong>
                         — or flash USB Serial Companion.
                       </p>
+                    <% AdminCopy.usb_permission_denied?(device) -> %>
+                      <p
+                        class="text-sm text-warning"
+                        id={"#{device_dom_id(device.id)}-identify-hint"}
+                      >
+                        Isthmus cannot open this USB port (permission denied). The Docker
+                        process is not allowed to use serial devices — pass
+                        <code class="text-xs">/dev/ttyUSB*</code>
+                        into the container and grant the host
+                        <code class="text-xs">dialout</code>
+                        group, or run the image so the entrypoint can chmod the device.
+                      </p>
                     <% device.kind == :unknown -> %>
                       <p
                         class="text-sm text-warning"

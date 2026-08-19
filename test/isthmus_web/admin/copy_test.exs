@@ -36,7 +36,11 @@ defmodule IsthmusWeb.Admin.CopyTest do
     assert {:unknown, "Bootloader"} = Copy.device_status(boot)
   end
 
-  test "role_plain avoids Unassigned" do
+  test "usb_permission_denied? is true for probe eacces" do
+    assert Copy.usb_permission_denied?(%{probe_error: :eacces})
+    refute Copy.usb_permission_denied?(%{probe_error: nil})
+    refute Copy.usb_permission_denied?(%{kind: :unknown})
+  end
     assert Copy.role_plain(:unassigned) == "Not identified yet"
     assert Copy.role_plain(:bridge_packet) == "Mesh traffic port"
   end
