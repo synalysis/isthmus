@@ -13,6 +13,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   alias Isthmus.Networks.Meshtastic.Supervisor, as: MeshtasticSupervisor
   alias Isthmus.Registrations
   alias IsthmusWeb.Admin.RadioChannels
+  alias IsthmusWeb.Admin.UsbRole
 
   @impl true
   def mount(_params, _session, socket) do
@@ -250,6 +251,35 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
          |> assign(:ble_connecting, connecting)
          |> put_flash(:info, "Disconnected Bluetooth companion.")
          |> refresh()}
+    end
+  end
+
+  def handle_event("assign_usb_firmware", params, socket) do
+    id = params["device_id"] || params[:device_id]
+    kind = params["kind"] || params[:kind]
+
+    case Enum.find(socket.assigns.devices, &(&1.id == id)) do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Unknown device — rescan USB and try again.")}
+
+      device ->
+        case UsbRole.apply_firmware(device, kind) do
+          {:ok, msg} ->
+            {:noreply, socket |> put_flash(:info, msg) |> refresh()}
+
+          {:error, msg} ->
+            {:noreply, put_flash(socket, :error, msg)}
+        end
+    end
+  end
+
+  def handle_event("assign_usb_role", params, socket) do
+    case UsbRole.apply_event(params) do
+      {:ok, msg} ->
+        {:noreply, socket |> put_flash(:info, msg) |> refresh()}
+
+      {:error, msg} ->
+        {:noreply, put_flash(socket, :error, msg)}
     end
   end
 

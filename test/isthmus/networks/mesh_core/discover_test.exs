@@ -685,4 +685,77 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
     refute Map.has_key?(roles, :meshtastic)
     assert roles.meshtastic_ports == []
   end
+
+  test "does not firmware-probe unassigned ports" do
+    roles =
+      Discover.scan(
+        enumerate: fn ->
+          %{
+            "ttyUSB0" => %{description: "CP2102 USB to UART Bridge Controller", vendor_id: 0x10C4}
+          }
+        end,
+        probe: fn _, _ -> flunk("must not probe unassigned USB") end,
+        probe_unassigned: false,
+        env: fn _ -> nil end,
+        assignments: []
+      )
+
+    refute Map.has_key?(roles, :meshtastic)
+    refute Map.has_key?(roles, :companion)
+    assert roles.probe_errors == %{}
+  end
+
+  test "applies a persisted USB assignment without probing" do
+    roles =
+      Discover.scan(
+        enumerate: fn ->
+          %{
+            "ttyUSB0" => %{
+              description: "CP2102 USB to UART Bridge Controller",
+              serial_number: "ABC",
+              vendor_id: 0x10C4,
+              product_id: 0xEA60
+            }
+          }
+        end,
+        probe: fn _, _ -> flunk("must not probe an assigned USB port") end,
+        probe_unassigned: false,
+        env: fn _ -> nil end,
+        assignments: [
+          %{
+            "path" => "/dev/ttyUSB0",
+            "serial" => "ABC",
+            "vendor_id" => 0x10C4,
+            "product_id" => 0xEA60,
+            "role" => "meshtastic"
+          }
+        ]
+      )
+
+    assert roles.meshtastic.path == "/dev/ttyUSB0"
+    assert roles.meshtastic.source == :assigned
+    assert Enum.map(roles.meshtastic_ports, & &1.path) == ["/dev/ttyUSB0"]
+  end
+
+  test "env pin wins over a persisted USB assignment" do
+    roles =
+      Discover.scan(
+        enumerate: fn ->
+          %{"ttyUSB0" => %{description: "CP2102", serial_number: "ABC", vendor_id: 0x10C4}}
+        end,
+        probe: fn _, _ -> flunk("must not probe") end,
+        probe_unassigned: false,
+        env: fn
+          "ISTHMUS_MESHTASTIC_PORT" -> "/dev/ttyUSB0"
+          _ -> nil
+        end,
+        assignments: [
+          %{"path" => "/dev/ttyUSB0", "serial" => "ABC", "role" => "companion"}
+        ]
+      )
+
+    assert roles.meshtastic.path == "/dev/ttyUSB0"
+    assert roles.meshtastic.source == :env
+    refute Map.has_key?(roles, :companion)
+  end
 end

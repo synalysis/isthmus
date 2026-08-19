@@ -16,6 +16,10 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   - `ISTHMUS_MESHCORE_BRIDGE_PORT`
   - `ISTHMUS_MESHTASTIC_PORT`
 
+  USB firmware is not guessed: eligible ports are enumerated, then a persisted
+  `UsbAssignments` role (or env pin) is applied. Opening CP210x/CH340 resets
+  ESP32 boards, and MeshCore / Meshtastic share the same UART chips.
+
   Discovery runs at boot before Companion / BridgeCLI / BridgeLink / Meshtastic
   Companion open ports. Call `refresh/0` after hotplug or a repeater reboot.
   """
@@ -28,6 +32,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   alias Isthmus.Networks.MeshCore.Protocol
   alias Isthmus.Networks.Meshtastic.Protocol, as: MeshtasticProtocol
   alias Isthmus.Networks.Reticulum.RNode
+  alias Isthmus.Networks.UsbAssignments
 
   @table :isthmus_meshcore_discover
   @baud 115_200
@@ -44,7 +49,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   @type role :: :companion | :bridge_cli | :bridge_packet | :meshtastic | :rnode
   @type assignment :: %{
           path: String.t(),
-          source: :env | :detected,
+          source: :env | :detected | :assigned,
           detail: term()
         }
 
@@ -153,7 +158,9 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   pulses DTR and reboots ESP32 Meshtastic firmware.
   """
   def refresh(name \\ __MODULE__) do
-    case safe_call(name, :refresh, {:error, :not_started}, 15_000) do
+    assignments = safe_usb_assignments()
+
+    case safe_call(name, {:refresh, assignments}, {:error, :not_started}, 15_000) do
       {:ok, roles} ->
         notify_reconnect()
         {:ok, roles}
@@ -198,12 +205,20 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   - `:probe` — `fn path, meta -> :companion | :bridge_cli | :meshtastic | :rnode | :unknown | {:error, term}`
   - `:env` — `fn key -> value | nil`
   - `:skip_paths` — ports to leave alone (already open elsewhere)
+  - `:assignments` — persisted USB roles (`UsbAssignments` entries). Default `[]`
+    so pure `scan/1` does not touch Policy. The GenServer injects `UsbAssignments.list/0`.
+  - `:probe_unassigned` — when true, firmware-probe ports with no env pin or
+    assignment. Defaults to true only when a custom `:probe` is passed (tests).
   """
   def scan(opts \\ []) do
     enumerate = Keyword.get(opts, :enumerate, &Circuits.UART.enumerate/0)
     probe = Keyword.get(opts, :probe, &default_probe/2)
     env = Keyword.get(opts, :env, &System.get_env/1)
     skip = MapSet.new(Keyword.get(opts, :skip_paths, []))
+    assignments = Keyword.get(opts, :assignments, [])
+
+    probe_unassigned =
+      Keyword.get(opts, :probe_unassigned, Keyword.has_key?(opts, :probe))
 
     env_companion = blank_to_nil(env.("ISTHMUS_MESHCORE_PORT"))
     env_cli = blank_to_nil(env.("ISTHMUS_MESHCORE_BRIDGE_CLI_PORT"))
@@ -215,13 +230,16 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       |> Enum.reject(fn p -> MapSet.member?(skip, p.path) end)
 
     by_path = Map.new(ports, &{&1.path, &1})
-    Logger.info("MeshCore discover: probing #{length(ports)} port(s)")
+    Logger.info("MeshCore discover: enumerating #{length(ports)} port(s)")
 
     {detected, claimed} =
       Enum.reduce(
         ports,
-        {%{meshtastic_ports: [], rnode_ports: [], companion_ports: []}, MapSet.new()},
+        {%{meshtastic_ports: [], rnode_ports: [], companion_ports: [], ignored_ports: []},
+         MapSet.new()},
         fn port, {acc, claimed} ->
+          assigned = UsbAssignments.role_for(port, assignments)
+
           cond do
             MapSet.member?(claimed, port.path) ->
               {acc, claimed}
@@ -233,7 +251,17 @@ defmodule Isthmus.Networks.MeshCore.Discover do
               entry = %{path: port.path, source: :env, detail: port}
               {add_meshtastic(acc, entry), MapSet.put(claimed, port.path)}
 
-            true ->
+            assigned in [:companion, :bridge_cli, :bridge_packet, :meshtastic, :rnode] ->
+              Logger.info("MeshCore discover: #{port.path} -> #{assigned} (assigned)")
+              entry = %{path: port.path, source: :assigned, detail: port}
+              {apply_detected(acc, assigned, entry), MapSet.put(claimed, port.path)}
+
+            assigned == :ignore ->
+              Logger.info("MeshCore discover: #{port.path} -> ignore (assigned)")
+              entry = %{path: port.path, source: :assigned, detail: port}
+              {add_ignored(acc, entry), MapSet.put(claimed, port.path)}
+
+            probe_unassigned ->
               case probe.(port.path, port) do
                 :companion ->
                   Logger.info("MeshCore discover: #{port.path} -> companion")
@@ -278,6 +306,10 @@ defmodule Isthmus.Networks.MeshCore.Discover do
                   Logger.debug("MeshCore discover: #{port.path} -> #{inspect(other)}")
                   {acc, claimed}
               end
+
+            true ->
+              Logger.debug("MeshCore discover: #{port.path} skipped (no USB role)")
+              {acc, claimed}
           end
         end
       )
@@ -305,6 +337,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       merge_port_list(detected[:companion_ports], roles[:companion])
     )
     |> Map.put(:rnode_ports, detected[:rnode_ports] || [])
+    |> Map.put(:ignored_ports, detected[:ignored_ports] || [])
     |> Map.put(:probe_errors, detected[:probe_errors] || %{})
     |> maybe_primary_rnode(detected[:rnode])
   end
@@ -320,7 +353,15 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     state = %{
       name: name,
       table: table,
-      opts: Keyword.take(opts, [:enumerate, :probe, :env, :skip_paths]),
+      opts:
+        Keyword.take(opts, [
+          :enumerate,
+          :probe,
+          :env,
+          :skip_paths,
+          :assignments,
+          :probe_unassigned
+        ]),
       roles: %{}
     }
 
@@ -332,7 +373,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   @impl true
   def handle_continue(:boot_scan, state) do
-    roles = scan(state.opts)
+    roles = scan(with_assignments(state.opts))
     publish(state, roles)
     Logger.info("MeshCore discover: #{format_roles(roles)}")
     notify_reconnect()
@@ -342,7 +383,15 @@ defmodule Isthmus.Networks.MeshCore.Discover do
   @impl true
   def handle_call(:roles, _from, state), do: {:reply, state.roles, state}
 
+  def handle_call({:refresh, assignments}, _from, state) when is_list(assignments) do
+    refresh_scan(state, assignments)
+  end
+
   def handle_call(:refresh, _from, state) do
+    refresh_scan(state, safe_usb_assignments())
+  end
+
+  defp refresh_scan(state, assignments) do
     _ =
       try do
         Isthmus.Networks.MeshCore.Companion.disconnect_unidentified()
@@ -361,6 +410,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     roles =
       state.opts
       |> Keyword.put(:skip_paths, skip)
+      |> Keyword.put(:assignments, assignments)
       |> scan()
       |> keep_still_attached(state.roles, present, skip_paths: skip)
 
@@ -506,17 +556,27 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     Isthmus.Networks.Uart.acm?(path)
   end
 
-  defp next_acm_sibling(path) do
-    case Regex.run(~r/^(.*ttyACM)(\d+)$/, path) do
-      [_, prefix, num] ->
-        prefix <> Integer.to_string(String.to_integer(num) + 1)
-
-      _ ->
-        nil
-    end
+  @doc false
+  def probe_for(path, meta, kind)
+      when kind in [:meshtastic, :companion, :island, :rnode] and is_binary(path) do
+    with_open_uart(path, fn uart -> classify_mode(uart, meta, kind) end)
   end
 
+  def probe_for(_path, _meta, _kind), do: :unknown
+
   defp default_probe(path, meta) do
+    with_open_uart(path, fn uart ->
+      sibling = hold_pair_sibling(path, meta)
+
+      try do
+        classify_port(uart, meta)
+      after
+        Isthmus.Networks.Uart.release(sibling)
+      end
+    end)
+  end
+
+  defp with_open_uart(path, fun) when is_function(fun, 1) do
     Application.ensure_all_started(:circuits_uart)
     prev_trap = Process.flag(:trap_exit, true)
 
@@ -527,13 +587,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
             case open_with_timeout(uart, path, @open_timeout_ms) do
               :ok ->
                 Isthmus.Networks.Uart.prepare(uart, path)
-                sibling = hold_pair_sibling(path, meta)
-
-                try do
-                  classify_port(uart, meta)
-                after
-                  Isthmus.Networks.Uart.release(sibling)
-                end
+                fun.(uart)
 
               {:error, reason} ->
                 Logger.warning("MeshCore discover: open #{path} failed: #{inspect(reason)}")
@@ -563,6 +617,16 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end
   rescue
     _ -> :unknown
+  end
+
+  defp next_acm_sibling(path) do
+    case Regex.run(~r/^(.*ttyACM)(\d+)$/, path) do
+      [_, prefix, num] ->
+        prefix <> Integer.to_string(String.to_integer(num) + 1)
+
+      _ ->
+        nil
+    end
   end
 
   defp open_with_timeout(uart, path, ms) do
@@ -617,6 +681,52 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       _ ->
         classify_after_idle(uart, acc, meta)
     end
+  end
+
+  defp classify_mode(uart, _meta, :island) do
+    {kind, acc} =
+      read_until_kind(uart, @acm_idle_ms, <<>>, [:bridge_cli, :bridge_packet])
+
+    if kind in [:bridge_cli, :bridge_packet] do
+      kind
+    else
+      _ = probe_write(uart, "ver\r")
+      {kind, _} = read_until_kind(uart, @probe_timeout_ms, acc, [:bridge_cli, :bridge_packet])
+      if kind in [:bridge_cli, :bridge_packet], do: kind, else: :unknown
+    end
+  end
+
+  defp classify_mode(uart, meta, :meshtastic) do
+    idle_ms = if serial_firmware_ambiguous?(meta), do: @uart_boot_ms, else: @acm_idle_ms
+    {kind, acc} = read_until_kind(uart, idle_ms, <<>>, [:meshtastic])
+
+    if kind == :meshtastic do
+      :meshtastic
+    else
+      nonce = :rand.uniform(0x7FFF_FFFE) + 1
+      _ = probe_write(uart, MeshtasticProtocol.want_config_frame(nonce))
+      {kind, _} = read_until_kind(uart, @meshtastic_probe_ms, acc, [:meshtastic])
+      if kind == :meshtastic, do: :meshtastic, else: :unknown
+    end
+  end
+
+  defp classify_mode(uart, _meta, :companion) do
+    {kind, acc} = read_until_kind(uart, @acm_idle_ms, <<>>, [:companion])
+
+    if kind == :companion do
+      :companion
+    else
+      frame = Protocol.encode_usb_frame(Protocol.device_query_frame())
+      _ = probe_write(uart, frame)
+      {kind, _} = read_until_kind(uart, @probe_timeout_ms, acc, [:companion])
+      if kind == :companion, do: :companion, else: :unknown
+    end
+  end
+
+  defp classify_mode(uart, _meta, :rnode) do
+    _ = probe_write(uart, RNode.detect_frame())
+    {rnode?, _} = read_until_pred(uart, &RNode.detect_response?/1, @probe_timeout_ms, <<>>)
+    if rnode?, do: :rnode, else: :unknown
   end
 
   defp classify_after_idle(uart, acc, meta) do
@@ -1034,6 +1144,39 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       end)
 
     if formatted == [], do: "(none)", else: Enum.join(formatted, " ")
+  end
+
+  defp with_assignments(opts) do
+    if Keyword.has_key?(opts, :assignments) do
+      opts
+    else
+      Keyword.put(opts, :assignments, safe_usb_assignments())
+    end
+  end
+
+  defp safe_usb_assignments do
+    UsbAssignments.list()
+  rescue
+    _ -> []
+  catch
+    :exit, _ -> []
+    :throw, _ -> []
+  end
+
+  defp apply_detected(acc, :companion, entry), do: add_companion(acc, entry)
+
+  defp apply_detected(acc, :bridge_cli, entry), do: Map.put(acc, :bridge_cli, entry)
+
+  defp apply_detected(acc, :bridge_packet, entry), do: Map.put(acc, :bridge_packet, entry)
+
+  defp apply_detected(acc, :meshtastic, entry), do: add_meshtastic(acc, entry)
+
+  defp apply_detected(acc, :rnode, entry), do: add_rnode(acc, entry)
+
+  defp add_ignored(acc, entry) do
+    Map.update(acc, :ignored_ports, [entry], fn list ->
+      if Enum.any?(list, &(&1.path == entry.path)), do: list, else: list ++ [entry]
+    end)
   end
 
   defp add_companion(acc, entry) do

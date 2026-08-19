@@ -6,6 +6,8 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
   alias Isthmus.QR
   alias Isthmus.Registrations
   alias IsthmusWeb.Admin.RadioChannels
+  alias IsthmusWeb.Admin.UsbRole
+  import IsthmusWeb.Admin.UsbRole, only: [usb_role_picker: 1, usb_firmware_picker: 1]
 
   def radio_config_kind(device) do
     cond do
@@ -236,8 +238,8 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
             <div>
               <h2 class="text-lg font-medium">Connected radios</h2>
               <p class="text-xs opacity-70 mt-1">
-                What each USB radio is for. Controls stay on the radio they belong to.
-                Create groups on Groups, then assign them from a companion’s slot table.
+                What each USB radio is for. Choose firmware on the radio —
+                Isthmus then classifies config vs mesh traffic.
               </p>
             </div>
             <div class="flex flex-wrap items-center gap-3">
@@ -332,7 +334,8 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
           <%= if @devices == [] do %>
             <div class="rounded-lg border border-base-300 bg-base-200/50 p-4" id="devices-empty">
               <p class="text-sm opacity-70">
-                No MeshCore radios found. Plug in a companion and/or island tunnel radio, then Rescan.
+                No MeshCore radios found. Plug in a companion and/or island tunnel
+                radio, choose a USB role on that port, then Rescan if needed.
               </p>
               <details class="mt-2 text-xs opacity-60">
                 <summary class="cursor-pointer">Technical details</summary>
@@ -407,7 +410,9 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                         class="text-sm text-warning"
                         id={"#{device_dom_id(device.id)}-identify-hint"}
                       >
-                        Isthmus has not identified this radio’s role yet. Power it on and Rescan USB.
+                        Choose the firmware on this radio. Isthmus then detects
+                        which CDC is config vs mesh traffic (lower ttyACM is
+                        config if the handshake is quiet).
                       </p>
                     <% true -> %>
                   <% end %>
@@ -461,13 +466,23 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                 </div>
               </div>
 
+              <.usb_firmware_picker
+                :if={not device.ble?}
+                id={"usb-firmware-#{device_dom_id(device.id)}"}
+                device_id={device.id}
+                current={UsbRole.firmware_kind(device)}
+                source={List.first(device.ports || [])[:source]}
+              />
+
               <div class="overflow-x-auto">
                 <table class="table table-sm" id={"#{device_dom_id(device.id)}-ports"}>
                   <thead>
                     <tr>
+                      <th>Device</th>
                       <th>Port role</th>
                       <th>Status</th>
                       <th>Used for</th>
+                      <th></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -475,6 +490,9 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                       :for={port <- device.ports}
                       id={"#{device_dom_id(device.id)}-port-#{port_dom_key(port.path)}"}
                     >
+                      <td class="font-mono text-sm">
+                        {AdminCopy.usb_device_name(port.path) || port.path}
+                      </td>
                       <td class="font-medium">{AdminCopy.role_plain(port.role)}</td>
                       <td>
                         <%= if st = port_status(device, port.role) do %>
@@ -486,6 +504,19 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                         <% end %>
                       </td>
                       <td class="text-sm opacity-80">{AdminCopy.role_used_for(port.role)}</td>
+                      <td>
+                        <.usb_role_picker
+                          :if={not device.ble?}
+                          id={"usb-role-#{device_dom_id(device.id)}-#{port_dom_key(port.path)}"}
+                          path={port.path}
+                          serial_number={port[:serial_number] || device.serial_number}
+                          vendor_id={port[:vendor_id] || device.vendor_id}
+                          product_id={port[:product_id] || device.product_id}
+                          current={port.role}
+                          source={port[:source]}
+                          compact={true}
+                        />
+                      </td>
                     </tr>
                   </tbody>
                 </table>

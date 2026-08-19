@@ -28,7 +28,9 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
           active?: boolean(),
           ble?: boolean(),
           ble_address: String.t() | nil,
-          probe_error: term() | nil
+          probe_error: term() | nil,
+          usb_role: atom() | nil,
+          source: atom() | nil
         }
 
   def inventory(opts \\ []) do
@@ -71,9 +73,7 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
     unidentified =
       ports
       |> Enum.filter(fn port ->
-        is_binary(port[:path]) and
-          not MapSet.member?(claimed, port.path) and
-          Discover.usb_uart_bridge?(port)
+        is_binary(port[:path]) and not MapSet.member?(claimed, port.path)
       end)
       |> Enum.map(& &1.path)
       |> Enum.uniq()
@@ -85,7 +85,18 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
         meta = by_path[path] || synthetic_port(path, roles)
         health = health_by_port[path] || %{status: :disconnected, port: path}
         classified? = path in classified
-        build_device(meta, health, path == primary_path, classified?, Map.get(probe_errors, path))
+        usb_role = usb_role_for(path, classified?, roles)
+        source = port_source(roles, path)
+
+        build_device(
+          meta,
+          health,
+          path == primary_path,
+          classified?,
+          Map.get(probe_errors, path),
+          usb_role,
+          source
+        )
       end)
 
     (usb ++ ble_devices(healths))
@@ -131,7 +142,9 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
       active?: health[:status] == :online,
       ble?: true,
       ble_address: address,
-      probe_error: nil
+      probe_error: nil,
+      usb_role: :meshtastic,
+      source: nil
     }
   end
 
@@ -158,6 +171,34 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
 
   defp meshcore_claimed_paths(_), do: MapSet.new()
 
+  defp usb_role_for(_path, true, _roles), do: :meshtastic
+
+  defp usb_role_for(path, false, roles) do
+    Enum.find_value(roles[:ignored_ports] || [], fn
+      %{path: ^path} -> :ignore
+      _ -> nil
+    end)
+  end
+
+  defp port_source(roles, path) when is_map(roles) and is_binary(path) do
+    case roles[:meshtastic] do
+      %{path: ^path, source: source} ->
+        source
+
+      _ ->
+        Enum.find_value(roles[:meshtastic_ports] || [], fn
+          %{path: ^path, source: source} -> source
+          _ -> nil
+        end) ||
+          Enum.find_value(roles[:ignored_ports] || [], fn
+            %{path: ^path, source: source} -> source
+            _ -> nil
+          end)
+    end
+  end
+
+  defp port_source(_, _), do: nil
+
   defp synthetic_port(path, roles) do
     detail =
       case roles[:meshtastic] do
@@ -181,7 +222,7 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
     }
   end
 
-  defp build_device(meta, health, primary?, classified?, probe_error) do
+  defp build_device(meta, health, primary?, classified?, probe_error, usb_role, source) do
     node = health[:node_id]
     label = device_label(meta, node)
     path = meta[:path] || health[:port]
@@ -202,7 +243,9 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
       active?: classified? and health[:status] == :online,
       ble?: false,
       ble_address: nil,
-      probe_error: probe_error
+      probe_error: probe_error,
+      usb_role: usb_role,
+      source: source
     }
   end
 

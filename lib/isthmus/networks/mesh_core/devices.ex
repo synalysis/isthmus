@@ -12,7 +12,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.MeshCore.Ports
 
-  @type port_role :: :companion | :bridge_cli | :bridge_packet | :unassigned
+  @type port_role :: :companion | :bridge_cli | :bridge_packet | :ignore | :unassigned
 
   @type device :: %{
           id: String.t(),
@@ -80,9 +80,16 @@ defmodule Isthmus.Networks.MeshCore.Devices do
       |> Map.values()
       |> group_ports()
       |> Enum.map(
-        &build_device(&1, path_roles, companions, bridge_cli, bridge_link, probe_errors)
+        &build_device(
+          &1,
+          path_roles,
+          path_sources(roles),
+          companions,
+          bridge_cli,
+          bridge_link,
+          probe_errors
+        )
       )
-      |> Enum.reject(&uart_bridge_unidentified?/1)
 
     (usb ++ ble_devices(companions))
     |> Enum.sort_by(&device_sort/1)
@@ -164,7 +171,35 @@ defmodule Isthmus.Networks.MeshCore.Devices do
           into: %{},
           do: {path, :companion}
 
-    Map.merge(extras, singletons)
+    ignored =
+      for entry <- roles[:ignored_ports] || [],
+          path = companion_entry_path(entry),
+          is_binary(path) and path != "",
+          into: %{},
+          do: {path, :ignore}
+
+    extras
+    |> Map.merge(ignored)
+    |> Map.merge(singletons)
+  end
+
+  defp path_sources(roles) when is_map(roles) do
+    singles =
+      for {role, %{path: path, source: source}} <- roles,
+          role in [:companion, :bridge_cli, :bridge_packet],
+          is_binary(path) and path != "",
+          into: %{},
+          do: {path, source}
+
+    lists =
+      for key <- [:companion_ports, :ignored_ports],
+          entry <- roles[key] || [],
+          path = companion_entry_path(entry),
+          is_binary(path) and path != "",
+          into: %{},
+          do: {path, entry[:source]}
+
+    Map.merge(lists, singles)
   end
 
   defp companion_entry_path(%{path: path}), do: path
@@ -175,6 +210,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
   defp normalize_role("companion"), do: :companion
   defp normalize_role("bridge_cli"), do: :bridge_cli
   defp normalize_role("bridge_packet"), do: :bridge_packet
+  defp normalize_role("ignore"), do: :ignore
   defp normalize_role(_), do: :unassigned
 
   defp synthetic_port(path, roles) do
@@ -220,13 +256,28 @@ defmodule Isthmus.Networks.MeshCore.Devices do
     grouped ++ Enum.map(without, &[&1])
   end
 
-  defp build_device(port_group, path_roles, companions, bridge_cli, bridge_link, probe_errors) do
+  defp build_device(
+         port_group,
+         path_roles,
+         path_sources,
+         companions,
+         bridge_cli,
+         bridge_link,
+         probe_errors
+       ) do
     primary = List.first(port_group) || %{}
 
     ports =
       port_group
       |> Enum.map(fn p ->
-        %{path: p.path, role: Map.get(path_roles, p.path, :unassigned)}
+        %{
+          path: p.path,
+          role: Map.get(path_roles, p.path, :unassigned),
+          serial_number: blank(p[:serial_number]),
+          vendor_id: p[:vendor_id],
+          product_id: p[:product_id],
+          source: Map.get(path_sources, p.path)
+        }
       end)
       |> Enum.sort_by(&{role_rank(&1.role), &1.path})
 
@@ -336,28 +387,6 @@ defmodule Isthmus.Networks.MeshCore.Devices do
     }
   end
 
-  # CP210x/CH340 ESP32 boards show up as unidentified USB on MeshCore when the
-  # probe cannot open the port (typical Docker nobody vs dialout). They belong
-  # on the Meshtastic page until firmware is classified as MeshCore.
-  defp uart_bridge_unidentified?(%{kind: :unknown, ble?: ble?} = device)
-       when ble? in [false, nil] do
-    path =
-      case List.first(device[:ports] || []) do
-        %{path: p} -> p
-        _ -> nil
-      end
-
-    Discover.usb_uart_bridge?(%{
-      description: device[:description],
-      manufacturer: device[:manufacturer],
-      vendor_id: device[:vendor_id],
-      product_id: device[:product_id],
-      path: path
-    })
-  end
-
-  defp uart_bridge_unidentified?(_), do: false
-
   defp match_port?(health, ports) when is_map(health) do
     path = health[:port]
     is_binary(path) and Enum.any?(ports, &(&1.path == path))
@@ -401,6 +430,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
   defp role_rank(:companion), do: 0
   defp role_rank(:bridge_cli), do: 1
   defp role_rank(:bridge_packet), do: 2
+  defp role_rank(:ignore), do: 8
   defp role_rank(_), do: 9
 
   defp hex4(n) when is_integer(n),

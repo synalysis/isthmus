@@ -10,7 +10,8 @@ defmodule IsthmusWeb.Admin.CopyTest do
   end
 
   test "device_purpose for unknown radios" do
-    assert {"Radio not identified", _} = Copy.device_purpose(%{kind: :unknown})
+    assert {"USB serial port", blurb} = Copy.device_purpose(%{kind: :unknown})
+    assert blurb =~ "firmware"
     assert {"Companion radio", _} = Copy.device_purpose(%{kind: :companion})
     assert {"Companion radio", blurb} = Copy.device_purpose(%{kind: :companion, ble?: true})
     assert blurb =~ "Bluetooth"
@@ -47,12 +48,29 @@ defmodule IsthmusWeb.Admin.CopyTest do
              Copy.device_purpose(%{kind: :unknown, probe_error: :eacces})
   end
 
+  test "device_purpose does not treat a mixed dual-CDC radio as ignored" do
+    device = %{
+      kind: :unknown,
+      ports: [%{role: :meshtastic}, %{role: :ignore}]
+    }
+
+    assert {"USB serial port", _} = Copy.device_purpose(device)
+    assert {"Ignored USB port", _} = Copy.device_purpose(%{kind: :unknown, usb_role: :ignore})
+  end
+
   test "role_plain avoids Unassigned" do
-    assert Copy.role_plain(:unassigned) == "Not identified yet"
+    assert Copy.role_plain(:unassigned) == "No role yet"
     assert Copy.role_plain(:bridge_packet) == "Mesh traffic port"
+    assert Copy.role_plain(:ignore) == "Ignored"
   end
 
   test "group_kind_label maps bridge to group" do
     assert Copy.group_kind_label("bridge") == "group"
+  end
+
+  test "usb_device_name is the tty basename" do
+    assert Copy.usb_device_name("/dev/ttyACM0") == "ttyACM0"
+    assert Copy.usb_device_name("/dev/ttyUSB1") == "ttyUSB1"
+    assert Copy.usb_device_name("ble:AA:BB:CC:DD:EE:FF") == nil
   end
 end

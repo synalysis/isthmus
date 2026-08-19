@@ -72,4 +72,29 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
     html = view |> element("#scan-bluetooth-btn") |> render_click()
     assert html =~ ~r/id="scan-bluetooth-btn"[^>]*\bdisabled\b/
   end
+
+  test "assign_usb_role persists a MeshCore companion role", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshcore")
+
+    render_submit(view, "assign_usb_role", %{
+      "path" => "/dev/ttyACM2",
+      "serial" => "CP1",
+      "vendor_id" => Integer.to_string(0x2886),
+      "product_id" => Integer.to_string(0x802F),
+      "role" => "companion"
+    })
+
+    html = render(view)
+    assert html =~ "MeshCore companion"
+
+    assert [%{"path" => "/dev/ttyACM2", "role" => "companion"}] =
+             Isthmus.Networks.UsbAssignments.list()
+  end
+
+  test "assign_usb_firmware reports an unknown device", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshcore")
+
+    render_submit(view, "assign_usb_firmware", %{"device_id" => "missing", "kind" => "island"})
+    assert render(view) =~ "Unknown device"
+  end
 end

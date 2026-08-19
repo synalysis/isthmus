@@ -7,6 +7,8 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
   alias Isthmus.QR
   alias Isthmus.Registrations
   alias IsthmusWeb.Admin.RadioChannels
+  alias IsthmusWeb.Admin.UsbRole
+  import IsthmusWeb.Admin.UsbRole, only: [usb_role_picker: 1, usb_firmware_picker: 1]
 
   defp port_dom_key(path) do
     path
@@ -63,7 +65,9 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
             <div>
               <h2 class="text-lg font-medium">Connected radios</h2>
               <p class="text-xs opacity-70 mt-1">
-                Each USB companion is listed separately. Slot 0 is PRIMARY
+                Each USB companion is listed separately. Choose a USB role on
+                serial ports — Isthmus does not guess Meshtastic vs MeshCore.
+                Slot 0 is PRIMARY
                 (frequency); assign a group to slots 1–7 on <strong class="font-medium">this</strong>
                 radio’s node id — the same slot on another radio is a different channel.
                 <strong class="font-medium">Invite</strong>
@@ -158,11 +162,12 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
           <%= if @devices == [] do %>
             <div class="rounded-lg border border-base-300 bg-base-200/50 p-4" id="devices-empty">
               <p class="text-sm opacity-70">
-                No Meshtastic companions found. Plug in a radio and Rescan USB, or use
-                <strong class="font-medium">Scan Bluetooth</strong>
+                No Meshtastic companions found. Plug in a USB radio, choose
+                <strong class="font-medium">Meshtastic companion</strong>
+                on that port, or use <strong class="font-medium">Scan Bluetooth</strong>
                 for a pairing-mode companion.
                 Pin <code class="font-mono">ISTHMUS_MESHTASTIC_PORT</code>
-                only to override USB auto-detect.
+                to skip the USB role picker.
               </p>
             </div>
           <% end %>
@@ -181,6 +186,12 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                 <div class="min-w-0 space-y-1">
                   <div class="flex flex-wrap items-center gap-2">
                     <h3 class="card-title text-lg">{device.label}</h3>
+                    <span
+                      :if={name = AdminCopy.usb_device_name(device.path)}
+                      class="font-mono text-sm opacity-70"
+                    >
+                      {name}
+                    </span>
                     <span class="badge badge-sm badge-outline">{purpose_title}</span>
                     <span :if={device.ble?} class="badge badge-sm badge-info">Bluetooth</span>
                     <span class={["badge badge-sm", AdminCopy.status_badge_class(status_atom)]}>
@@ -205,7 +216,9 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                         class="text-sm text-warning"
                         id={"#{device_dom_id(device)}-identify-hint"}
                       >
-                        Isthmus has not identified this radio’s firmware yet. Power it on and Rescan USB.
+                        Choose the firmware on this radio. Dual CDC ports are
+                        classified after that — you do not pick config vs traffic
+                        by hand.
                       </p>
                     <% true -> %>
                   <% end %>
@@ -254,6 +267,7 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                     Disconnect
                   </button>
                   <button
+                    :if={device.kind == :meshtastic}
                     class="btn btn-outline btn-sm"
                     id={"reconnect-#{device_dom_id(device)}"}
                     phx-click="reconnect"
@@ -265,6 +279,7 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                     Reconnect
                   </button>
                   <button
+                    :if={device.kind == :meshtastic}
                     class={[
                       "btn btn-outline btn-sm",
                       @time_syncing_port == device.path && "loading"
@@ -278,6 +293,7 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                     {if(@time_syncing_port == device.path, do: "Syncing time…", else: "Sync time")}
                   </button>
                   <button
+                    :if={device.kind == :meshtastic}
                     class={["btn btn-outline btn-sm", @channel_syncing && "loading"]}
                     id={"sync-channels-#{device_dom_id(device)}"}
                     phx-click="sync_channels"
@@ -288,6 +304,7 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                     {if(@channel_syncing, do: "Syncing…", else: "Sync channels")}
                   </button>
                   <button
+                    :if={device.kind == :meshtastic}
                     class="btn btn-primary btn-sm"
                     id={"open-settings-#{device_dom_id(device)}"}
                     phx-click="open_device_config"
@@ -298,6 +315,26 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                     Device settings
                   </button>
                 </div>
+              </div>
+
+              <div :if={not device.ble?} class="flex flex-col gap-2">
+                <.usb_firmware_picker
+                  id={"usb-firmware-#{device_dom_id(device)}"}
+                  device_id={device.id}
+                  current={UsbRole.firmware_kind(device)}
+                  source={device.source}
+                />
+
+                <.usb_role_picker
+                  :if={is_binary(device.path)}
+                  id={"usb-role-#{device_dom_id(device)}"}
+                  path={device.path}
+                  serial_number={device.serial_number}
+                  vendor_id={device.vendor_id}
+                  product_id={device.product_id}
+                  current={device.usb_role}
+                  source={device.source}
+                />
               </div>
 
               <details class="text-xs opacity-70">

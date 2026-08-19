@@ -92,6 +92,7 @@ defmodule Isthmus.Networks.Meshtastic.DevicesTest do
     assert device.probe_error == :eacces
     refute device.active?
     assert device.label =~ "CP2102"
+    assert device.usb_role == nil
   end
 
   test "inventory skips a UART already claimed as MeshCore companion" do

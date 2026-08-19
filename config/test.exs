@@ -15,10 +15,12 @@ config :isthmus, vault_secret: "test-vault-secret-not-for-production!!"
 config :isthmus, rns_sync_on_boot: false
 
 # Do not open real USB serial ports during the test suite.
+# `assignments: []` keeps Discover off Policy/SQLite (shared sandbox + WAL busy).
 config :isthmus, Isthmus.Networks.MeshCore.Discover,
   probe: fn _path, _meta -> :unknown end,
   enumerate: fn -> %{} end,
-  env: fn _key -> nil end
+  env: fn _key -> nil end,
+  assignments: []
 
 # App SyntheticNode must not poll the sandbox DB between tests.
 config :isthmus, Isthmus.Networks.MeshCore.SyntheticNode, autoload: false

@@ -48,6 +48,9 @@ defmodule IsthmusWeb.Admin.Copy do
       usb_permission_denied?(device) ->
         {"USB permission denied", "The container cannot open this serial port"}
 
+      device[:usb_role] == :ignore or ignore_port?(device) ->
+        {"Ignored USB port", "Isthmus will not open this port"}
+
       device[:ble?] == true or device[:kind] == :companion ->
         blurb =
           if device[:ble?] == true,
@@ -68,7 +71,17 @@ defmodule IsthmusWeb.Admin.Copy do
         {"Island tunnel radio", "Carries MeshCore mesh traffic for tunnels"}
 
       true ->
-        {"Radio not identified", "Plug in or power on, then Rescan USB"}
+        {"USB serial port",
+         "Choose the firmware on this radio — Isthmus then classifies the USB ports"}
+    end
+  end
+
+  defp ignore_port?(device) when is_map(device) do
+    ports = List.wrap(device[:ports])
+
+    cond do
+      ports == [] -> false
+      true -> Enum.all?(ports, &(&1[:role] == :ignore))
     end
   end
 
@@ -112,7 +125,7 @@ defmodule IsthmusWeb.Admin.Copy do
         {:unknown, "Bootloader"}
 
       device[:kind] == :unknown ->
-        {:unknown, "Not identified"}
+        {:unknown, "Needs firmware"}
 
       is_map(device[:companion_health]) and device[:companion_health][:status] == :error ->
         {:error, "Error"}
@@ -126,13 +139,28 @@ defmodule IsthmusWeb.Admin.Copy do
   def role_plain(:meshtastic), do: "Companion port"
   def role_plain(:bridge_cli), do: "Config port"
   def role_plain(:bridge_packet), do: "Mesh traffic port"
-  def role_plain(_), do: "Not identified yet"
+  def role_plain(:rnode), do: "RNode"
+  def role_plain(:ignore), do: "Ignored"
+  def role_plain(_), do: "No role yet"
 
   def role_used_for(:companion), do: "Channels, DMs, contact sync"
   def role_used_for(:meshtastic), do: "Channels, DMs, LoRa config"
   def role_used_for(:bridge_cli), do: "Radio frequency and TX settings"
   def role_used_for(:bridge_packet), do: "Mesh traffic for tunnels and group contacts"
-  def role_used_for(_), do: "Waiting for Rescan to identify this port"
+  def role_used_for(:rnode), do: "Reticulum interface"
+  def role_used_for(:ignore), do: "Isthmus will not open this port"
+  def role_used_for(_), do: "Choose a USB role, then Apply"
+
+  @doc "Short USB node name (`ttyACM0`), or nil for Bluetooth keys."
+  def usb_device_name(path) when is_binary(path) do
+    cond do
+      String.starts_with?(path, "ble:") -> nil
+      String.starts_with?(path, "BLE:") -> nil
+      true -> Path.basename(path)
+    end
+  end
+
+  def usb_device_name(_), do: nil
 
   @doc "DB group kind → user-facing label."
   def group_kind_label("bridge"), do: "group"

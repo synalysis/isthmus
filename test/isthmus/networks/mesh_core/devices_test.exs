@@ -266,7 +266,7 @@ defmodule Isthmus.Networks.MeshCore.DevicesTest do
     assert device.active_companion?
   end
 
-  test "inventory omits unidentified CP2102 UART bridges (those belong on Meshtastic)" do
+  test "inventory lists unidentified CP2102 UART bridges so a USB role can be chosen" do
     ports = [
       %{
         name: "ttyUSB0",
@@ -290,7 +290,10 @@ defmodule Isthmus.Networks.MeshCore.DevicesTest do
         bridge_link: %{}
       )
 
-    assert devices == []
+    assert [device] = devices
+    assert device.kind == :unknown
+    assert device.probe_error == :eacces
+    assert hd(device.ports).role == :unassigned
   end
 
   test "inventory still lists unidentified ACM radios and records probe errors" do

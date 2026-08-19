@@ -122,4 +122,30 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
     assert has_element?(view, "#ble-pin-input")
     assert render(view) =~ "Meshtastic_Andreas"
   end
+
+  test "assign_usb_role persists a Meshtastic companion role", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
+
+    render_submit(view, "assign_usb_role", %{
+      "path" => "/dev/ttyUSB0",
+      "serial" => "ABC123",
+      "vendor_id" => Integer.to_string(0x10C4),
+      "product_id" => Integer.to_string(0xEA60),
+      "role" => "meshtastic"
+    })
+
+    html = render(view)
+    assert html =~ "Meshtastic companion"
+
+    assert [%{"path" => "/dev/ttyUSB0", "role" => "meshtastic"}] =
+             Isthmus.Networks.UsbAssignments.list()
+  end
+
+  test "assign_usb_firmware reports an unknown device", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
+
+    render_submit(view, "assign_usb_firmware", %{"device_id" => "missing", "kind" => "meshtastic"})
+
+    assert render(view) =~ "Unknown device"
+  end
 end
