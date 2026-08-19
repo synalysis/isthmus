@@ -48,6 +48,12 @@ docker compose up --build
 
 Data persists in the `isthmus_data` volume at `/data/isthmus.db`.
 
+USB serial radios need the host device in the container. Pass
+`/dev/ttyUSB0` (or `privileged: true`) and **do not set a non-root user**.
+The image starts as root, `chmod 666` on `ttyUSB*`/`ttyACM*`, then drops to
+`nobody`. Without that, a CP2102 enumerates but Isthmus cannot open it, so the
+radio stays unidentified (often listed as MeshCore until firmware is probed).
+
 ## Public site (isthmus.channel)
 
 The Elm Land public site lives in [`isthmus_channel/`](./isthmus_channel). `render.yaml` deploys it as the `isthmus-channel` static site.

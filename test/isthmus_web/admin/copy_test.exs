@@ -41,6 +41,13 @@ defmodule IsthmusWeb.Admin.CopyTest do
     refute Copy.usb_permission_denied?(%{probe_error: nil})
     refute Copy.usb_permission_denied?(%{kind: :unknown})
   end
+
+  test "device_purpose for USB permission denied" do
+    assert {"USB permission denied", _} =
+             Copy.device_purpose(%{kind: :unknown, probe_error: :eacces})
+  end
+
+  test "role_plain avoids Unassigned" do
     assert Copy.role_plain(:unassigned) == "Not identified yet"
     assert Copy.role_plain(:bridge_packet) == "Mesh traffic port"
   end

@@ -52,8 +52,7 @@ defmodule IsthmusWeb.LoginLive do
             Use a NIP-07 Nostr browser extension (Alby, nos2x, AKA Profiles, …).
             Admin ops require an allowlisted npub. Extensions inject
             <code class="text-sm">window.nostr</code>
-            only on HTTPS or localhost — a LAN
-            <code class="text-sm">http://</code>
+            only on HTTPS or localhost — a LAN <code class="text-sm">http://</code>
             origin will not see a signer.
           </p>
         </div>

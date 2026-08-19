@@ -19,10 +19,13 @@ services:
     volumes:
       - isthmus_data:/data
     # USB radios: pass the host device and start as root so the entrypoint can
-    # chmod it (host dialout GID often differs from Debian's).
+    # chmod it (host dialout GID often differs from Debian's). Do not set
+    # `user:` — Coolify/compose must leave the container as root at start.
     # devices:
     #   - /dev/ttyUSB0:/dev/ttyUSB0
     # privileged: true
+    # group_add:
+    #   - "18"
     restart: unless-stopped
     healthcheck:
       test:

@@ -79,7 +79,10 @@ defmodule Isthmus.Networks.MeshCore.Devices do
       by_path
       |> Map.values()
       |> group_ports()
-      |> Enum.map(&build_device(&1, path_roles, companions, bridge_cli, bridge_link, probe_errors))
+      |> Enum.map(
+        &build_device(&1, path_roles, companions, bridge_cli, bridge_link, probe_errors)
+      )
+      |> Enum.reject(&uart_bridge_unidentified?/1)
 
     (usb ++ ble_devices(companions))
     |> Enum.sort_by(&device_sort/1)
@@ -332,6 +335,28 @@ defmodule Isthmus.Networks.MeshCore.Devices do
       channels: Companion.list_channels(health[:port])
     }
   end
+
+  # CP210x/CH340 ESP32 boards show up as unidentified USB on MeshCore when the
+  # probe cannot open the port (typical Docker nobody vs dialout). They belong
+  # on the Meshtastic page until firmware is classified as MeshCore.
+  defp uart_bridge_unidentified?(%{kind: :unknown, ble?: ble?} = device)
+       when ble? in [false, nil] do
+    path =
+      case List.first(device[:ports] || []) do
+        %{path: p} -> p
+        _ -> nil
+      end
+
+    Discover.usb_uart_bridge?(%{
+      description: device[:description],
+      manufacturer: device[:manufacturer],
+      vendor_id: device[:vendor_id],
+      product_id: device[:product_id],
+      path: path
+    })
+  end
+
+  defp uart_bridge_unidentified?(_), do: false
 
   defp match_port?(health, ports) when is_map(health) do
     path = health[:port]

@@ -399,8 +399,7 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                         Isthmus cannot open this USB port (permission denied). The Docker
                         process is not allowed to use serial devices — pass
                         <code class="text-xs">/dev/ttyUSB*</code>
-                        into the container and grant the host
-                        <code class="text-xs">dialout</code>
+                        into the container and grant the host <code class="text-xs">dialout</code>
                         group, or run the image so the entrypoint can chmod the device.
                       </p>
                     <% device.kind == :unknown -> %>

@@ -16,7 +16,7 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
           id: String.t(),
           label: String.t(),
           path: String.t() | nil,
-          kind: :meshtastic,
+          kind: :meshtastic | :unknown,
           serial_number: String.t() | nil,
           vendor_id: non_neg_integer() | nil,
           product_id: non_neg_integer() | nil,
@@ -27,7 +27,8 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
           primary?: boolean(),
           active?: boolean(),
           ble?: boolean(),
-          ble_address: String.t() | nil
+          ble_address: String.t() | nil,
+          probe_error: term() | nil
         }
 
   def inventory(opts \\ []) do
@@ -37,6 +38,7 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
 
     by_path = Map.new(ports, &{&1.path, &1})
     health_by_port = Map.new(healths, fn h -> {h[:port], h} end)
+    probe_errors = roles[:probe_errors] || %{}
 
     discover_paths =
       (roles[:meshtastic_ports] || [])
@@ -58,15 +60,32 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
       |> Enum.map(& &1[:port])
       |> Enum.filter(&(is_binary(&1) and &1 != ""))
 
-    usb =
+    classified =
       (discover_paths ++ [primary_path] ++ running_paths)
       |> Enum.reject(&is_nil/1)
       |> Enum.reject(&String.starts_with?(&1, "ble:"))
       |> Enum.uniq()
+
+    claimed = MapSet.union(MapSet.new(classified), meshcore_claimed_paths(roles))
+
+    unidentified =
+      ports
+      |> Enum.filter(fn port ->
+        is_binary(port[:path]) and
+          not MapSet.member?(claimed, port.path) and
+          Discover.usb_uart_bridge?(port)
+      end)
+      |> Enum.map(& &1.path)
+      |> Enum.uniq()
+
+    usb =
+      (classified ++ unidentified)
+      |> Enum.uniq()
       |> Enum.map(fn path ->
         meta = by_path[path] || synthetic_port(path, roles)
         health = health_by_port[path] || %{status: :disconnected, port: path}
-        build_device(meta, health, path == primary_path)
+        classified? = path in classified
+        build_device(meta, health, path == primary_path, classified?, Map.get(probe_errors, path))
       end)
 
     (usb ++ ble_devices(healths))
@@ -111,9 +130,33 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
       primary?: false,
       active?: health[:status] == :online,
       ble?: true,
-      ble_address: address
+      ble_address: address,
+      probe_error: nil
     }
   end
+
+  defp meshcore_claimed_paths(roles) when is_map(roles) do
+    singles =
+      Enum.flat_map([:companion, :bridge_cli, :bridge_packet], fn role ->
+        case roles[role] do
+          %{path: path} when is_binary(path) -> [path]
+          _ -> []
+        end
+      end)
+
+    lists =
+      Enum.flat_map([:companion_ports, :rnode_ports], fn key ->
+        Enum.flat_map(List.wrap(roles[key]), fn
+          %{path: path} when is_binary(path) -> [path]
+          path when is_binary(path) -> [path]
+          _ -> []
+        end)
+      end)
+
+    MapSet.new(singles ++ lists)
+  end
+
+  defp meshcore_claimed_paths(_), do: MapSet.new()
 
   defp synthetic_port(path, roles) do
     detail =
@@ -138,26 +181,28 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
     }
   end
 
-  defp build_device(meta, health, primary?) do
+  defp build_device(meta, health, primary?, classified?, probe_error) do
     node = health[:node_id]
     label = device_label(meta, node)
+    path = meta[:path] || health[:port]
 
     %{
       id: MeshDevices.device_id(meta),
       label: label,
-      path: meta[:path] || health[:port],
-      kind: :meshtastic,
+      path: path,
+      kind: if(classified?, do: :meshtastic, else: :unknown),
       serial_number: blank(meta[:serial_number]),
       vendor_id: meta[:vendor_id],
       product_id: meta[:product_id],
       manufacturer: blank(meta[:manufacturer]),
       description: blank(meta[:description]),
       health: health,
-      channels: Companion.list_channels(health[:port]),
-      primary?: primary? or health[:primary?] == true,
-      active?: health[:status] == :online,
+      channels: if(classified?, do: Companion.list_channels(health[:port] || path), else: []),
+      primary?: classified? and (primary? or health[:primary?] == true),
+      active?: classified? and health[:status] == :online,
       ble?: false,
-      ble_address: nil
+      ble_address: nil,
+      probe_error: probe_error
     }
   end
 

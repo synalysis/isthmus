@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # Docker entrypoint: make USB serial nodes writable, then drop privileges.
+#
+# Host dialout GID often differs from Debian's (Fedora=18, Debian=20), so
+# usermod -aG dialout is not enough. World-writable nodes work across GIDs.
+# --keep-groups preserves docker --group-add (host dialout) if it was set.
 set -euo pipefail
 
 chmod_usb() {
@@ -12,8 +16,9 @@ chmod_usb() {
 
 drop_to_nobody() {
   if command -v setpriv >/dev/null 2>&1; then
-    exec setpriv --reuid=nobody --regid=nogroup --clear-groups --inh-caps=-all -- "$@"
+    exec setpriv --reuid=nobody --regid=nogroup --keep-groups --inh-caps=-all -- "$@"
   fi
+  echo "isthmus: setpriv not found; staying root so USB serial stays usable" >&2
   exec "$@"
 }
 

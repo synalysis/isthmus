@@ -189,6 +189,26 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                     <span :if={device.primary?} class="badge badge-sm badge-ghost">primary</span>
                   </div>
                   <p class="text-sm opacity-80">{purpose_blurb}</p>
+                  <%= cond do %>
+                    <% AdminCopy.usb_permission_denied?(device) -> %>
+                      <p
+                        class="text-sm text-warning"
+                        id={"#{device_dom_id(device)}-identify-hint"}
+                      >
+                        Isthmus cannot open this USB port (permission denied). Pass
+                        <code class="text-xs">/dev/ttyUSB*</code>
+                        into the container and do not set a non-root user — the
+                        entrypoint chmods the node, then drops to nobody.
+                      </p>
+                    <% device.kind == :unknown -> %>
+                      <p
+                        class="text-sm text-warning"
+                        id={"#{device_dom_id(device)}-identify-hint"}
+                      >
+                        Isthmus has not identified this radio’s firmware yet. Power it on and Rescan USB.
+                      </p>
+                    <% true -> %>
+                  <% end %>
                   <p
                     :if={device.active? and health[:region_label]}
                     class="text-sm opacity-70"

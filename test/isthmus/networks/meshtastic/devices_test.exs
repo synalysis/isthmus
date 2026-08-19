@@ -60,6 +60,67 @@ defmodule Isthmus.Networks.Meshtastic.DevicesTest do
     refute extra.ble?
   end
 
+  test "inventory lists an unidentified CP2102 UART on Meshtastic, not as a live companion" do
+    ports = [
+      %{
+        name: "ttyUSB0",
+        path: "/dev/ttyUSB0",
+        score: 1,
+        reasons: [],
+        description: "CP2102 USB to UART Bridge Controller",
+        manufacturer: "Silicon Labs",
+        serial_number: "0001",
+        vendor_id: 0x10C4,
+        product_id: 0xEA60
+      }
+    ]
+
+    devices =
+      Devices.inventory(
+        ports: ports,
+        roles: %{
+          meshtastic: nil,
+          meshtastic_ports: [],
+          probe_errors: %{"/dev/ttyUSB0" => :eacces}
+        },
+        healths: []
+      )
+
+    assert [device] = devices
+    assert device.path == "/dev/ttyUSB0"
+    assert device.kind == :unknown
+    assert device.probe_error == :eacces
+    refute device.active?
+    assert device.label =~ "CP2102"
+  end
+
+  test "inventory skips a UART already claimed as MeshCore companion" do
+    ports = [
+      %{
+        name: "ttyUSB0",
+        path: "/dev/ttyUSB0",
+        score: 1,
+        reasons: [],
+        description: "CP2102 USB to UART Bridge Controller",
+        vendor_id: 0x10C4,
+        product_id: 0xEA60
+      }
+    ]
+
+    devices =
+      Devices.inventory(
+        ports: ports,
+        roles: %{
+          companion: %{path: "/dev/ttyUSB0", source: :detected, detail: %{}},
+          meshtastic: nil,
+          meshtastic_ports: []
+        },
+        healths: []
+      )
+
+    assert devices == []
+  end
+
   test "inventory includes Bluetooth companions from health" do
     devices =
       Devices.inventory(

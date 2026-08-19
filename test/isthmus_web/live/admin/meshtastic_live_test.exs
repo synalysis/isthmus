@@ -24,7 +24,10 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
     {:ok, view, html} = live(conn, ~p"/admin/meshtastic")
 
     assert has_element?(view, "#connected-radios")
-    assert has_element?(view, "#devices-empty")
+
+    assert has_element?(view, "#devices-empty") or
+             has_element?(view, "#connected-radios [data-port]")
+
     assert has_element?(view, "#rescan-meshtastic-btn")
     assert has_element?(view, "#scan-bluetooth-btn")
     refute has_element?(view, "#groups-channels")

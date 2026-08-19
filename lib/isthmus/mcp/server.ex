@@ -253,6 +253,7 @@ defmodule Isthmus.MCP.Server do
     param(:address, :string, required: true, description: "Bluetooth MAC address")
     param(:pin, :string, description: "Pairing PIN; omit unless the radio is prompting")
     param(:name, :string, description: "Optional advertised name to remember")
+
     param(:wait_ms, :integer,
       default: 0,
       description: "Wait up to 15s for online; omit and poll list_radios instead"

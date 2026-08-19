@@ -478,7 +478,8 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   def serial_firmware_ambiguous?(_), do: false
 
-  defp usb_uart_bridge?(port) when is_map(port) do
+  @doc false
+  def usb_uart_bridge?(port) when is_map(port) do
     vid = port[:vendor_id]
 
     desc =
@@ -498,6 +499,8 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       String.contains?(desc, "ftdi") or
       String.contains?(desc, "ttyusb")
   end
+
+  def usb_uart_bridge?(_), do: false
 
   defp acm_like?(path) do
     Isthmus.Networks.Uart.acm?(path)
@@ -551,8 +554,9 @@ defmodule Isthmus.Networks.MeshCore.Discover do
             end
           end
 
-        {:error, _} ->
-          :unknown
+        {:error, reason} ->
+          Logger.warning("MeshCore discover: UART start #{path} failed: #{inspect(reason)}")
+          {:error, reason}
       end
     after
       Process.flag(:trap_exit, prev_trap)

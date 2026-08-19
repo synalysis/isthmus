@@ -45,6 +45,9 @@ defmodule IsthmusWeb.Admin.Copy do
       bootloader_usb?(device) ->
         {"USB bootloader", "Not running companion firmware Isthmus can use"}
 
+      usb_permission_denied?(device) ->
+        {"USB permission denied", "The container cannot open this serial port"}
+
       device[:ble?] == true or device[:kind] == :companion ->
         blurb =
           if device[:ble?] == true,
