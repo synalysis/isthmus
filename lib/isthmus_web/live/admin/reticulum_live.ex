@@ -7,6 +7,7 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
   alias Isthmus.Networks.Reticulum.ConfigFile
   alias Isthmus.Networks.Reticulum.RNode
   alias Isthmus.Registrations
+  alias IsthmusWeb.Admin.FirmwareOffer
 
   @impl true
   def mount(_params, _session, socket) do
@@ -18,11 +19,16 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
      |> assign(:iface_form, blank_iface_form())
      |> assign(:iface_modal, false)
      |> assign(:sidecar_health, %{status: :unknown})
+     |> FirmwareOffer.mount_assigns()
      |> assign_data()}
   end
 
   @impl true
   def handle_info(:refresh, socket), do: {:noreply, assign_data(socket)}
+
+  def handle_info(:refresh_firmware_catalog, socket) do
+    {:noreply, FirmwareOffer.handle_refresh(socket)}
+  end
 
   @impl true
   def handle_event("iface_validate", %{"iface" => params}, socket) do
@@ -65,6 +71,17 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
      socket
      |> assign(:iface_form, to_form(RNode.default_form_params(path), as: :iface))
      |> assign(:iface_modal, true)}
+  end
+
+  def handle_event("refresh_firmware_catalog", _params, socket) do
+    send(self(), :refresh_firmware_catalog)
+    {:noreply, assign(socket, :firmware_catalog_loading, true)}
+  end
+
+  def handle_event("assign_usb_board", params, socket) do
+    id = params["device_id"] || params[:device_id]
+    board = params["board"] || params[:board]
+    {:noreply, FirmwareOffer.pick_board(socket, id, board)}
   end
 
   def handle_event("rescan_rnodes", _params, socket) do

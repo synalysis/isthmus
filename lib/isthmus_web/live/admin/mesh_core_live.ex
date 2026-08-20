@@ -14,6 +14,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
   alias Isthmus.Networks.MeshCore.Supervisor, as: MeshCoreSupervisor
   alias Isthmus.Networks.MeshCore.SyntheticNode
   alias Isthmus.Registrations
+  alias IsthmusWeb.Admin.FirmwareOffer
   alias IsthmusWeb.Admin.RadioChannels
   alias IsthmusWeb.Admin.UsbRole
 
@@ -33,12 +34,14 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
      |> assign(:channel_invite, nil)
      |> assign(:radio_applying, false)
      |> assign(:radio_modal, nil)
+     |> assign(:ports_modal_id, nil)
      |> assign(:synthetic_health, %{status: :unknown, identities: []})
      |> assign(:radio_form, to_form(RadioParams.empty_form_params(), as: :radio))
      |> assign(:ble_scan, [])
      |> assign(:ble_scanning, false)
      |> assign(:ble_connecting, nil)
      |> assign(:ble_pin, "123456")
+     |> FirmwareOffer.mount_assigns()
      |> refresh()}
   end
 
@@ -197,6 +200,22 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     end
   end
 
+  def handle_event("refresh_firmware_catalog", _params, socket) do
+    {:noreply,
+     socket
+     |> assign(:firmware_catalog_loading, true)
+     |> then(fn socket ->
+       send(self(), :refresh_firmware_catalog)
+       socket
+     end)}
+  end
+
+  def handle_event("assign_usb_board", params, socket) do
+    id = params["device_id"] || params[:device_id]
+    board = params["board"] || params[:board]
+    {:noreply, FirmwareOffer.pick_board(socket, id, board)}
+  end
+
   def handle_event("assign_usb_firmware", params, socket) do
     id = params["device_id"] || params[:device_id]
     kind = params["kind"] || params[:kind]
@@ -239,6 +258,15 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Rescan failed: #{inspect(reason)}")}
     end
+  end
+
+  def handle_event("open_ports_channels", params, socket) do
+    id = params["device_id"] || params["device-id"]
+    {:noreply, assign(socket, :ports_modal_id, id)}
+  end
+
+  def handle_event("close_ports_channels", _params, socket) do
+    {:noreply, assign(socket, :ports_modal_id, nil)}
   end
 
   def handle_event("open_radio_config", %{"device_id" => id}, socket) do
@@ -357,6 +385,10 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
 
+  def handle_info(:refresh_firmware_catalog, socket) do
+    {:noreply, FirmwareOffer.handle_refresh(socket)}
+  end
+
   def handle_info({:meshcore_status, _kind, _health}, socket) do
     {:noreply, refresh(socket)}
   end
@@ -414,7 +446,18 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     |> assign(:ble_connecting, connecting)
     |> assign(:channel_syncing, socket.assigns[:channel_syncing] || false)
     |> assign(:radio_applying, socket.assigns[:radio_applying] || false)
+    |> clear_missing_ports_modal(devices)
     |> assign_ble_busy()
+  end
+
+  defp clear_missing_ports_modal(socket, devices) do
+    id = socket.assigns[:ports_modal_id]
+
+    if is_binary(id) and not Enum.any?(devices, &(&1.id == id)) do
+      assign(socket, :ports_modal_id, nil)
+    else
+      socket
+    end
   end
 
   defp assign_ble_busy(socket) do

@@ -112,6 +112,8 @@ defmodule Isthmus.Networks.MeshCore.Companion.Status do
       cr: info[:cr],
       tx_power: info[:tx_power],
       max_tx_power: info[:max_tx_power],
+      firmware_version: state[:firmware_version],
+      firmware_model: state[:firmware_model],
       primary?: state[:fixed_port] != true
     }
   end

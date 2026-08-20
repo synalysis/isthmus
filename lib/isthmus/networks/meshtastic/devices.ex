@@ -245,7 +245,9 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
       ble_address: nil,
       probe_error: probe_error,
       usb_role: usb_role,
-      source: source
+      source: source,
+      firmware_version: health[:firmware_version],
+      firmware_model: health[:firmware_model]
     }
   end
 

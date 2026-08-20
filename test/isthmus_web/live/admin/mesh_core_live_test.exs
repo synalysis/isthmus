@@ -4,6 +4,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
   import Phoenix.LiveViewTest
 
   alias Isthmus.Accounts
+  alias Isthmus.FirmwareCatalogFixtures
   alias Isthmus.Nostr.Bech32
 
   setup %{conn: conn} do
@@ -27,6 +28,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
     assert has_element?(view, "#island-mesh")
     assert has_element?(view, "#mesh-contacts")
     assert has_element?(view, "#rescan-devices-btn")
+    assert has_element?(view, "#refresh-firmware-catalog-btn")
     assert has_element?(view, "#scan-bluetooth-btn")
     refute has_element?(view, "#groups-channels")
     refute has_element?(view, "#companion-setup-card")
@@ -96,5 +98,28 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
 
     render_submit(view, "assign_usb_firmware", %{"device_id" => "missing", "kind" => "island"})
     assert render(view) =~ "Unknown device"
+  end
+
+  test "connected companion shows latest download and a firmware update badge", %{conn: conn} do
+    {previous, _detail} = FirmwareCatalogFixtures.seed_meshcore_wio(firmware_version: "1.16.0")
+
+    on_exit(fn -> FirmwareCatalogFixtures.cleanup_meshcore_wio(previous) end)
+
+    {:ok, view, _html} = live(conn, ~p"/admin/meshcore")
+
+    assert has_element?(view, "#usb-firmware-offer-device-usb-2886-1667-WIO1")
+    assert has_element?(view, "#usb-firmware-offer-device-usb-2886-1667-WIO1-download")
+    assert has_element?(view, "#device-usb-2886-1667-WIO1-firmware-update")
+    assert render(view) =~ "WioTrackerL1_companion_radio_usb"
+    assert render(view) =~ "1.17.1"
+
+    refute has_element?(view, "#meshcore-ports-modal")
+    refute has_element?(view, "#device-usb-2886-1667-WIO1-ports")
+    assert has_element?(view, "#open-ports-device-usb-2886-1667-WIO1")
+
+    view |> element("#open-ports-device-usb-2886-1667-WIO1") |> render_click()
+    assert has_element?(view, "#meshcore-ports-modal")
+    assert has_element?(view, "#device-usb-2886-1667-WIO1-ports")
+    assert has_element?(view, "#channels-device-usb-2886-1667-WIO1")
   end
 end

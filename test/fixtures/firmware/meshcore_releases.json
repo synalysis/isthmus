@@ -1,0 +1,43 @@
+[
+  {
+    "tag_name": "repeater-v1.17.1",
+    "html_url": "https://github.com/meshcore-dev/MeshCore/releases/tag/repeater-v1.17.1",
+    "published_at": "2026-08-12T00:00:00Z",
+    "assets": [
+      {
+        "name": "WioTrackerL1_repeater-v1.17.1-d929643.uf2",
+        "browser_download_url": "https://example.test/WioTrackerL1_repeater-v1.17.1-d929643.uf2"
+      }
+    ]
+  },
+  {
+    "tag_name": "companion-v1.16.0",
+    "html_url": "https://github.com/meshcore-dev/MeshCore/releases/tag/companion-v1.16.0",
+    "published_at": "2026-07-01T00:00:00Z",
+    "assets": [
+      {
+        "name": "WioTrackerL1_companion_radio_usb-v1.16.0.uf2",
+        "browser_download_url": "https://example.test/WioTrackerL1_companion_radio_usb-v1.16.0.uf2"
+      }
+    ]
+  },
+  {
+    "tag_name": "companion-v1.17.1",
+    "html_url": "https://github.com/meshcore-dev/MeshCore/releases/tag/companion-v1.17.1",
+    "published_at": "2026-08-14T13:32:00Z",
+    "assets": [
+      {
+        "name": "WioTrackerL1_companion_radio_ble-v1.17.1-d929643.uf2",
+        "browser_download_url": "https://example.test/WioTrackerL1_companion_radio_ble-v1.17.1-d929643.uf2"
+      },
+      {
+        "name": "WioTrackerL1_companion_radio_usb-v1.17.1-d929643.uf2",
+        "browser_download_url": "https://example.test/WioTrackerL1_companion_radio_usb-v1.17.1-d929643.uf2"
+      },
+      {
+        "name": "Heltec_v3_companion_radio_usb-v1.17.1-d929643-merged.bin",
+        "browser_download_url": "https://example.test/Heltec_v3_companion.bin"
+      }
+    ]
+  }
+]

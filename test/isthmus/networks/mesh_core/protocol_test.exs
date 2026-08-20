@@ -9,6 +9,21 @@ defmodule Isthmus.Networks.MeshCore.ProtocolTest do
     assert Protocol.encode_outbound(:ble, frame) == frame
   end
 
+  test "parse_device_info reads version and model" do
+    build = String.pad_trailing("d929643", 12, <<0>>)
+    model = String.pad_trailing("Wio Tracker L1", 40, <<0>>)
+    ver = String.pad_trailing("1.17.1", 20, <<0>>)
+
+    info =
+      Protocol.parse_device_info(
+        <<3, 8, 8, 0::little-32, build::binary, model::binary, ver::binary>>
+      )
+
+    assert info.version == "1.17.1"
+    assert info.model == "Wio Tracker L1"
+    assert info.max_channels == 8
+  end
+
   test "device_query_frame includes app protocol version" do
     assert Protocol.device_query_frame() == <<0x16, 3>>
     assert Protocol.device_query_frame(10) == <<0x16, 10>>

@@ -39,6 +39,9 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLITest do
           String.starts_with?(data, "get tx") ->
             "> 10\n"
 
+          String.starts_with?(data, "ver") ->
+            "-> v1.8.1 firmware\n"
+
           String.starts_with?(data, "set radio") ->
             "> OK\n"
 

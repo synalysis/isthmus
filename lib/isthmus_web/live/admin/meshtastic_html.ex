@@ -8,7 +8,8 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
   alias Isthmus.Registrations
   alias IsthmusWeb.Admin.RadioChannels
   alias IsthmusWeb.Admin.UsbRole
-  import IsthmusWeb.Admin.UsbRole, only: [usb_role_picker: 1, usb_firmware_picker: 1]
+  import IsthmusWeb.Admin.UsbRole, only: [usb_firmware_picker: 1]
+  import IsthmusWeb.Admin.FirmwareOffer, only: [usb_firmware_offer: 1]
 
   defp port_dom_key(path) do
     path
@@ -52,6 +53,13 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
   defp role_label(_), do: "empty"
 
   def page(assigns) do
+    assigns =
+      assign(
+        assigns,
+        :channels_modal_device,
+        Enum.find(assigns[:devices] || [], &(&1.id == assigns[:channels_modal_id]))
+      )
+
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
       <section class="space-y-10">
@@ -65,8 +73,8 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
             <div>
               <h2 class="text-lg font-medium">Connected radios</h2>
               <p class="text-xs opacity-70 mt-1">
-                Each USB companion is listed separately. Choose a USB role on
-                serial ports — Isthmus does not guess Meshtastic vs MeshCore.
+                Each USB companion is listed separately. Choose firmware on the
+                radio — Isthmus does not guess Meshtastic vs MeshCore.
                 Slot 0 is PRIMARY
                 (frequency); assign a group to slots 1–7 on <strong class="font-medium">this</strong>
                 radio’s node id — the same slot on another radio is a different channel.
@@ -82,6 +90,14 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                 type="button"
               >
                 Rescan USB
+              </button>
+              <button
+                class={["btn btn-outline btn-sm", @firmware_catalog_loading && "loading"]}
+                phx-click="refresh_firmware_catalog"
+                id="refresh-firmware-catalog-btn"
+                type="button"
+              >
+                {if(@firmware_catalog_loading, do: "Firmware list…", else: "Refresh firmware list")}
               </button>
               <button
                 class={["btn btn-outline btn-sm", @ble_scanning && "loading"]}
@@ -198,6 +214,19 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                       {status_text}
                     </span>
                     <span :if={device.primary?} class="badge badge-sm badge-ghost">primary</span>
+                    <span
+                      :if={
+                        IsthmusWeb.Admin.FirmwareOffer.newer?(
+                          device,
+                          @board_by_device,
+                          @firmware_catalog
+                        )
+                      }
+                      class="badge badge-sm badge-warning"
+                      id={"#{device_dom_id(device)}-firmware-update"}
+                    >
+                      Firmware update
+                    </span>
                   </div>
                   <p class="text-sm opacity-80">{purpose_blurb}</p>
                   <%= cond do %>
@@ -253,6 +282,17 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                   </p>
                   <p :if={health[:last_error] && not device.active?} class="text-sm text-warning">
                     {health.last_error}
+                  </p>
+                  <p
+                    :if={device.active? and is_nil(meshtastic_radio_id(device))}
+                    class="text-sm text-warning"
+                    id={"#{device_dom_id(device)}-node-id-hint"}
+                  >
+                    Serial is open, but this radio has not sent its Meshtastic node id
+                    yet. USB-UART boards reboot on port open — wait until the
+                    radio finishes booting (often ~8s), then
+                    <strong class="font-medium">Sync channels</strong>
+                    if the node id still does not appear.
                   </p>
                 </div>
                 <div class="flex flex-wrap items-center gap-2">
@@ -314,6 +354,16 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                   >
                     Device settings
                   </button>
+                  <button
+                    :if={device.active?}
+                    class="btn btn-outline btn-sm"
+                    id={"open-channels-#{device_dom_id(device)}"}
+                    phx-click="open_channels"
+                    phx-value-device-id={device.id}
+                    type="button"
+                  >
+                    Channels
+                  </button>
                 </div>
               </div>
 
@@ -325,14 +375,14 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                   source={device.source}
                 />
 
-                <.usb_role_picker
-                  :if={is_binary(device.path)}
-                  id={"usb-role-#{device_dom_id(device)}"}
-                  path={device.path}
-                  serial_number={device.serial_number}
-                  vendor_id={device.vendor_id}
-                  product_id={device.product_id}
-                  current={device.usb_role}
+                <.usb_firmware_offer
+                  id={"usb-firmware-offer-#{device_dom_id(device)}"}
+                  device_id={device.id}
+                  kind={UsbRole.firmware_kind(device)}
+                  board_id={IsthmusWeb.Admin.FirmwareOffer.board_id(device, @board_by_device)}
+                  running_version={device[:firmware_version]}
+                  connected={device.active? == true}
+                  catalog={@firmware_catalog}
                   source={device.source}
                 />
               </div>
@@ -342,117 +392,142 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                 <p class="mt-2 font-mono break-all">{device.path}</p>
                 <p :if={device.id} class="font-mono break-all">{device.id}</p>
               </details>
-
-              <div :if={device.active?} class="space-y-4">
-                <div class="overflow-x-auto">
-                  <table class="table table-sm" id={"channels-#{device_dom_id(device)}"}>
-                    <thead>
-                      <tr>
-                        <th>Slot</th>
-                        <th>Name</th>
-                        <th>Role</th>
-                        <th>Linked group</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr :for={ch <- device.channels} id={"#{device_dom_id(device)}-ch-#{ch.index}"}>
-                        <td>{ch.index}</td>
-                        <td>{if ch.empty?, do: "—", else: ch.name}</td>
-                        <td>
-                          <span class={[
-                            "badge badge-sm",
-                            ch.empty? && "badge-ghost",
-                            not ch.empty? && ch.role == 1 && "badge-warning",
-                            not ch.empty? && ch.role != 1 && "badge-primary"
-                          ]}>
-                            {role_label(ch.role)}
-                          </span>
-                        </td>
-                        <td>
-                          <%= if ch.index == 0 do %>
-                            <div class="flex w-full flex-wrap items-center justify-end gap-2">
-                              <button
-                                type="button"
-                                class="btn btn-outline btn-xs shrink-0"
-                                id={"send-channel-#{device_dom_id(device)}-#{ch.index}"}
-                                phx-click="open_send_channel"
-                                phx-value-port={device.path}
-                                phx-value-channel_idx={ch.index}
-                              >
-                                Send message
-                              </button>
-                            </div>
-                          <% else %>
-                            <% radio_id = meshtastic_radio_id(device) %>
-                            <% linked =
-                              RadioChannels.linked_group(@groups, ch.index, radio_id, "meshtastic") %>
-                            <% choices =
-                              RadioChannels.assignable_groups(
-                                @bridges,
-                                ch.index,
-                                radio_id,
-                                "meshtastic"
-                              ) %>
-                            <%= if @bridges == [] do %>
-                              <p class="text-xs opacity-70">
-                                <.link navigate={~p"/admin/registrations"} class="link">
-                                  Create a group
-                                </.link>
-                                first.
-                              </p>
-                            <% else %>
-                              <%= if is_nil(radio_id) do %>
-                                <p class="text-xs opacity-70">
-                                  Waiting for this radio’s node id.
-                                </p>
-                              <% else %>
-                                <div class="flex flex-wrap items-center gap-2">
-                                  <form
-                                    id={"slot-group-form-#{device_dom_id(device)}-#{ch.index}"}
-                                    phx-change="assign_slot_group"
-                                    class="min-w-0 grow"
-                                  >
-                                    <input type="hidden" name="port" value={device.path} />
-                                    <input type="hidden" name="radio_id" value={radio_id} />
-                                    <input type="hidden" name="channel_idx" value={ch.index} />
-                                    <select
-                                      id={"slot-group-#{device_dom_id(device)}-#{ch.index}"}
-                                      name="group_id"
-                                      class="select select-bordered select-sm w-full max-w-xs"
-                                    >
-                                      <option value="" selected={is_nil(linked)}>—</option>
-                                      <option
-                                        :for={g <- choices}
-                                        value={g.id}
-                                        selected={linked && linked.id == g.id}
-                                      >
-                                        {g.display_name}
-                                      </option>
-                                    </select>
-                                  </form>
-                                  <button
-                                    :if={linked}
-                                    type="button"
-                                    class="btn btn-outline btn-xs shrink-0"
-                                    id={"show-invite-#{device_dom_id(device)}-#{ch.index}"}
-                                    phx-click="show_channel_invite"
-                                    phx-value-id={linked.id}
-                                    phx-value-radio_id={radio_id}
-                                  >
-                                    Invite
-                                  </button>
-                                </div>
-                              <% end %>
-                            <% end %>
-                          <% end %>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
             </div>
           </div>
+        </div>
+
+        <div
+          :if={@channels_modal_device}
+          class="modal modal-open"
+          role="dialog"
+          id="meshtastic-channels-modal"
+        >
+          <% device = @channels_modal_device %>
+          <div class="modal-box max-w-3xl">
+            <h3 class="text-lg font-semibold">Channels — {device.label}</h3>
+            <p class="mt-1 text-sm opacity-70">
+              Slot 0 is PRIMARY. Assign a group to slots 1–7 on this radio’s node id.
+            </p>
+            <div class="mt-4 overflow-x-auto">
+              <table class="table table-sm" id={"channels-#{device_dom_id(device)}"}>
+                <thead>
+                  <tr>
+                    <th>Slot</th>
+                    <th>Name</th>
+                    <th>Role</th>
+                    <th>Linked group</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr :for={ch <- device.channels} id={"#{device_dom_id(device)}-ch-#{ch.index}"}>
+                    <td>{ch.index}</td>
+                    <td>{if ch.empty?, do: "—", else: ch.name}</td>
+                    <td>
+                      <span class={[
+                        "badge badge-sm",
+                        ch.empty? && "badge-ghost",
+                        not ch.empty? && ch.role == 1 && "badge-warning",
+                        not ch.empty? && ch.role != 1 && "badge-primary"
+                      ]}>
+                        {role_label(ch.role)}
+                      </span>
+                    </td>
+                    <td>
+                      <%= if ch.index == 0 do %>
+                        <div class="flex w-full flex-wrap items-center justify-end gap-2">
+                          <button
+                            type="button"
+                            class="btn btn-outline btn-xs shrink-0"
+                            id={"send-channel-#{device_dom_id(device)}-#{ch.index}"}
+                            phx-click="open_send_channel"
+                            phx-value-port={device.path}
+                            phx-value-channel_idx={ch.index}
+                          >
+                            Send message
+                          </button>
+                        </div>
+                      <% else %>
+                        <% radio_id = meshtastic_radio_id(device) %>
+                        <% linked =
+                          RadioChannels.linked_group(@groups, ch.index, radio_id, "meshtastic") %>
+                        <% choices =
+                          RadioChannels.assignable_groups(
+                            @bridges,
+                            ch.index,
+                            radio_id,
+                            "meshtastic"
+                          ) %>
+                        <%= if @bridges == [] do %>
+                          <p class="text-xs opacity-70">
+                            <.link navigate={~p"/admin/registrations"} class="link">
+                              Create a group
+                            </.link>
+                            first.
+                          </p>
+                        <% else %>
+                          <%= if is_nil(radio_id) do %>
+                            <p class="text-xs opacity-70">
+                              Waiting for this radio’s node id. If this stays empty,
+                              the serial port opened but PhoneAPI never answered —
+                              close this dialog and use Sync channels.
+                            </p>
+                          <% else %>
+                            <div class="flex flex-wrap items-center gap-2">
+                              <form
+                                id={"slot-group-form-#{device_dom_id(device)}-#{ch.index}"}
+                                phx-change="assign_slot_group"
+                                class="min-w-0 grow"
+                              >
+                                <input type="hidden" name="port" value={device.path} />
+                                <input type="hidden" name="radio_id" value={radio_id} />
+                                <input type="hidden" name="channel_idx" value={ch.index} />
+                                <select
+                                  id={"slot-group-#{device_dom_id(device)}-#{ch.index}"}
+                                  name="group_id"
+                                  class="select select-bordered select-sm w-full max-w-xs"
+                                >
+                                  <option value="" selected={is_nil(linked)}>—</option>
+                                  <option
+                                    :for={g <- choices}
+                                    value={g.id}
+                                    selected={linked && linked.id == g.id}
+                                  >
+                                    {g.display_name}
+                                  </option>
+                                </select>
+                              </form>
+                              <button
+                                :if={linked}
+                                type="button"
+                                class="btn btn-outline btn-xs shrink-0"
+                                id={"show-invite-#{device_dom_id(device)}-#{ch.index}"}
+                                phx-click="show_channel_invite"
+                                phx-value-id={linked.id}
+                                phx-value-radio_id={radio_id}
+                              >
+                                Invite
+                              </button>
+                            </div>
+                          <% end %>
+                        <% end %>
+                      <% end %>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="modal-action">
+              <button
+                class="btn btn-ghost btn-sm"
+                type="button"
+                id="close-channels-modal-btn"
+                phx-click="close_channels"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <div class="modal-backdrop" phx-click="close_channels"></div>
         </div>
 
         <div

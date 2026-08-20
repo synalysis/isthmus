@@ -110,6 +110,7 @@ defmodule Isthmus.Networks.Meshtastic.MessageStoreTest do
     receive do
       :xmodem_timeout -> flush_xmodem_mail()
       :pull_message_store -> flush_xmodem_mail()
+      :ble_handshake -> flush_xmodem_mail()
     after
       0 -> :ok
     end

@@ -128,7 +128,8 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
       last_error: nil,
       fail_count: 0,
       radio: nil,
-      last_reply: nil
+      last_reply: nil,
+      firmware_version: nil
     }
 
     {:ok, maybe_connect(state)}
@@ -371,10 +372,27 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
       {:ok, state} ->
         tx = parse_tx_reply(state.last_reply)
         radio = if radio, do: Map.put(radio, :tx_power, tx || radio[:tx_power]), else: radio
-        {{:ok, radio}, %{state | radio: radio}}
+        {state, version} = maybe_ver(state)
+
+        {{:ok, radio},
+         %{state | radio: radio, firmware_version: version || state.firmware_version}}
 
       {:error, reason, state} ->
         {{:error, reason}, %{state | radio: radio}}
+    end
+  end
+
+  defp maybe_ver(state) do
+    case cli_command(state, "ver") do
+      {:ok, state} -> {state, parse_ver_reply(state.last_reply)}
+      {:error, _, state} -> {state, nil}
+    end
+  end
+
+  defp parse_ver_reply(reply) when is_binary(reply) do
+    case Regex.run(~r/v?(\d+\.\d+(?:\.\d+)?)/, reply) do
+      [_, ver] -> ver
+      _ -> nil
     end
   end
 
@@ -494,7 +512,8 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
       bw_khz: radio[:bw_khz],
       sf: radio[:sf],
       cr: radio[:cr],
-      tx_power: radio[:tx_power]
+      tx_power: radio[:tx_power],
+      firmware_version: state.firmware_version
     }
   end
 

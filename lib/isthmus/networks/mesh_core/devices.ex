@@ -334,6 +334,12 @@ defmodule Isthmus.Networks.MeshCore.Devices do
       companion_health: if(companion? and is_map(companion), do: companion),
       bridge_cli_health: if(bridge_cli? and match_port?(bridge_cli, ports), do: bridge_cli),
       bridge_link_health: if(bridge_packet? and match_port?(bridge_link, ports), do: bridge_link),
+      firmware_version:
+        cond do
+          companion? and is_map(companion) -> companion[:firmware_version]
+          match_port?(bridge_cli, ports) -> bridge_cli[:firmware_version]
+          true -> nil
+        end,
       channels:
         if(is_map(companion) and is_binary(companion[:port]),
           do: Companion.list_channels(companion[:port]),
@@ -383,6 +389,7 @@ defmodule Isthmus.Networks.MeshCore.Devices do
       companion_health: health,
       bridge_cli_health: nil,
       bridge_link_health: nil,
+      firmware_version: health[:firmware_version],
       channels: Companion.list_channels(health[:port])
     }
   end

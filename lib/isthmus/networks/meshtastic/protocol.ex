@@ -504,6 +504,9 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
       xmodem = Protobuf.bytes(fields, 12) ->
         {:xmodem, parse_xmodem(xmodem)}
 
+      metadata = Protobuf.bytes(fields, 13) ->
+        {:metadata, parse_metadata(metadata)}
+
       file_info = Protobuf.bytes(fields, 15) ->
         {:file_info, parse_file_info(file_info)}
 
@@ -522,6 +525,7 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
   def probe_from_radio?(payload) when is_binary(payload) and payload != <<>> do
     case parse_frame(payload) do
       {:my_info, _} -> true
+      {:metadata, _} -> true
       {:node_info, _} -> true
       {:config_complete, _} -> true
       {:channel, _} -> true
@@ -611,6 +615,21 @@ defmodule Isthmus.Networks.Meshtastic.Protocol do
       empty?: empty?
     }
   end
+
+  def parse_metadata(bin) when is_binary(bin) do
+    fields = Protobuf.decode(bin)
+
+    %{
+      firmware_version: Protobuf.bytes(fields, 1, "") |> blank_version(),
+      hw_model: Protobuf.varint(fields, 7, 0)
+    }
+  end
+
+  def parse_metadata(_), do: %{firmware_version: nil, hw_model: 0}
+
+  defp blank_version(""), do: nil
+  defp blank_version(v) when is_binary(v), do: v
+  defp blank_version(_), do: nil
 
   def parse_my_info(bin) when is_binary(bin) do
     fields = Protobuf.decode(bin)

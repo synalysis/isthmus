@@ -162,7 +162,9 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Status do
       device_time: state[:device_time],
       device_time_at: state[:device_time_at],
       time_synced_at: state[:time_synced_at],
-      tzdef: state[:device_tzdef]
+      tzdef: state[:device_tzdef],
+      firmware_version: state[:firmware_version],
+      firmware_model: state[:firmware_model]
     }
   end
 

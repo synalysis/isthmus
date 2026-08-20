@@ -305,6 +305,8 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       contacts_lastmod: 0,
       channels: %{},
       self_info: nil,
+      firmware_version: nil,
+      firmware_model: nil,
       max_channels: @max_channel_slots,
       channel_sync_from: nil,
       channel_sync_monitor: nil,

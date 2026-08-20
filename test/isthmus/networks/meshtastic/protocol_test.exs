@@ -72,6 +72,13 @@ defmodule Isthmus.Networks.Meshtastic.ProtocolTest do
     assert ch.name == "Camp"
   end
 
+  test "parse_frame reads DeviceMetadata firmware version" do
+    inner = Protobuf.encode_message_field(1, "2.7.15.567b8ea")
+    payload = Protobuf.encode_message_field(13, inner)
+    assert {:metadata, meta} = Protocol.parse_frame(payload)
+    assert meta.firmware_version == "2.7.15.567b8ea"
+  end
+
   test "parse_frame reads my_info node number" do
     inner = Protobuf.encode_varint_field(1, 0xDEADBEEF)
     payload = Protobuf.encode_message_field(3, inner)

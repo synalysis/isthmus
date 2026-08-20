@@ -305,6 +305,27 @@ defmodule Isthmus.Networks.MeshCore.Protocol do
   def parse_frame(<<code, rest::binary>>), do: {:unknown, code, rest}
   def parse_frame(_), do: {:error, :empty}
 
+  @doc "Parse a DEVICE_INFO payload (without the 0x0D opcode)."
+  def parse_device_info(<<fw, rest::binary>>) do
+    base = %{fw_ver: fw}
+
+    if fw >= 3 and byte_size(rest) >= 78 do
+      <<_max_contacts_div2, max_channels, _ble_pin::little-32, build::binary-12, model::binary-40,
+        ver::binary-20, _::binary>> = rest
+
+      Map.merge(base, %{
+        max_channels: max_channels,
+        fw_build: cstr_field(build),
+        model: cstr_field(model),
+        version: cstr_field(ver)
+      })
+    else
+      base
+    end
+  end
+
+  def parse_device_info(_), do: %{}
+
   # After the public key SELF_INFO carries lat/lon, four policy bytes and the
   # radio params (22 bytes) before the node name. Older firmware truncates.
   defp self_info_name(<<_::binary-22, name::binary>>), do: null_term_string(name)
@@ -327,6 +348,13 @@ defmodule Isthmus.Networks.MeshCore.Protocol do
   defp null_term_string(bin) when is_binary(bin) do
     case :binary.split(bin, <<0>>) do
       [name | _] -> String.trim(name)
+      _ -> ""
+    end
+  end
+
+  defp cstr_field(bin) when is_binary(bin) do
+    case :binary.split(bin, <<0>>) do
+      [s | _] -> String.trim(s)
       _ -> ""
     end
   end

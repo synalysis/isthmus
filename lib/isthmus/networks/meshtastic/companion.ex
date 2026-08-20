@@ -107,6 +107,10 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
       _ ->
         safe_call(port, :health, %{status: :unknown, last_error: "companion not ready"}, 500)
     end
+  rescue
+    ArgumentError ->
+      Status.ensure_ets(@status_table)
+      safe_call(port, :health, %{status: :unknown, last_error: "companion not ready"}, 500)
   end
 
   @doc "Health maps for every companion process (primary + extras)."
@@ -284,11 +288,21 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   defp unidentified_companion?(health) when is_map(health) do
     status = health[:status]
     ref = health[:self_ref] || health[:node_id]
+    port = health[:port]
 
-    status in [:online, :live, :running] and (is_nil(ref) or ref == "")
+    status in [:online, :live, :running] and (is_nil(ref) or ref == "") and
+      not claimed_meshtastic_port?(port)
   end
 
   defp unidentified_companion?(_), do: false
+
+  defp claimed_meshtastic_port?(port) when is_binary(port) do
+    port in Discover.resolve_ports(:meshtastic)
+  rescue
+    _ -> false
+  end
+
+  defp claimed_meshtastic_port?(_), do: false
 
   @doc "Inject a decoded inbound event (tests / future radio client)."
   def inject_inbound(kind, attrs) when kind in [:channel, :dm, :nodeinfo] and is_map(attrs) do
@@ -389,6 +403,8 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
       lora: RadioConfig.empty(),
       device: DeviceConfig.empty(),
       my_info: nil,
+      firmware_version: nil,
+      firmware_model: nil,
       config_nonce: nil,
       admin: nil,
       device_time: nil,
@@ -403,7 +419,9 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
       xmodem: nil,
       xmodem_timer: nil,
       store_pull_timer: nil,
-      config_timer: nil
+      config_timer: nil,
+      handshake_timer: nil,
+      heartbeat_started: false
     }
 
     cond do
@@ -568,17 +586,22 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   @impl true
   def handle_cast(:sync_channels, state) do
-    if Link.online?(state) do
-      {:noreply, Admin.request_config(state)}
-    else
-      {:noreply, state}
+    cond do
+      not Link.online?(state) ->
+        {:noreply, state}
+
+      boot_handshake?(state) ->
+        {:noreply, Admin.schedule_config(state)}
+
+      true ->
+        {:noreply, Admin.request_config(state)}
     end
   end
 
   def handle_cast(:reconnect, state) do
     cond do
       stay_connected?(state) and state[:transport_kind] != :ble ->
-        {:noreply, state}
+        {:noreply, maybe_schedule_usb_handshake(state)}
 
       true ->
         {:noreply,
@@ -604,7 +627,14 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   @impl true
   def handle_info({:circuits_uart, _port, {:error, reason}}, state) do
     Logger.warning("Meshtastic companion serial error: #{inspect(reason)}")
-    {:noreply, schedule_reconnect(%{state | last_error: inspect(reason), status: :error})}
+
+    if uart_hold_open?(state, reason) do
+      # ESP32 reset glitches CP210x as :eio. Closing the port pulses DTR and
+      # starts the reboot loop again.
+      {:noreply, %{state | last_error: inspect(reason)}}
+    else
+      {:noreply, schedule_reconnect(%{state | last_error: inspect(reason)})}
+    end
   end
 
   def handle_info({:circuits_uart, _port, data}, state) when is_binary(data) do
@@ -690,26 +720,37 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   end
 
   def handle_info(:ble_handshake, state) do
+    state = %{state | handshake_timer: nil}
+
     if Link.online?(state) do
-      {:noreply, Admin.request_config(state)}
+      unless state[:heartbeat_started] do
+        Process.send_after(self(), :heartbeat, @heartbeat_ms)
+      end
+
+      {:noreply, Admin.request_config(%{state | heartbeat_started: true})}
     else
       {:noreply, state}
     end
   end
 
   def handle_info(:config_sync_timeout, state) do
-    Logger.warning("Meshtastic config dump timed out — publishing what was collected")
+    if Admin.retry_config?(state) do
+      Logger.warning("Meshtastic config dump timed out without a node id — retrying")
+      {:noreply, Admin.request_config(state, retry: true)}
+    else
+      Logger.warning("Meshtastic config dump timed out — publishing what was collected")
 
-    {:noreply,
-     state
-     |> Map.put(:config_timer, nil)
-     |> Status.persist_channels()
-     |> Status.broadcast_channels()
-     |> Status.persist_lora()
-     |> Status.broadcast_lora()
-     |> Status.persist_device()
-     |> Status.broadcast_device()
-     |> Inbound.finish_config_dump(history: false)}
+      {:noreply,
+       state
+       |> Map.put(:config_timer, nil)
+       |> Status.persist_channels()
+       |> Status.broadcast_channels()
+       |> Status.persist_lora()
+       |> Status.broadcast_lora()
+       |> Status.persist_device()
+       |> Status.broadcast_device()
+       |> Inbound.finish_config_dump(history: false)}
+    end
   end
 
   def handle_info(:admin_timeout, %{admin: admin} = state) when is_map(admin) do
@@ -767,10 +808,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
             name: state[:ble_name]
           )
 
-        Process.send_after(self(), :heartbeat, @heartbeat_ms)
-        Process.send_after(self(), :ble_handshake, 400)
-
-        Status.publish_status(%{
+        %{
           state
           | transport: transport,
             uart: nil,
@@ -778,8 +816,11 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
             last_error: nil,
             fail_count: 0,
             buffer: <<>>,
+            heartbeat_started: false,
             reconnect_gen: reconnect_gen(state) + 1
-        })
+        }
+        |> Admin.schedule_config()
+        |> Status.publish_status()
 
       {:error, reason} ->
         fail_connect(state, reason)
@@ -793,7 +834,6 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
           :ok ->
             Isthmus.Networks.Uart.prepare(uart, state.port)
             Logger.info("Meshtastic companion online via #{state.port}")
-            Process.send_after(self(), :heartbeat, @heartbeat_ms)
 
             %{
               state
@@ -802,9 +842,10 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
                 status: :online,
                 last_error: nil,
                 fail_count: 0,
-                buffer: <<>>
+                buffer: <<>>,
+                heartbeat_started: false
             }
-            |> Admin.request_config()
+            |> Admin.schedule_config()
             |> Status.publish_status()
 
           {:error, reason} ->
@@ -832,6 +873,38 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     })
   end
 
+  defp maybe_schedule_usb_handshake(state) do
+    cond do
+      not boot_handshake?(state) ->
+        state
+
+      is_reference(state[:handshake_timer]) ->
+        state
+
+      is_reference(state[:config_timer]) ->
+        state
+
+      true ->
+        Admin.schedule_config(state)
+    end
+  end
+
+  defp boot_handshake?(state) do
+    id = get_in(state, [:my_info, :node_id])
+    is_nil(id) or id == ""
+  end
+
+  @doc false
+  def uart_hold_open?(state, reason) when is_map(state) do
+    is_pid(state[:uart]) and state[:transport_kind] != :ble and not port_gone_error?(reason)
+  end
+
+  def uart_hold_open?(_, _), do: false
+
+  defp port_gone_error?(reason) do
+    reason in [:enxio, :ebadf, :enodev, :enoent]
+  end
+
   # Opening CP210x/CH340 pulses DTR and reboots ESP32 Meshtastic firmware.
   # Rescan only needs a new UART when this companion is down or the port moved.
   @doc false
@@ -854,7 +927,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   end
 
   defp reconnect_state(%{fixed_port: true} = state) do
-    if is_reference(state[:config_timer]), do: Process.cancel_timer(state.config_timer)
+    _ = Admin.cancel_handshake(state)
     Link.close(state)
 
     %{
@@ -876,13 +949,15 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
         files: [],
         xmodem: nil,
         xmodem_timer: nil,
-        store_pull_timer: nil
+        store_pull_timer: nil,
+        handshake_timer: nil,
+        heartbeat_started: false
     }
     |> maybe_connect()
   end
 
   defp reconnect_state(state) do
-    if is_reference(state[:config_timer]), do: Process.cancel_timer(state.config_timer)
+    _ = Admin.cancel_handshake(state)
     Link.close(state)
 
     port =
@@ -912,7 +987,9 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
         files: [],
         xmodem: nil,
         xmodem_timer: nil,
-        store_pull_timer: nil
+        store_pull_timer: nil,
+        handshake_timer: nil,
+        heartbeat_started: false
     }
     |> maybe_connect()
   end

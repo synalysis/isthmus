@@ -78,7 +78,13 @@ defmodule Isthmus.Networks.MeshCore.Companion.Frames do
         ingest_channel_msg(state, msg)
 
       {:device_info, rest} ->
-        %{state | max_channels: Channels.parse_max_channels(rest, state.max_channels)}
+        info = Protocol.parse_device_info(rest)
+
+        state
+        |> Map.put(:max_channels, Channels.parse_max_channels(rest, state.max_channels))
+        |> Map.put(:firmware_version, blank(info[:version]))
+        |> Map.put(:firmware_model, blank(info[:model]))
+        |> Status.publish()
 
       {:self_info, %{public_key: pubkey} = info} when is_binary(pubkey) ->
         Status.publish(%{state | self_info: info})
@@ -209,4 +215,8 @@ defmodule Isthmus.Networks.MeshCore.Companion.Frames do
   defp sanitize_text(text) when is_binary(text) do
     text |> String.trim_trailing(<<0>>) |> String.trim()
   end
+
+  defp blank(""), do: nil
+  defp blank(v) when is_binary(v), do: v
+  defp blank(_), do: nil
 end

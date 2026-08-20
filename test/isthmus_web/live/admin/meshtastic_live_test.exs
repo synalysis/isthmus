@@ -4,6 +4,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
   import Phoenix.LiveViewTest
 
   alias Isthmus.Accounts
+  alias Isthmus.FirmwareCatalogFixtures
   alias Isthmus.Nostr.Bech32
 
   setup %{conn: conn} do
@@ -29,6 +30,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
              has_element?(view, "#connected-radios [data-port]")
 
     assert has_element?(view, "#rescan-meshtastic-btn")
+    assert has_element?(view, "#refresh-firmware-catalog-btn")
     assert has_element?(view, "#scan-bluetooth-btn")
     refute has_element?(view, "#groups-channels")
     refute has_element?(view, "#companion-setup-card")
@@ -147,5 +149,27 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
     render_submit(view, "assign_usb_firmware", %{"device_id" => "missing", "kind" => "meshtastic"})
 
     assert render(view) =~ "Unknown device"
+  end
+
+  test "connected radio shows latest zip and a firmware update badge", %{conn: conn} do
+    {previous, _detail} =
+      FirmwareCatalogFixtures.seed_meshtastic_wio(firmware_version: "2.7.15.567b8ea")
+
+    on_exit(fn -> FirmwareCatalogFixtures.cleanup_meshtastic_wio(previous) end)
+
+    {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
+
+    assert has_element?(view, "#usb-firmware-offer-meshtastic-device-dev-ttyUSB9")
+    assert has_element?(view, "#usb-firmware-offer-meshtastic-device-dev-ttyUSB9-download")
+    assert has_element?(view, "#meshtastic-device-dev-ttyUSB9-firmware-update")
+    assert render(view) =~ "firmware-2.7.26.54e0d8d.zip"
+
+    refute has_element?(view, "#usb-role-meshtastic-device-dev-ttyUSB9")
+    refute has_element?(view, "#meshtastic-channels-modal")
+    assert has_element?(view, "#open-channels-meshtastic-device-dev-ttyUSB9")
+
+    view |> element("#open-channels-meshtastic-device-dev-ttyUSB9") |> render_click()
+    assert has_element?(view, "#meshtastic-channels-modal")
+    assert has_element?(view, "#channels-meshtastic-device-dev-ttyUSB9")
   end
 end

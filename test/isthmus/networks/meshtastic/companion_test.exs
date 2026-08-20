@@ -74,11 +74,64 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
     assert {:error, :not_connected} = Companion.clear_channel(2)
   end
 
+  test "uart_hold_open? keeps CP2102 open on reset glitches" do
+    online = %{status: :online, uart: self(), transport_kind: :usb}
+
+    assert Companion.uart_hold_open?(online, :eio)
+    assert Companion.uart_hold_open?(online, :eagain)
+    refute Companion.uart_hold_open?(online, :enxio)
+    refute Companion.uart_hold_open?(online, :ebadf)
+    refute Companion.uart_hold_open?(%{online | uart: nil}, :eio)
+    refute Companion.uart_hold_open?(%{online | transport_kind: :ble}, :eio)
+  end
+
+  test "FromRadio reboot waits before want_config so USB open does not loop" do
+    alias Isthmus.Networks.Meshtastic.Companion.Inbound
+    alias Isthmus.Networks.Meshtastic.Protobuf
+
+    payload = Protobuf.encode_varint_field(8, 1)
+
+    state =
+      Inbound.handle_payload(
+        %{
+          uart: nil,
+          sent: 0,
+          history_requested: true,
+          files: [%{name: "x", size: 1}],
+          xmodem: %{filename: "x"},
+          handshake_timer: nil,
+          config_timer: nil
+        },
+        payload
+      )
+
+    assert is_reference(state.handshake_timer)
+    assert state.sent == 0
+    assert state.history_requested == false
+    assert state.files == []
+    assert state.xmodem == nil
+    if is_reference(state.handshake_timer), do: Process.cancel_timer(state.handshake_timer)
+    flush_handshake_mail()
+  end
+
+  test "retry_config? is true until a node id arrives or attempts are exhausted" do
+    assert Admin.retry_config?(%{my_info: nil, config_attempts: 1})
+    assert Admin.retry_config?(%{my_info: %{node_id: nil}, config_attempts: 2})
+    refute Admin.retry_config?(%{my_info: %{node_id: "deadbeef"}, config_attempts: 1})
+    refute Admin.retry_config?(%{my_info: nil, config_attempts: 3})
+  end
+
   test "admin handshake waits longer on BLE than USB" do
     assert Admin.timeout_ms() == 4_000
     assert Admin.timeout_ms(%{transport_kind: :usb}) == 4_000
     assert Admin.timeout_ms(%{}) == 4_000
     assert Admin.timeout_ms(%{transport_kind: :ble}) == 15_000
+    assert Admin.usb_config_delay_ms() == 8_000
+
+    usb = Admin.schedule_config(%{handshake_timer: nil, config_timer: nil})
+    assert is_reference(usb.handshake_timer)
+    Process.cancel_timer(usb.handshake_timer)
+    flush_handshake_mail()
   end
 
   test "list_channels returns eight placeholder slots before a dump" do
@@ -240,6 +293,38 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
     Status.drop_ets(state)
   end
 
+  test "FromRadio metadata does not crash when firmware keys are absent" do
+    alias Isthmus.Networks.Meshtastic.Companion.Inbound
+    alias Isthmus.Networks.Meshtastic.Companion.Status
+    alias Isthmus.Networks.Meshtastic.Protobuf
+
+    inner =
+      Protobuf.encode_bytes_field(1, "2.7.26.54e0d8d") <> Protobuf.encode_varint_field(7, 24)
+
+    payload = Protobuf.encode_message_field(13, inner)
+
+    state =
+      Inbound.handle_payload(
+        %{
+          my_info: %{my_node_num: 1, node_id: "9eecc24c"},
+          last_error: nil,
+          received: 0,
+          sent: 1,
+          port: "/dev/ttyMETATEST",
+          status: :online,
+          lora: %{},
+          device: %{},
+          channels: %{},
+          fixed_port: true
+        },
+        payload
+      )
+
+    assert state.firmware_version == "2.7.26.54e0d8d"
+    assert state.firmware_model == 24
+    Status.drop_ets(state)
+  end
+
   test "FromRadio LoRa config is stored so the settings dialog can show region" do
     alias Isthmus.Networks.Meshtastic.Companion.Inbound
     alias Isthmus.Networks.Meshtastic.Companion.Status
@@ -318,5 +403,13 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
     assert Enum.at(slots, 4).name == "Lobby"
     refute Enum.at(slots, 4).empty?
     Status.drop_ets(state)
+  end
+
+  defp flush_handshake_mail do
+    receive do
+      :ble_handshake -> flush_handshake_mail()
+    after
+      0 -> :ok
+    end
   end
 end

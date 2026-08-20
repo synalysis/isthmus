@@ -4,6 +4,7 @@ defmodule IsthmusWeb.Admin.ReticulumLiveTest do
   import Phoenix.LiveViewTest
 
   alias Isthmus.Accounts
+  alias Isthmus.FirmwareCatalogFixtures
   alias Isthmus.Nostr.Bech32
 
   setup %{conn: conn} do
@@ -47,6 +48,22 @@ defmodule IsthmusWeb.Admin.ReticulumLiveTest do
       assert has_element?(view, "#rns-lxmf-destinations")
       assert render(view) =~ "Isthmus-owned"
       assert render(view) =~ "lxmf.delivery"
+    end
+  end
+
+  test "detected Heltec RNode offers the latest zip and an update badge", %{conn: conn} do
+    {previous, _detail} = FirmwareCatalogFixtures.seed_rnode_heltec(firmware_version: "1.80")
+
+    on_exit(fn -> FirmwareCatalogFixtures.restore_discover_roles(previous) end)
+
+    {:ok, view, _html} = live(conn, ~p"/admin/reticulum")
+
+    if has_element?(view, "#rns-config-editor") do
+      assert has_element?(view, "#refresh-firmware-catalog-btn")
+      assert has_element?(view, "#usb-firmware-offer-rnode-ttyACM3")
+      assert has_element?(view, "#usb-firmware-offer-rnode-ttyACM3-download")
+      assert has_element?(view, "#rnode-ttyACM3-firmware-update")
+      assert render(view) =~ "rnode_firmware_heltec32v3.zip"
     end
   end
 end

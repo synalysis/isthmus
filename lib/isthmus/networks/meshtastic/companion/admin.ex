@@ -9,6 +9,10 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
 
   @admin_timeout_ms 4_000
   @admin_timeout_ble_ms 15_000
+  # CP210x/CH340 open pulses DTR and reboots ESP32. Writing want_config
+  # (or heartbeat) during that window retriggers boot.
+  @usb_config_delay_ms 8_000
+  @ble_config_delay_ms 400
 
   @spec timeout_ms() :: pos_integer()
   def timeout_ms, do: @admin_timeout_ms
@@ -375,16 +379,46 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
     end
   end
 
-  def request_config(state) do
+  @doc false
+  def usb_config_delay_ms, do: @usb_config_delay_ms
+
+  @doc """
+  Wait for ESP32 PhoneAPI after a USB-open reset or FromRadio `:rebooted`.
+
+  Do not write immediately — the DTR pulse already rebooted the board, and
+  `want_config` during boot is what keeps Heltec-class CP2102 radios looping.
+  """
+  def schedule_config(state) when is_map(state) do
+    delay = config_start_delay_ms(state)
+    state = cancel_handshake(state)
+    ref = Process.send_after(self(), :ble_handshake, delay)
+    %{state | handshake_timer: ref}
+  end
+
+  def cancel_handshake(state) when is_map(state) do
+    if is_reference(state[:handshake_timer]), do: Process.cancel_timer(state.handshake_timer)
+    if is_reference(state[:config_timer]), do: Process.cancel_timer(state.config_timer)
+    Map.merge(state, %{handshake_timer: nil, config_timer: nil})
+  end
+
+  def request_config(state, opts \\ []) do
     if Link.online?(state) do
+      attempts =
+        if Keyword.get(opts, :retry, false) do
+          (state[:config_attempts] || 1) + 1
+        else
+          1
+        end
+
       nonce = :rand.uniform(0x7FFF_FFFE) + 1
-      if is_reference(state[:config_timer]), do: Process.cancel_timer(state.config_timer)
+      state = cancel_handshake(state)
       timer = Process.send_after(self(), :config_sync_timeout, config_timeout_ms(state))
 
       state =
         state
         |> Map.put(:config_nonce, nonce)
         |> Map.put(:config_timer, timer)
+        |> Map.put(:config_attempts, attempts)
         |> Map.put(:history_requested, false)
         |> Map.put(:files, [])
 
@@ -400,6 +434,18 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
       state
     end
   end
+
+  @doc false
+  def retry_config?(state) when is_map(state) do
+    id = get_in(state, [:my_info, :node_id])
+    attempts = state[:config_attempts] || 1
+    (is_nil(id) or id == "") and attempts < 3
+  end
+
+  def retry_config?(_), do: false
+
+  defp config_start_delay_ms(%{transport_kind: :ble}), do: @ble_config_delay_ms
+  defp config_start_delay_ms(_), do: @usb_config_delay_ms
 
   defp config_timeout_ms(%{transport_kind: :ble}), do: 30_000
   defp config_timeout_ms(_), do: 15_000

@@ -17,15 +17,38 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
     Enum.reduce(frames, %{state | buffer: buffer}, fn payload, acc ->
       handle_payload(acc, payload)
     end)
+  rescue
+    exception ->
+      Logger.error("Meshtastic UART decode failed: #{Exception.message(exception)}")
+      state
   end
 
   def handle_payload(state, payload) do
+    do_handle_payload(state, payload)
+  rescue
+    exception ->
+      # A crash here restarts the companion, reopens CP2102, and loops ESP32 reset.
+      Logger.error("Meshtastic inbound frame failed: #{Exception.message(exception)}")
+      state
+  end
+
+  defp do_handle_payload(state, payload) do
     case Protocol.parse_frame(payload) do
       {:packet, pkt} ->
         handle_packet(%{state | received: state.received + 1}, pkt)
 
       {:my_info, info} ->
         Status.publish_status(%{state | my_info: info, last_error: nil})
+
+      {:metadata, meta} ->
+        Status.publish_status(
+          state
+          |> Map.put(
+            :firmware_version,
+            meta[:firmware_version] || state[:firmware_version]
+          )
+          |> Map.put(:firmware_model, meta[:hw_model] || state[:firmware_model])
+        )
 
       {:node_info, info} ->
         record_node_sighting(info, "node_db", state)
@@ -82,8 +105,10 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Inbound do
         handle_xmodem(state, xmodem)
 
       :rebooted ->
-        Logger.info("Meshtastic companion rebooted — re-requesting config")
-        reset_message_store(state) |> Admin.request_config()
+        # USB-UART open already reset the ESP32. Immediate want_config during
+        # that boot is what loops Heltec-class CP2102 boards.
+        Logger.info("Meshtastic companion rebooted — waiting before want_config")
+        reset_message_store(state) |> Admin.schedule_config()
 
       {:other, _} ->
         state

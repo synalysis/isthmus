@@ -8,6 +8,7 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
   alias IsthmusWeb.Admin.RadioChannels
   alias IsthmusWeb.Admin.UsbRole
   import IsthmusWeb.Admin.UsbRole, only: [usb_role_picker: 1, usb_firmware_picker: 1]
+  import IsthmusWeb.Admin.FirmwareOffer, only: [usb_firmware_offer: 1]
 
   def radio_config_kind(device) do
     cond do
@@ -220,6 +221,10 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
       assigns
       |> assign(:tunnel_radio, tunnel)
       |> assign(:island_status, island_atom)
+      |> assign(
+        :ports_modal_device,
+        Enum.find(assigns[:devices] || [], &(&1.id == assigns[:ports_modal_id]))
+      )
 
     ~H"""
     <Layouts.app flash={@flash} current_user={@current_user}>
@@ -249,6 +254,14 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                 id="rescan-devices-btn"
               >
                 Rescan USB
+              </button>
+              <button
+                class={["btn btn-outline btn-sm", @firmware_catalog_loading && "loading"]}
+                phx-click="refresh_firmware_catalog"
+                id="refresh-firmware-catalog-btn"
+                type="button"
+              >
+                {if(@firmware_catalog_loading, do: "Firmware list…", else: "Refresh firmware list")}
               </button>
               <button
                 class={["btn btn-outline btn-sm", @ble_scanning && "loading"]}
@@ -364,6 +377,19 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                     <span class={["badge badge-sm", AdminCopy.status_badge_class(status_atom)]}>
                       {status_text}
                     </span>
+                    <span
+                      :if={
+                        IsthmusWeb.Admin.FirmwareOffer.newer?(
+                          device,
+                          @board_by_device,
+                          @firmware_catalog
+                        )
+                      }
+                      class="badge badge-sm badge-warning"
+                      id={"#{device_dom_id(device.id)}-firmware-update"}
+                    >
+                      Firmware update
+                    </span>
                   </div>
                   <p class="text-sm opacity-80">{purpose_blurb}</p>
                   <p
@@ -463,6 +489,16 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                       Radio configuration
                     </button>
                   <% end %>
+                  <button
+                    :if={not device.ble?}
+                    class="btn btn-outline btn-sm"
+                    id={"open-ports-#{device_dom_id(device.id)}"}
+                    phx-click="open_ports_channels"
+                    phx-value-device-id={device.id}
+                    type="button"
+                  >
+                    {if(device.active_companion?, do: "Ports & channels", else: "USB ports")}
+                  </button>
                 </div>
               </div>
 
@@ -473,155 +509,17 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                 current={UsbRole.firmware_kind(device)}
                 source={List.first(device.ports || [])[:source]}
               />
-
-              <div class="overflow-x-auto">
-                <table class="table table-sm" id={"#{device_dom_id(device.id)}-ports"}>
-                  <thead>
-                    <tr>
-                      <th>Device</th>
-                      <th>Port role</th>
-                      <th>Status</th>
-                      <th>Used for</th>
-                      <th></th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr
-                      :for={port <- device.ports}
-                      id={"#{device_dom_id(device.id)}-port-#{port_dom_key(port.path)}"}
-                    >
-                      <td class="font-mono text-sm">
-                        {AdminCopy.usb_device_name(port.path) || port.path}
-                      </td>
-                      <td class="font-medium">{AdminCopy.role_plain(port.role)}</td>
-                      <td>
-                        <%= if st = port_status(device, port.role) do %>
-                          <span class={["badge badge-sm", AdminCopy.status_badge_class(st)]}>
-                            {AdminCopy.status_plain(st)}
-                          </span>
-                        <% else %>
-                          <span class="badge badge-sm badge-ghost">Not identified</span>
-                        <% end %>
-                      </td>
-                      <td class="text-sm opacity-80">{AdminCopy.role_used_for(port.role)}</td>
-                      <td>
-                        <.usb_role_picker
-                          :if={not device.ble?}
-                          id={"usb-role-#{device_dom_id(device.id)}-#{port_dom_key(port.path)}"}
-                          path={port.path}
-                          serial_number={port[:serial_number] || device.serial_number}
-                          vendor_id={port[:vendor_id] || device.vendor_id}
-                          product_id={port[:product_id] || device.product_id}
-                          current={port.role}
-                          source={port[:source]}
-                          compact={true}
-                        />
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-
-              <div :if={device.active_companion?} class="space-y-4">
-                <div class="overflow-x-auto">
-                  <table class="table table-sm" id={"channels-#{device_dom_id(device.id)}"}>
-                    <thead>
-                      <tr>
-                        <th>Slot</th>
-                        <th>Name</th>
-                        <th>Role</th>
-                        <th>Linked group</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr
-                        :for={ch <- channel_rows(device.channels)}
-                        id={"#{device_dom_id(device.id)}-ch-#{ch.index}"}
-                      >
-                        <td>{ch.index}</td>
-                        <td>{if ch.empty?, do: "—", else: ch.name}</td>
-                        <td>
-                          <span class={[
-                            "badge badge-sm",
-                            ch.empty? && "badge-ghost",
-                            not ch.empty? && ch.index == 0 && "badge-warning",
-                            not ch.empty? && ch.index != 0 && "badge-primary"
-                          ]}>
-                            {slot_role(ch)}
-                          </span>
-                        </td>
-                        <td>
-                          <%= if ch.index == 0 do %>
-                            <span class="opacity-60">—</span>
-                          <% else %>
-                            <% radio_id = meshcore_radio_id(device) %>
-                            <% linked =
-                              RadioChannels.linked_group(@groups, ch.index, radio_id, "meshcore") %>
-                            <% choices =
-                              RadioChannels.assignable_groups(
-                                @bridges,
-                                ch.index,
-                                radio_id,
-                                "meshcore"
-                              ) %>
-                            <%= if @bridges == [] do %>
-                              <p class="text-xs opacity-70">
-                                <.link navigate={~p"/admin/registrations"} class="link">
-                                  Create a group
-                                </.link>
-                                first.
-                              </p>
-                            <% else %>
-                              <%= if is_nil(radio_id) do %>
-                                <p class="text-xs opacity-70">
-                                  Waiting for this radio’s identity.
-                                </p>
-                              <% else %>
-                                <div class="flex flex-wrap items-center gap-2">
-                                  <form
-                                    id={"slot-group-form-#{device_dom_id(device.id)}-#{ch.index}"}
-                                    phx-change="assign_slot_group"
-                                    class="min-w-0 grow"
-                                  >
-                                    <input type="hidden" name="radio_id" value={radio_id} />
-                                    <input type="hidden" name="port" value={companion_port(device)} />
-                                    <input type="hidden" name="channel_idx" value={ch.index} />
-                                    <select
-                                      id={"slot-group-#{device_dom_id(device.id)}-#{ch.index}"}
-                                      name="group_id"
-                                      class="select select-bordered select-sm w-full max-w-xs"
-                                    >
-                                      <option value="" selected={is_nil(linked)}>—</option>
-                                      <option
-                                        :for={g <- choices}
-                                        value={g.id}
-                                        selected={linked && linked.id == g.id}
-                                      >
-                                        {g.display_name}
-                                      </option>
-                                    </select>
-                                  </form>
-                                  <button
-                                    :if={linked}
-                                    type="button"
-                                    class="btn btn-outline btn-xs shrink-0"
-                                    id={"show-invite-#{device_dom_id(device.id)}-#{ch.index}"}
-                                    phx-click="show_channel_invite"
-                                    phx-value-id={linked.id}
-                                    phx-value-radio_id={radio_id}
-                                  >
-                                    Invite
-                                  </button>
-                                </div>
-                              <% end %>
-                            <% end %>
-                          <% end %>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
+              <.usb_firmware_offer
+                :if={not device.ble?}
+                id={"usb-firmware-offer-#{device_dom_id(device.id)}"}
+                device_id={device.id}
+                kind={UsbRole.firmware_kind(device)}
+                board_id={IsthmusWeb.Admin.FirmwareOffer.board_id(device, @board_by_device)}
+                running_version={device[:firmware_version]}
+                connected={device.active_companion? == true or device.active_bridge_cli? == true}
+                catalog={@firmware_catalog}
+                source={List.first(device.ports || [])[:source]}
+              />
 
               <details class="text-xs opacity-70" id={"#{device_dom_id(device.id)}-tech"}>
                 <summary class="cursor-pointer font-medium opacity-90">Technical details</summary>
@@ -764,6 +662,184 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
               <% end %>
             </div>
           </div>
+        </div>
+
+        <div
+          :if={@ports_modal_device}
+          class="modal modal-open"
+          role="dialog"
+          id="meshcore-ports-modal"
+        >
+          <% device = @ports_modal_device %>
+          <div class="modal-box max-w-3xl">
+            <h3 class="text-lg font-semibold">
+              {if(device.active_companion?, do: "Ports & channels", else: "USB ports")} — {device.label}
+            </h3>
+            <p class="mt-1 text-sm opacity-70">
+              Firmware already classified these USB ports. Change a role only if
+              Isthmus got it wrong.
+            </p>
+            <div class="mt-4 overflow-x-auto">
+              <table class="table table-sm" id={"#{device_dom_id(device.id)}-ports"}>
+                <thead>
+                  <tr>
+                    <th>Device</th>
+                    <th>Port role</th>
+                    <th>Status</th>
+                    <th>Used for</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    :for={port <- device.ports}
+                    id={"#{device_dom_id(device.id)}-port-#{port_dom_key(port.path)}"}
+                  >
+                    <td class="font-mono text-sm">
+                      {AdminCopy.usb_device_name(port.path) || port.path}
+                    </td>
+                    <td class="font-medium">{AdminCopy.role_plain(port.role)}</td>
+                    <td>
+                      <%= if st = port_status(device, port.role) do %>
+                        <span class={["badge badge-sm", AdminCopy.status_badge_class(st)]}>
+                          {AdminCopy.status_plain(st)}
+                        </span>
+                      <% else %>
+                        <span class="badge badge-sm badge-ghost">Not identified</span>
+                      <% end %>
+                    </td>
+                    <td class="text-sm opacity-80">{AdminCopy.role_used_for(port.role)}</td>
+                    <td>
+                      <.usb_role_picker
+                        :if={not device.ble?}
+                        id={"usb-role-#{device_dom_id(device.id)}-#{port_dom_key(port.path)}"}
+                        path={port.path}
+                        serial_number={port[:serial_number] || device.serial_number}
+                        vendor_id={port[:vendor_id] || device.vendor_id}
+                        product_id={port[:product_id] || device.product_id}
+                        current={port.role}
+                        source={port[:source]}
+                        compact={true}
+                      />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div :if={device.active_companion?} class="mt-6 space-y-2">
+              <h4 class="text-sm font-medium">Channels</h4>
+              <div class="overflow-x-auto">
+                <table class="table table-sm" id={"channels-#{device_dom_id(device.id)}"}>
+                  <thead>
+                    <tr>
+                      <th>Slot</th>
+                      <th>Name</th>
+                      <th>Role</th>
+                      <th>Linked group</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr
+                      :for={ch <- channel_rows(device.channels)}
+                      id={"#{device_dom_id(device.id)}-ch-#{ch.index}"}
+                    >
+                      <td>{ch.index}</td>
+                      <td>{if ch.empty?, do: "—", else: ch.name}</td>
+                      <td>
+                        <span class={[
+                          "badge badge-sm",
+                          ch.empty? && "badge-ghost",
+                          not ch.empty? && ch.index == 0 && "badge-warning",
+                          not ch.empty? && ch.index != 0 && "badge-primary"
+                        ]}>
+                          {slot_role(ch)}
+                        </span>
+                      </td>
+                      <td>
+                        <%= if ch.index == 0 do %>
+                          <span class="opacity-60">—</span>
+                        <% else %>
+                          <% radio_id = meshcore_radio_id(device) %>
+                          <% linked =
+                            RadioChannels.linked_group(@groups, ch.index, radio_id, "meshcore") %>
+                          <% choices =
+                            RadioChannels.assignable_groups(
+                              @bridges,
+                              ch.index,
+                              radio_id,
+                              "meshcore"
+                            ) %>
+                          <%= if @bridges == [] do %>
+                            <p class="text-xs opacity-70">
+                              <.link navigate={~p"/admin/registrations"} class="link">
+                                Create a group
+                              </.link>
+                              first.
+                            </p>
+                          <% else %>
+                            <%= if is_nil(radio_id) do %>
+                              <p class="text-xs opacity-70">
+                                Waiting for this radio’s identity.
+                              </p>
+                            <% else %>
+                              <div class="flex flex-wrap items-center gap-2">
+                                <form
+                                  id={"slot-group-form-#{device_dom_id(device.id)}-#{ch.index}"}
+                                  phx-change="assign_slot_group"
+                                  class="min-w-0 grow"
+                                >
+                                  <input type="hidden" name="radio_id" value={radio_id} />
+                                  <input type="hidden" name="port" value={companion_port(device)} />
+                                  <input type="hidden" name="channel_idx" value={ch.index} />
+                                  <select
+                                    id={"slot-group-#{device_dom_id(device.id)}-#{ch.index}"}
+                                    name="group_id"
+                                    class="select select-bordered select-sm w-full max-w-xs"
+                                  >
+                                    <option value="" selected={is_nil(linked)}>—</option>
+                                    <option
+                                      :for={g <- choices}
+                                      value={g.id}
+                                      selected={linked && linked.id == g.id}
+                                    >
+                                      {g.display_name}
+                                    </option>
+                                  </select>
+                                </form>
+                                <button
+                                  :if={linked}
+                                  type="button"
+                                  class="btn btn-outline btn-xs shrink-0"
+                                  id={"show-invite-#{device_dom_id(device.id)}-#{ch.index}"}
+                                  phx-click="show_channel_invite"
+                                  phx-value-id={linked.id}
+                                  phx-value-radio_id={radio_id}
+                                >
+                                  Invite
+                                </button>
+                              </div>
+                            <% end %>
+                          <% end %>
+                        <% end %>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="modal-action">
+              <button
+                class="btn btn-ghost btn-sm"
+                type="button"
+                id="close-ports-modal-btn"
+                phx-click="close_ports_channels"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+          <div class="modal-backdrop" phx-click="close_ports_channels"></div>
         </div>
 
         <div

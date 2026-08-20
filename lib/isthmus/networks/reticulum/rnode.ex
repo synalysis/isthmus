@@ -33,6 +33,24 @@ defmodule Isthmus.Networks.Reticulum.RNode do
 
   def detect_response?(_), do: false
 
+  @doc "Parse `CMD_FW_VERSION` from a KISS detect buffer (`major.minor`)."
+  def firmware_version(data) when is_binary(data) do
+    case :binary.match(data, <<@fend, @cmd_fw_version>>) do
+      {idx, 2} ->
+        rest = binary_part(data, idx + 2, byte_size(data) - idx - 2)
+
+        case rest do
+          <<maj, min, @fend, _::binary>> -> "#{maj}.#{min}"
+          _ -> nil
+        end
+
+      _ ->
+        nil
+    end
+  end
+
+  def firmware_version(_), do: nil
+
   @doc "Build RNodeInterface INI fields from the admin form (MHz / kHz)."
   def config_from_form(params) when is_map(params) do
     %{

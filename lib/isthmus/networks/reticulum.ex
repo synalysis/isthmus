@@ -197,7 +197,10 @@ defmodule Isthmus.Networks.Reticulum do
         label: rnode_label(detail, path),
         manufacturer: detail[:manufacturer],
         serial_number: detail[:serial_number],
-        description: detail[:description]
+        description: detail[:description],
+        vendor_id: detail[:vendor_id],
+        product_id: detail[:product_id],
+        firmware_version: entry[:firmware_version] || detail[:firmware_version]
       }
     end)
   end

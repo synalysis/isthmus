@@ -2,6 +2,8 @@ defmodule IsthmusWeb.Admin.ReticulumHTML do
   @moduledoc false
   use IsthmusWeb, :html
 
+  import IsthmusWeb.Admin.FirmwareOffer, only: [usb_firmware_offer: 1]
+
   defp slug(name) when is_binary(name) do
     name
     |> String.downcase()
@@ -78,6 +80,12 @@ defmodule IsthmusWeb.Admin.ReticulumHTML do
   end
 
   defp rnode_dom_id(_), do: "rnode-unknown"
+
+  defp rnode_device(rnode) when is_map(rnode) do
+    rnode
+    |> Map.put(:kind, :rnode)
+    |> Map.put(:id, rnode.path)
+  end
 
   defp lxmf_role_label("proxy"), do: "proxy (Isthmus-owned)"
 
@@ -263,14 +271,27 @@ defmodule IsthmusWeb.Admin.ReticulumHTML do
 
             <div class="flex flex-wrap items-center justify-between gap-2 pt-1">
               <h3 class="text-sm font-medium">Detected RNodes</h3>
-              <button
-                type="button"
-                class="btn btn-outline btn-xs"
-                id="rns-rescan-rnodes"
-                phx-click="rescan_rnodes"
-              >
-                Rescan USB
-              </button>
+              <div class="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  class="btn btn-outline btn-xs"
+                  id="rns-rescan-rnodes"
+                  phx-click="rescan_rnodes"
+                >
+                  Rescan USB
+                </button>
+                <button
+                  type="button"
+                  class={["btn btn-outline btn-xs", @firmware_catalog_loading && "loading"]}
+                  id="refresh-firmware-catalog-btn"
+                  phx-click="refresh_firmware_catalog"
+                >
+                  {if(@firmware_catalog_loading,
+                    do: "Firmware list…",
+                    else: "Refresh firmware list"
+                  )}
+                </button>
+              </div>
             </div>
             <div
               :if={@detected_rnodes != []}
@@ -288,6 +309,7 @@ defmodule IsthmusWeb.Admin.ReticulumHTML do
                   <tr>
                     <th>Radio</th>
                     <th>Port</th>
+                    <th>Firmware</th>
                     <th></th>
                   </tr>
                 </thead>
@@ -301,8 +323,37 @@ defmodule IsthmusWeb.Admin.ReticulumHTML do
                       >
                         in config
                       </span>
+                      <span
+                        :if={
+                          IsthmusWeb.Admin.FirmwareOffer.newer?(
+                            rnode_device(rnode),
+                            @board_by_device,
+                            @firmware_catalog
+                          )
+                        }
+                        class="badge badge-sm badge-warning ml-2"
+                        id={"#{rnode_dom_id(rnode.path)}-firmware-update"}
+                      >
+                        Firmware update
+                      </span>
                     </td>
                     <td class="font-mono text-xs">{rnode.path}</td>
+                    <td>
+                      <.usb_firmware_offer
+                        id={"usb-firmware-offer-#{rnode_dom_id(rnode.path)}"}
+                        device_id={rnode.path}
+                        kind={:rnode}
+                        board_id={
+                          IsthmusWeb.Admin.FirmwareOffer.board_id(
+                            rnode_device(rnode),
+                            @board_by_device
+                          )
+                        }
+                        running_version={rnode[:firmware_version]}
+                        connected={true}
+                        catalog={@firmware_catalog}
+                      />
+                    </td>
                     <td class="text-right">
                       <button
                         type="button"

@@ -12,6 +12,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   alias Isthmus.Networks.Meshtastic.Settings
   alias Isthmus.Networks.Meshtastic.Supervisor, as: MeshtasticSupervisor
   alias Isthmus.Registrations
+  alias IsthmusWeb.Admin.FirmwareOffer
   alias IsthmusWeb.Admin.RadioChannels
   alias IsthmusWeb.Admin.UsbRole
 
@@ -40,6 +41,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
      |> assign(:time_syncing_port, nil)
      |> assign(:timezone, timezone)
      |> assign(:settings_modal_port, nil)
+     |> assign(:channels_modal_id, nil)
      |> assign(:channel_invite, nil)
      |> assign(:send_channel, nil)
      |> assign(:send_form, to_form(%{"body" => ""}))
@@ -49,6 +51,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
      |> assign(:ble_connecting, nil)
      |> assign(:ble_pin_prompt, nil)
      |> assign(:ble_pin_form, to_form(%{"pin" => "123456", "address" => ""}))
+     |> FirmwareOffer.mount_assigns()
      |> refresh()}
   end
 
@@ -254,6 +257,17 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     end
   end
 
+  def handle_event("refresh_firmware_catalog", _params, socket) do
+    send(self(), :refresh_firmware_catalog)
+    {:noreply, assign(socket, :firmware_catalog_loading, true)}
+  end
+
+  def handle_event("assign_usb_board", params, socket) do
+    id = params["device_id"] || params[:device_id]
+    board = params["board"] || params[:board]
+    {:noreply, FirmwareOffer.pick_board(socket, id, board)}
+  end
+
   def handle_event("assign_usb_firmware", params, socket) do
     id = params["device_id"] || params[:device_id]
     kind = params["kind"] || params[:kind]
@@ -293,6 +307,15 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Rescan failed: #{inspect(reason)}")}
     end
+  end
+
+  def handle_event("open_channels", params, socket) do
+    id = params["device_id"] || params["device-id"]
+    {:noreply, assign(socket, :channels_modal_id, id)}
+  end
+
+  def handle_event("close_channels", _params, socket) do
+    {:noreply, assign(socket, :channels_modal_id, nil)}
   end
 
   def handle_event("open_device_config", %{"port" => port}, socket) do
@@ -485,6 +508,10 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   @impl true
   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
 
+  def handle_info(:refresh_firmware_catalog, socket) do
+    {:noreply, FirmwareOffer.handle_refresh(socket)}
+  end
+
   def handle_info({:meshtastic_channels, channels, _port}, socket) when is_list(channels) do
     socket =
       socket
@@ -585,7 +612,18 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     |> assign(:devices, devices)
     |> assign(:ble_connecting, connecting)
     |> assign(:settings_applying, socket.assigns[:settings_applying] || false)
+    |> clear_missing_channels_modal(devices)
     |> assign_ble_busy()
+  end
+
+  defp clear_missing_channels_modal(socket, devices) do
+    id = socket.assigns[:channels_modal_id]
+
+    if is_binary(id) and not Enum.any?(devices, &(&1.id == id)) do
+      assign(socket, :channels_modal_id, nil)
+    else
+      socket
+    end
   end
 
   defp assign_ble_busy(socket) do

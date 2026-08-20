@@ -291,6 +291,12 @@ defmodule Isthmus.Networks.MeshCore.Discover do
                   entry = %{path: port.path, source: :detected, detail: port}
                   {add_rnode(acc, entry), MapSet.put(claimed, port.path)}
 
+                {:rnode, extra} when is_map(extra) ->
+                  Logger.info("MeshCore discover: #{port.path} -> rnode")
+                  detail = Map.merge(port, extra)
+                  entry = %{path: port.path, source: :detected, detail: detail}
+                  {add_rnode(acc, entry), MapSet.put(claimed, port.path)}
+
                 other ->
                   acc =
                     case other do
@@ -395,10 +401,9 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     _ =
       try do
         Isthmus.Networks.MeshCore.Companion.disconnect_unidentified()
-        Isthmus.Networks.Meshtastic.Companion.disconnect_unidentified()
-        # Do not drop a Discover-assigned island CLI just because `get radio`
-        # has not parsed yet. That used to free Wio ports stolen as MeshCore
-        # by USB identity; it now leaves a real bridge sitting Offline.
+        # Do not drop an assigned Meshtastic companion just because MyNodeInfo
+        # has not arrived. Opening CP210x reboots ESP32; releasing the UART
+        # and reopening it loops that reset forever.
       catch
         :exit, _ -> :ok
       end
@@ -725,8 +730,18 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   defp classify_mode(uart, _meta, :rnode) do
     _ = probe_write(uart, RNode.detect_frame())
-    {rnode?, _} = read_until_pred(uart, &RNode.detect_response?/1, @probe_timeout_ms, <<>>)
-    if rnode?, do: :rnode, else: :unknown
+    {rnode?, acc} = read_until_pred(uart, &RNode.detect_response?/1, @probe_timeout_ms, <<>>)
+
+    cond do
+      not rnode? ->
+        :unknown
+
+      is_binary(ver = RNode.firmware_version(acc)) ->
+        {:rnode, %{firmware_version: ver}}
+
+      true ->
+        :rnode
+    end
   end
 
   defp classify_after_idle(uart, acc, meta) do
@@ -794,7 +809,10 @@ defmodule Isthmus.Networks.MeshCore.Discover do
                 classified
 
               rnode? ->
-                :rnode
+                case RNode.firmware_version(acc) do
+                  ver when is_binary(ver) -> {:rnode, %{firmware_version: ver}}
+                  _ -> :rnode
+                end
 
               true ->
                 _ = probe_write(uart, "ver\r")
