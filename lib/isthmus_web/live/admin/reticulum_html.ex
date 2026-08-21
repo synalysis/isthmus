@@ -342,7 +342,13 @@ defmodule IsthmusWeb.Admin.ReticulumHTML do
                       <.usb_firmware_offer
                         id={"usb-firmware-offer-#{rnode_dom_id(rnode.path)}"}
                         device_id={rnode.path}
-                        kind={:rnode}
+                        kind={
+                          IsthmusWeb.Admin.FirmwareOffer.flash_kind(
+                            rnode_device(rnode),
+                            @kind_by_device
+                          ) || :rnode
+                        }
+                        running_kind={:rnode}
                         board_id={
                           IsthmusWeb.Admin.FirmwareOffer.board_id(
                             rnode_device(rnode),
@@ -352,6 +358,7 @@ defmodule IsthmusWeb.Admin.ReticulumHTML do
                         running_version={rnode[:firmware_version]}
                         connected={true}
                         catalog={@firmware_catalog}
+                        flash_job={@firmware_flash}
                       />
                     </td>
                     <td class="text-right">

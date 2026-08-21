@@ -39,6 +39,31 @@ defmodule Isthmus.Networks.Firmware.OfferTest do
     assert offer.version == "2.7.26.54e0d8d"
   end
 
+  test "Heltec Meshtastic also falls back to the zip when GitHub lists only the archive" do
+    snap = Catalog.fixture_snapshot()
+    offer = Offer.lookup(:heltec_v3, :meshtastic, snap)
+    assert offer.filename == "firmware-2.7.26.54e0d8d.zip"
+    assert Board.programmer(:heltec_v3) == :esptool
+  end
+
+  test "Meshtastic hyphen asset names match Heltec V3" do
+    snap = %{
+      meshtastic: %{
+        version: "2.7.26.54e0d8d",
+        html_url: "https://example.test",
+        assets: [
+          %{
+            name: "firmware-heltec-v3-2.7.26.54e0d8d.bin",
+            url: "https://example.test/firmware-heltec-v3-2.7.26.54e0d8d.bin"
+          }
+        ]
+      }
+    }
+
+    offer = Offer.lookup(:heltec_v3, :meshtastic, snap)
+    assert offer.filename == "firmware-heltec-v3-2.7.26.54e0d8d.bin"
+  end
+
   test "status is newer_available when running is behind" do
     snap = Catalog.fixture_snapshot()
     offer = Offer.lookup(:wio_tracker_l1, :companion, snap)

@@ -513,12 +513,14 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                 :if={not device.ble?}
                 id={"usb-firmware-offer-#{device_dom_id(device.id)}"}
                 device_id={device.id}
-                kind={UsbRole.firmware_kind(device)}
+                kind={IsthmusWeb.Admin.FirmwareOffer.flash_kind(device, @kind_by_device)}
+                running_kind={UsbRole.firmware_kind(device)}
                 board_id={IsthmusWeb.Admin.FirmwareOffer.board_id(device, @board_by_device)}
                 running_version={device[:firmware_version]}
                 connected={device.active_companion? == true or device.active_bridge_cli? == true}
                 catalog={@firmware_catalog}
                 source={List.first(device.ports || [])[:source]}
+                flash_job={@firmware_flash}
               />
 
               <details class="text-xs opacity-70" id={"#{device_dom_id(device.id)}-tech"}>

@@ -14,6 +14,7 @@ defmodule Isthmus.Networks.Supervisor do
       Isthmus.Tunnel.Engine,
       Isthmus.Networks.Reticulum.InterfaceSocket,
       Isthmus.Networks.Firmware.Catalog,
+      Isthmus.Networks.Firmware.Flasher,
       # Discover before any MeshCore link opens a port.
       Isthmus.Networks.MeshCore.Discover,
       {Registry, keys: :unique, name: Isthmus.Networks.MeshCore.Registry},

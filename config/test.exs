@@ -19,6 +19,12 @@ config :isthmus, rns_sync_on_boot: false
 config :isthmus, Isthmus.Networks.Firmware.Catalog,
   fetch: &Isthmus.Networks.Firmware.Catalog.fixture_snapshot/0
 
+config :isthmus, Isthmus.Networks.Firmware.Flasher,
+  download: &Isthmus.FirmwareCatalogFixtures.stub_download/2,
+  write: &Isthmus.FirmwareCatalogFixtures.stub_write/1,
+  disconnect: fn _path -> :ok end,
+  refresh: fn -> :ok end
+
 config :isthmus, Isthmus.Networks.MeshCore.Discover,
   probe: fn _path, _meta -> :unknown end,
   enumerate: fn -> %{} end,

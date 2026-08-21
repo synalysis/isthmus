@@ -20,6 +20,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
   require Logger
 
+  alias Isthmus.Networks.Firmware.Flasher
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.Meshtastic.BLETransport
   alias Isthmus.Networks.Meshtastic.Companion.Admin
@@ -261,6 +262,11 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   end
 
   def reconnect(port \\ nil), do: GenServer.cast(target(port), :reconnect)
+
+  @doc "Release the UART so a firmware write can take the port."
+  def disconnect(port \\ nil) do
+    safe_call(port, :disconnect, :ok, 2_000)
+  end
 
   @doc """
   Close UART on companions that came online without a MyNodeInfo handshake.
@@ -827,7 +833,22 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
     end
   end
 
-  defp maybe_connect(state) do
+  defp maybe_connect(%{transport_kind: :usb, port: port} = state)
+       when is_binary(port) and port != "" do
+    if Flasher.held?(port) do
+      Status.publish_status(%{
+        state
+        | status: :disconnected,
+          last_error: "firmware flash in progress"
+      })
+    else
+      open_usb(state)
+    end
+  end
+
+  defp maybe_connect(state), do: open_usb(state)
+
+  defp open_usb(state) do
     case Circuits.UART.start_link() do
       {:ok, uart} ->
         case Circuits.UART.open(uart, state.port, speed: @baud, active: true) do
@@ -913,6 +934,9 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
 
     cond do
       not online? ->
+        false
+
+      Flasher.held?(state[:port]) ->
         false
 
       state[:fixed_port] == true ->

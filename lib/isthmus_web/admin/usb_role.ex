@@ -2,8 +2,12 @@ defmodule IsthmusWeb.Admin.UsbRole do
   @moduledoc false
   use IsthmusWeb, :html
 
+  alias Isthmus.Networks.MeshCore.BridgeCLI
+  alias Isthmus.Networks.MeshCore.BridgeLink
+  alias Isthmus.Networks.MeshCore.Companion, as: MeshCoreCompanion
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.MeshCore.Ports
+  alias Isthmus.Networks.Meshtastic.Companion, as: MeshtasticCompanion
   alias Isthmus.Networks.UsbAssignments
 
   @role_options [
@@ -22,6 +26,11 @@ defmodule IsthmusWeb.Admin.UsbRole do
     {"Reticulum RNode", "rnode"},
     {"Ignore this radio", "ignore"}
   ]
+
+  @spec flash_kind_options() :: [{String.t(), String.t()}]
+  def flash_kind_options do
+    Enum.reject(@firmware_options, fn {_label, value} -> value == "ignore" end)
+  end
 
   attr :id, :string, required: true
   attr :device_id, :string, required: true
@@ -47,7 +56,7 @@ defmodule IsthmusWeb.Admin.UsbRole do
           class="flex flex-nowrap items-center gap-2 [&_.fieldset]:contents [&_label]:contents"
         >
           <input type="hidden" name="device_id" value={@device_id} />
-          <span class="label w-24 shrink-0 px-0">Firmware</span>
+          <span class="label w-24 shrink-0 px-0">Use as</span>
           <.input
             id={"#{@id}-kind"}
             name="kind"
@@ -58,13 +67,17 @@ defmodule IsthmusWeb.Admin.UsbRole do
             class="select select-sm h-8 min-h-8 w-56"
           />
           <button
-            class="btn btn-primary btn-sm h-8 min-h-8 shrink-0"
+            class="btn btn-outline btn-sm h-8 min-h-8 shrink-0"
             id={"#{@id}-apply"}
             type="submit"
           >
             Apply
           </button>
         </form>
+        <p class="text-xs opacity-70" id={"#{@id}-hint"}>
+          How Isthmus talks to this radio. Keep Meshtastic to operate it as-is.
+          Writing a different image is under Write firmware.
+        </p>
     <% end %>
     """
   end
@@ -157,6 +170,62 @@ defmodule IsthmusWeb.Admin.UsbRole do
 
   @spec firmware_kind(map()) :: atom() | nil
   def firmware_kind(device) when is_map(device) do
+    assigned_firmware_kind(device) || detected_firmware_kind(device)
+  end
+
+  @spec apply_firmware(map(), String.t() | atom()) :: {:ok, String.t()} | {:error, String.t()}
+  def apply_firmware(device, kind) when is_map(device) do
+    case save_firmware(device, kind) do
+      :ok ->
+        Enum.each(firmware_ports(device), &release_port/1)
+        refresh_after(firmware_flash(kind))
+
+      {:error, :ble} ->
+        {:error, "Bluetooth companions are not assigned as USB firmware."}
+
+      {:error, :no_ports} ->
+        {:error, "No USB ports on this radio."}
+
+      {:error, :invalid_kind} ->
+        {:error, "Unknown firmware type."}
+
+      {:error, reason} ->
+        {:error, "Could not save USB firmware: #{inspect(reason)}"}
+    end
+  end
+
+  @doc "Persist the USB firmware kind without rescanning or opening the port."
+  @spec save_firmware(map(), String.t() | atom()) :: :ok | {:error, term()}
+  def save_firmware(device, kind) when is_map(device) do
+    ports = firmware_ports(device)
+
+    cond do
+      device[:ble?] == true ->
+        {:error, :ble}
+
+      ports == [] ->
+        {:error, :no_ports}
+
+      true ->
+        UsbAssignments.assign_firmware(ports, kind, probe: fn _, _, _ -> :unknown end)
+    end
+  end
+
+  defp assigned_firmware_kind(device) do
+    device
+    |> assignment_ports()
+    |> Enum.map(&UsbAssignments.role_for/1)
+    |> Enum.map(&role_to_firmware_kind/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.uniq()
+    |> case do
+      [] -> nil
+      [kind] -> kind
+      kinds -> Enum.find(kinds, &(&1 != :ignore)) || List.first(kinds)
+    end
+  end
+
+  defp detected_firmware_kind(device) do
     roles =
       device
       |> Map.get(:ports, [])
@@ -190,24 +259,48 @@ defmodule IsthmusWeb.Admin.UsbRole do
     end
   end
 
-  @spec apply_firmware(map(), String.t() | atom()) :: {:ok, String.t()} | {:error, String.t()}
-  def apply_firmware(device, kind) when is_map(device) do
-    ports = firmware_ports(device)
+  defp assignment_ports(device) do
+    ports = card_ports(device)
 
-    cond do
-      device[:ble?] == true ->
-        {:error, "Bluetooth companions are not assigned as USB firmware."}
-
-      ports == [] ->
-        {:error, "No USB ports on this radio."}
-
-      true ->
-        case UsbAssignments.assign_firmware(ports, kind) do
-          :ok -> refresh_after(firmware_flash(kind))
-          {:error, :invalid_kind} -> {:error, "Unknown firmware type."}
-          {:error, reason} -> {:error, "Could not save USB firmware: #{inspect(reason)}"}
-        end
+    if ports == [] do
+      [device]
+    else
+      ports
     end
+  end
+
+  defp role_to_firmware_kind(role) when role in [:meshtastic, :companion, :rnode, :ignore],
+    do: role
+
+  defp role_to_firmware_kind(role) when role in [:bridge_cli, :bridge_packet], do: :island
+  defp role_to_firmware_kind(_), do: nil
+
+  defp release_port(port) when is_map(port) do
+    path = port[:path] || port["path"]
+    if is_binary(path) and path != "", do: release_path(path)
+  end
+
+  defp release_path(path) when is_binary(path) do
+    _ = safe_disconnect(fn -> MeshtasticCompanion.disconnect(path) end)
+    _ = safe_disconnect(fn -> MeshCoreCompanion.disconnect(path) end)
+
+    if BridgeCLI.health()[:port] == path do
+      _ = safe_disconnect(fn -> BridgeCLI.disconnect() end)
+    end
+
+    if BridgeLink.health()[:port] == path do
+      _ = safe_disconnect(fn -> BridgeLink.disconnect() end)
+    end
+
+    :ok
+  catch
+    :exit, _ -> :ok
+  end
+
+  defp safe_disconnect(fun) do
+    fun.()
+  catch
+    :exit, _ -> :ok
   end
 
   defp firmware_ports(device) do
@@ -232,7 +325,7 @@ defmodule IsthmusWeb.Admin.UsbRole do
     case device[:ports] do
       list when is_list(list) and list != [] ->
         Enum.flat_map(list, fn port ->
-          path = port[:path] || port.path
+          path = port[:path] || port["path"]
 
           if usb_path?(path) do
             [

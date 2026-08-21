@@ -8,6 +8,7 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
   alias Isthmus.Networks.Reticulum.RNode
   alias Isthmus.Registrations
   alias IsthmusWeb.Admin.FirmwareOffer
+  alias IsthmusWeb.Admin.UsbRole
 
   @impl true
   def mount(_params, _session, socket) do
@@ -25,6 +26,10 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
 
   @impl true
   def handle_info(:refresh, socket), do: {:noreply, assign_data(socket)}
+
+  def handle_info({:firmware_flash, job}, socket) do
+    {:noreply, FirmwareOffer.handle_flash_progress(socket, job)}
+  end
 
   def handle_info(:refresh_firmware_catalog, socket) do
     {:noreply, FirmwareOffer.handle_refresh(socket)}
@@ -82,6 +87,42 @@ defmodule IsthmusWeb.Admin.ReticulumLive do
     id = params["device_id"] || params[:device_id]
     board = params["board"] || params[:board]
     {:noreply, FirmwareOffer.pick_board(socket, id, board)}
+  end
+
+  def handle_event("pick_usb_firmware", params, socket) do
+    id = params["device_id"] || params[:device_id]
+    kind = params["kind"] || params[:kind]
+    {:noreply, FirmwareOffer.pick_kind(socket, id, kind)}
+  end
+
+  def handle_event("install_firmware", params, socket) do
+    {:noreply, FirmwareOffer.start_install(socket, params)}
+  end
+
+  def handle_event("assign_usb_firmware", params, socket) do
+    id = params["device_id"] || params["device-id"] || params[:device_id]
+    kind = params["kind"] || params[:kind]
+
+    device =
+      Enum.find(List.wrap(socket.assigns[:devices]), &(&1[:id] == id)) ||
+        case Enum.find(List.wrap(socket.assigns[:detected_rnodes]), &(&1[:path] == id)) do
+          nil -> nil
+          rnode -> Map.put(rnode, :kind, :rnode)
+        end
+
+    case device do
+      nil ->
+        {:noreply, put_flash(socket, :error, "Unknown device — rescan USB and try again.")}
+
+      found ->
+        case UsbRole.apply_firmware(found, kind) do
+          {:ok, msg} ->
+            {:noreply, socket |> put_flash(:info, msg) |> assign_data()}
+
+          {:error, msg} ->
+            {:noreply, put_flash(socket, :error, msg)}
+        end
+    end
   end
 
   def handle_event("rescan_rnodes", _params, socket) do

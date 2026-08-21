@@ -547,6 +547,21 @@ defmodule Isthmus.Networks.MeshCore.DiscoverTest do
     assert Enum.map(restored.meshtastic_ports, & &1.path) == ["/dev/ttyUSB0"]
   end
 
+  test "keep_still_attached does not restore Meshtastic after a companion assignment" do
+    previous = %{
+      meshtastic: %{path: "/dev/ttyUSB0", source: :assigned, detail: nil},
+      meshtastic_ports: [%{path: "/dev/ttyUSB0", source: :assigned, detail: nil}]
+    }
+
+    restored =
+      Discover.keep_still_attached(%{meshtastic_ports: []}, previous, ["/dev/ttyUSB0"],
+        assignments: [%{"path" => "/dev/ttyUSB0", "role" => "companion"}]
+      )
+
+    refute Map.has_key?(restored, :meshtastic)
+    refute Enum.any?(restored[:meshtastic_ports] || [], &(&1.path == "/dev/ttyUSB0"))
+  end
+
   test "keep_still_attached does not restore a MeshCore island that was re-probed" do
     previous = %{
       bridge_cli: %{path: "/dev/ttyACM0", source: :detected, detail: nil},

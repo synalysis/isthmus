@@ -19,6 +19,7 @@ defmodule Isthmus.Networks.MeshCore.BridgeLink do
 
   require Logger
 
+  alias Isthmus.Networks.Firmware.Flasher
   alias Isthmus.Networks.MeshCore.BridgeFrame
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.MeshCore.USBTransport
@@ -126,6 +127,7 @@ defmodule Isthmus.Networks.MeshCore.BridgeLink do
 
   defp stay_connected?(state) do
     state[:status] == :online and not is_nil(state[:transport]) and
+      not Flasher.held?(state[:port]) and
       Discover.resolve_port(:bridge_packet) == state[:port]
   end
 
@@ -263,7 +265,21 @@ defmodule Isthmus.Networks.MeshCore.BridgeLink do
     })
   end
 
-  defp maybe_connect(state) do
+  defp maybe_connect(%{port: port} = state) when is_binary(port) and port != "" do
+    if Flasher.held?(port) do
+      publish_status(%{
+        state
+        | status: :disconnected,
+          last_error: "firmware flash in progress"
+      })
+    else
+      connect_transport(state)
+    end
+  end
+
+  defp maybe_connect(state), do: connect_transport(state)
+
+  defp connect_transport(state) do
     case state.transport_mod.connect(Map.put(state.transport_opts, :port, state.port)) do
       {:ok, transport} ->
         Logger.info("MeshCore bridge link online via #{state.port}")

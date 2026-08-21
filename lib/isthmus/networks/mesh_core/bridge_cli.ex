@@ -11,6 +11,7 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
 
   require Logger
 
+  alias Isthmus.Networks.Firmware.Flasher
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.MeshCore.RadioParams
   alias Isthmus.Networks.MeshCore.USBTransport
@@ -77,6 +78,8 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
   end
 
   def reconnect(name \\ __MODULE__), do: GenServer.cast(name, :reconnect)
+
+  def disconnect(name \\ __MODULE__), do: safe_call(name, :disconnect, :ok, 2_000)
 
   @doc """
   Close an island CLI that never answered `get radio`.
@@ -226,6 +229,7 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
 
   defp stay_connected?(state) do
     state[:status] == :online and not is_nil(state[:transport]) and
+      not Flasher.held?(state[:port]) and
       Discover.resolve_port(:bridge_cli) == state[:port]
   end
 
@@ -288,7 +292,21 @@ defmodule Isthmus.Networks.MeshCore.BridgeCLI do
     })
   end
 
-  defp maybe_connect(state) do
+  defp maybe_connect(%{port: port} = state) when is_binary(port) and port != "" do
+    if Flasher.held?(port) do
+      publish_status(%{
+        state
+        | status: :disconnected,
+          last_error: "firmware flash in progress"
+      })
+    else
+      connect_transport(state)
+    end
+  end
+
+  defp maybe_connect(state), do: connect_transport(state)
+
+  defp connect_transport(state) do
     case state.transport_mod.connect(Map.put(state.transport_opts, :port, state.port)) do
       {:ok, transport} ->
         Logger.info("MeshCore bridge CLI online via #{state.port}")

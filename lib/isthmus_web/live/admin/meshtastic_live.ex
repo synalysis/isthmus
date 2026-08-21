@@ -268,6 +268,16 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
     {:noreply, FirmwareOffer.pick_board(socket, id, board)}
   end
 
+  def handle_event("pick_usb_firmware", params, socket) do
+    id = params["device_id"] || params[:device_id]
+    kind = params["kind"] || params[:kind]
+    {:noreply, FirmwareOffer.pick_kind(socket, id, kind)}
+  end
+
+  def handle_event("install_firmware", params, socket) do
+    {:noreply, FirmwareOffer.start_install(socket, params)}
+  end
+
   def handle_event("assign_usb_firmware", params, socket) do
     id = params["device_id"] || params[:device_id]
     kind = params["kind"] || params[:kind]
@@ -507,6 +517,10 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
 
   @impl true
   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
+
+  def handle_info({:firmware_flash, job}, socket) do
+    {:noreply, FirmwareOffer.handle_flash_progress(socket, job)}
+  end
 
   def handle_info(:refresh_firmware_catalog, socket) do
     {:noreply, FirmwareOffer.handle_refresh(socket)}

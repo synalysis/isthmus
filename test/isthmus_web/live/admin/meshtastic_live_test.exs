@@ -143,6 +143,41 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
              Isthmus.Networks.UsbAssignments.list()
   end
 
+  test "picking MeshCore companion does not flash until Flash is pressed", %{conn: conn} do
+    {previous, _detail} =
+      FirmwareCatalogFixtures.seed_meshtastic_wio(firmware_version: "2.7.15.567b8ea")
+
+    on_exit(fn ->
+      FirmwareCatalogFixtures.cleanup_meshtastic_wio(previous)
+      Isthmus.Networks.UsbAssignments.clear(%{path: "/dev/ttyUSB9"})
+      FirmwareCatalogFixtures.reset_flasher()
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
+
+    assert has_element?(view, "#usb-firmware-meshtastic-device-dev-ttyUSB9")
+    assert has_element?(view, "#usb-firmware-offer-meshtastic-device-dev-ttyUSB9-write")
+    assert render(view) =~ "Keep Meshtastic to operate it as-is"
+
+    html =
+      render_change(view, "pick_usb_firmware", %{
+        "device_id" => "usb:2886:1667:WIO1",
+        "kind" => "companion"
+      })
+
+    refute Isthmus.Networks.UsbAssignments.role_for(%{path: "/dev/ttyUSB9"})
+    assert html =~ "Flash MeshCore companion"
+    assert has_element?(view, "#usb-firmware-offer-meshtastic-device-dev-ttyUSB9-install")
+
+    view
+    |> element("#usb-firmware-offer-meshtastic-device-dev-ttyUSB9-install")
+    |> render_click()
+
+    assert Isthmus.Networks.UsbAssignments.role_for(%{path: "/dev/ttyUSB9"}) == :companion
+    assert Isthmus.Networks.Firmware.Flasher.status()[:kind] == :companion
+    _ = :sys.get_state(Isthmus.Networks.Firmware.Flasher)
+  end
+
   test "assign_usb_firmware reports an unknown device", %{conn: conn} do
     {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
 
@@ -159,6 +194,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
 
     {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
 
+    assert has_element?(view, "#usb-firmware-meshtastic-device-dev-ttyUSB9")
     assert has_element?(view, "#usb-firmware-offer-meshtastic-device-dev-ttyUSB9")
     assert has_element?(view, "#usb-firmware-offer-meshtastic-device-dev-ttyUSB9-download")
     assert has_element?(view, "#meshtastic-device-dev-ttyUSB9-firmware-update")
@@ -171,5 +207,28 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
     view |> element("#open-channels-meshtastic-device-dev-ttyUSB9") |> render_click()
     assert has_element?(view, "#meshtastic-channels-modal")
     assert has_element?(view, "#channels-meshtastic-device-dev-ttyUSB9")
+  end
+
+  test "Install starts a stubbed firmware job", %{conn: conn} do
+    {previous, _detail} =
+      FirmwareCatalogFixtures.seed_meshtastic_wio(firmware_version: "2.7.15.567b8ea")
+
+    on_exit(fn ->
+      FirmwareCatalogFixtures.cleanup_meshtastic_wio(previous)
+      FirmwareCatalogFixtures.reset_flasher()
+    end)
+
+    {:ok, view, _html} = live(conn, ~p"/admin/meshtastic")
+    assert has_element?(view, "#usb-firmware-offer-meshtastic-device-dev-ttyUSB9-install")
+
+    view
+    |> element("#usb-firmware-offer-meshtastic-device-dev-ttyUSB9-install")
+    |> render_click()
+
+    html = render(view)
+    assert html =~ "Installing"
+    assert html =~ "the radio will disconnect"
+    assert Isthmus.Networks.Firmware.Flasher.status()[:path] == "/dev/ttyUSB9"
+    _ = :sys.get_state(Isthmus.Networks.Firmware.Flasher)
   end
 end

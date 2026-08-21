@@ -13,6 +13,19 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
     refute Companion.stay_connected?(%{status: :disconnected, uart: nil, port: nil})
   end
 
+  test "stay_connected? is false while the flasher holds the port" do
+    previous = Application.get_env(:isthmus, Isthmus.Networks.Firmware.Flasher, [])
+    :ets.insert(:isthmus_firmware_flasher, {:held, ["/dev/ttyUSB0"]})
+
+    on_exit(fn ->
+      :ets.insert(:isthmus_firmware_flasher, {:held, []})
+      Application.put_env(:isthmus, Isthmus.Networks.Firmware.Flasher, previous)
+    end)
+
+    online = %{status: :online, uart: self(), port: "/dev/ttyUSB0", fixed_port: true}
+    refute Companion.stay_connected?(online)
+  end
+
   test "stay_connected? treats an online BLE transport as connected" do
     online = %{
       status: :online,

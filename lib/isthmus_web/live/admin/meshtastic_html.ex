@@ -378,12 +378,14 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                 <.usb_firmware_offer
                   id={"usb-firmware-offer-#{device_dom_id(device)}"}
                   device_id={device.id}
-                  kind={UsbRole.firmware_kind(device)}
+                  kind={IsthmusWeb.Admin.FirmwareOffer.flash_kind(device, @kind_by_device)}
+                  running_kind={UsbRole.firmware_kind(device)}
                   board_id={IsthmusWeb.Admin.FirmwareOffer.board_id(device, @board_by_device)}
                   running_version={device[:firmware_version]}
                   connected={device.active? == true}
                   catalog={@firmware_catalog}
                   source={device.source}
+                  flash_job={@firmware_flash}
                 />
               </div>
 

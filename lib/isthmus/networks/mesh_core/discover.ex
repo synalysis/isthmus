@@ -178,13 +178,14 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     # came back unknown must not keep a stale MeshCore island assignment —
     # the same Wio USB identity is used by Meshtastic.
     skipped = MapSet.new(Keyword.get(opts, :skip_paths, MapSet.to_list(present)))
+    assignments = Keyword.get(opts, :assignments, [])
 
     roles =
       roles
-      |> restore_singletons(previous, present, skipped)
-      |> restore_port_list(:meshtastic_ports, previous, present, skipped)
-      |> restore_port_list(:companion_ports, previous, present, skipped)
-      |> restore_port_list(:rnode_ports, previous, present, skipped)
+      |> restore_singletons(previous, present, skipped, assignments)
+      |> restore_port_list(:meshtastic_ports, previous, present, skipped, assignments)
+      |> restore_port_list(:companion_ports, previous, present, skipped, assignments)
+      |> restore_port_list(:rnode_ports, previous, present, skipped, assignments)
 
     roles
     |> Map.put(
@@ -417,7 +418,10 @@ defmodule Isthmus.Networks.MeshCore.Discover do
       |> Keyword.put(:skip_paths, skip)
       |> Keyword.put(:assignments, assignments)
       |> scan()
-      |> keep_still_attached(state.roles, present, skip_paths: skip)
+      |> keep_still_attached(state.roles, present,
+        skip_paths: skip,
+        assignments: assignments
+      )
 
     publish(state, roles)
     Logger.info("MeshCore discover refresh: #{format_roles(roles)}")
@@ -1226,7 +1230,7 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
   @singleton_roles [:companion, :bridge_cli, :bridge_packet, :meshtastic, :rnode]
 
-  defp restore_singletons(roles, previous, present, skipped) do
+  defp restore_singletons(roles, previous, present, skipped, assignments) do
     Enum.reduce(@singleton_roles, roles, fn role, acc ->
       prev = previous[role]
 
@@ -1236,7 +1240,8 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
         is_map(prev) and is_binary(prev[:path]) and MapSet.member?(present, prev.path) and
           MapSet.member?(skipped, prev.path) and
-            not MapSet.member?(assigned_paths(acc), prev.path) ->
+          not MapSet.member?(assigned_paths(acc), prev.path) and
+            not assignment_blocks?(prev.path, role, assignments) ->
           Map.put(acc, role, prev)
 
         true ->
@@ -1245,16 +1250,18 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     end)
   end
 
-  defp restore_port_list(roles, key, previous, present, skipped) do
+  defp restore_port_list(roles, key, previous, present, skipped, assignments) do
     current = roles[key] || []
     taken = assigned_paths(roles)
+    expected = list_role(key)
 
     extra =
       (previous[key] || [])
       |> Enum.filter(fn
         %{path: path} ->
           is_binary(path) and MapSet.member?(present, path) and
-            MapSet.member?(skipped, path) and not MapSet.member?(taken, path)
+            MapSet.member?(skipped, path) and not MapSet.member?(taken, path) and
+            not assignment_blocks?(path, expected, assignments)
 
         _ ->
           false
@@ -1262,6 +1269,27 @@ defmodule Isthmus.Networks.MeshCore.Discover do
 
     Map.put(roles, key, current ++ extra)
   end
+
+  defp list_role(:meshtastic_ports), do: :meshtastic
+  defp list_role(:companion_ports), do: :companion
+  defp list_role(:rnode_ports), do: :rnode
+  defp list_role(_), do: nil
+
+  defp assignment_blocks?(path, role, assignments) when is_list(assignments) do
+    assigned = Isthmus.Networks.UsbAssignments.role_for(%{path: path}, assignments)
+    not is_nil(assigned) and not assignment_compatible?(assigned, role)
+  end
+
+  defp assignment_blocks?(_, _, _), do: false
+
+  defp assignment_compatible?(assigned, role) when assigned == role, do: true
+
+  defp assignment_compatible?(assigned, role)
+       when assigned in [:bridge_cli, :bridge_packet] and
+              role in [:bridge_cli, :bridge_packet],
+       do: true
+
+  defp assignment_compatible?(_, _), do: false
 
   defp assigned_paths(roles) when is_map(roles) do
     roles
@@ -1293,7 +1321,8 @@ defmodule Isthmus.Networks.MeshCore.Discover do
     |> Enum.map(& &1.path)
   end
 
-  defp claimed_serial_paths do
+  @doc false
+  def claimed_serial_paths do
     meshcore =
       try do
         Isthmus.Networks.MeshCore.Companion.list_health()
@@ -1342,8 +1371,15 @@ defmodule Isthmus.Networks.MeshCore.Discover do
         :exit, _ -> []
       end
 
+    held =
+      try do
+        Isthmus.Networks.Firmware.Flasher.held_paths()
+      catch
+        :exit, _ -> []
+      end
+
     Enum.uniq(
-      Enum.filter(meshcore ++ meshcore_links ++ meshtastic, &(is_binary(&1) and &1 != ""))
+      Enum.filter(meshcore ++ meshcore_links ++ meshtastic ++ held, &(is_binary(&1) and &1 != ""))
     )
   end
 

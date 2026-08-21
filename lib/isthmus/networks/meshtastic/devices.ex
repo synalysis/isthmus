@@ -11,6 +11,7 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
   alias Isthmus.Networks.MeshCore.Devices, as: MeshDevices
   alias Isthmus.Networks.MeshCore.Ports
   alias Isthmus.Networks.Meshtastic.Companion
+  alias Isthmus.Networks.UsbAssignments
 
   @type device :: %{
           id: String.t(),
@@ -67,6 +68,7 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
       |> Enum.reject(&is_nil/1)
       |> Enum.reject(&String.starts_with?(&1, "ble:"))
       |> Enum.uniq()
+      |> Enum.reject(&assigned_away?(&1, by_path))
 
     claimed = MapSet.union(MapSet.new(classified), meshcore_claimed_paths(roles))
 
@@ -85,7 +87,7 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
         meta = by_path[path] || synthetic_port(path, roles)
         health = health_by_port[path] || %{status: :disconnected, port: path}
         classified? = path in classified
-        usb_role = usb_role_for(path, classified?, roles)
+        usb_role = usb_role_for(path, classified?, roles, meta)
         source = port_source(roles, path)
 
         build_device(
@@ -171,9 +173,33 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
 
   defp meshcore_claimed_paths(_), do: MapSet.new()
 
-  defp usb_role_for(_path, true, _roles), do: :meshtastic
+  defp assigned_away?(path, by_path) when is_binary(path) do
+    meta = Map.get(by_path, path) || %{path: path}
 
-  defp usb_role_for(path, false, roles) do
+    UsbAssignments.role_for(meta) in [
+      :companion,
+      :bridge_cli,
+      :bridge_packet,
+      :rnode,
+      :ignore
+    ]
+  end
+
+  defp assigned_away?(_, _), do: false
+
+  defp usb_role_for(path, classified?, roles, meta) do
+    case UsbAssignments.role_for(meta || %{path: path}) do
+      role when role in [:meshtastic, :companion, :bridge_cli, :bridge_packet, :rnode, :ignore] ->
+        role
+
+      _ ->
+        usb_role_detected(path, classified?, roles)
+    end
+  end
+
+  defp usb_role_detected(_path, true, _roles), do: :meshtastic
+
+  defp usb_role_detected(path, false, roles) do
     Enum.find_value(roles[:ignored_ports] || [], fn
       %{path: ^path} -> :ignore
       _ -> nil

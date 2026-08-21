@@ -62,6 +62,7 @@ defmodule IsthmusWeb.Admin.ReticulumLiveTest do
       assert has_element?(view, "#refresh-firmware-catalog-btn")
       assert has_element?(view, "#usb-firmware-offer-rnode-ttyACM3")
       assert has_element?(view, "#usb-firmware-offer-rnode-ttyACM3-download")
+      assert has_element?(view, "#usb-firmware-offer-rnode-ttyACM3-install")
       assert has_element?(view, "#rnode-ttyACM3-firmware-update")
       assert render(view) =~ "rnode_firmware_heltec32v3.zip"
     end

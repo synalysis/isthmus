@@ -2,9 +2,66 @@ defmodule Isthmus.FirmwareCatalogFixtures do
   @moduledoc false
 
   alias Isthmus.Networks.Firmware.Catalog
+  alias Isthmus.Networks.Firmware.Flasher
   alias Isthmus.Networks.MeshCore.Companion.Status, as: MeshStatus
   alias Isthmus.Networks.MeshCore.Discover
   alias Isthmus.Networks.Meshtastic.Companion.Status, as: MeshtasticStatus
+
+  @heltec_bin "firmware-heltec-v3-2.7.26.54e0d8d.bin"
+
+  def stub_download(_url, dest) when is_binary(dest) do
+    File.mkdir_p!(Path.dirname(dest))
+
+    if String.ends_with?(String.downcase(dest), ".zip") do
+      write_heltec_zip(dest)
+    else
+      File.write!(dest, "firmware-image")
+    end
+
+    {:ok, dest}
+  end
+
+  def stub_write(_job), do: :ok
+
+  def write_heltec_zip(path) do
+    File.mkdir_p!(Path.dirname(path))
+
+    {:ok, _} =
+      :zip.create(
+        String.to_charlist(path),
+        [
+          {String.to_charlist(@heltec_bin), "APP"},
+          {~c"firmware-heltec-v3-2.7.26.54e0d8d-update.bin", "UPD"},
+          {~c"bleota.bin", "OTA"}
+        ]
+      )
+
+    path
+  end
+
+  def reset_flasher do
+    case :ets.whereis(:isthmus_firmware_flasher) do
+      :undefined ->
+        :ok
+
+      _ ->
+        :ets.insert(:isthmus_firmware_flasher, {:held, []})
+        :ets.insert(:isthmus_firmware_flasher, {:job, nil})
+        :ok
+    end
+  end
+
+  def put_flasher_opts(opts) when is_list(opts) do
+    current = Application.get_env(:isthmus, Flasher, [])
+    Application.put_env(:isthmus, Flasher, Keyword.merge(current, opts))
+    current
+  end
+
+  def restore_flasher_opts(opts) when is_list(opts) do
+    Application.put_env(:isthmus, Flasher, opts)
+    reset_flasher()
+    :ok
+  end
 
   def put_catalog do
     Catalog.put_snapshot(Catalog.fixture_snapshot())

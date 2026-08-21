@@ -109,6 +109,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
 
     assert has_element?(view, "#usb-firmware-offer-device-usb-2886-1667-WIO1")
     assert has_element?(view, "#usb-firmware-offer-device-usb-2886-1667-WIO1-download")
+    assert has_element?(view, "#usb-firmware-offer-device-usb-2886-1667-WIO1-install")
     assert has_element?(view, "#device-usb-2886-1667-WIO1-firmware-update")
     assert render(view) =~ "WioTrackerL1_companion_radio_usb"
     assert render(view) =~ "1.17.1"

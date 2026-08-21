@@ -15,6 +15,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   require Logger
 
+  alias Isthmus.Networks.Firmware.Flasher
   alias Isthmus.Networks.MeshCore.BLETransport
   alias Isthmus.Networks.MeshCore.Companion.Channels
   alias Isthmus.Networks.MeshCore.Companion.Frames
@@ -202,6 +203,11 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   @doc "Re-resolve the serial port (after Discover.refresh) and reconnect."
   def reconnect(port \\ nil), do: GenServer.cast(target(port), :reconnect)
+
+  @doc "Release the UART so a firmware write can take the port."
+  def disconnect(port \\ nil) do
+    safe_call(:disconnect, :ok, 2_000, port)
+  end
 
   @doc """
   Close UART on companions that came online without a SELF_INFO handshake.
@@ -754,11 +760,15 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
   defp write_frame(_, _), do: {:error, :not_connected}
 
-  defp stay_connected?(state) when is_map(state) do
+  @doc false
+  def stay_connected?(state) when is_map(state) do
     online? = state[:status] == :online and not is_nil(state[:transport])
 
     cond do
       not online? ->
+        false
+
+      Flasher.held?(state[:port]) ->
         false
 
       state[:fixed_port] == true ->
@@ -827,7 +837,22 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     })
   end
 
-  defp maybe_connect(state) do
+  defp maybe_connect(%{transport_kind: :usb, port: port} = state)
+       when is_binary(port) and port != "" do
+    if Flasher.held?(port) do
+      Status.publish(%{
+        state
+        | status: :disconnected,
+          last_error: "firmware flash in progress"
+      })
+    else
+      connect_transport(state)
+    end
+  end
+
+  defp maybe_connect(state), do: connect_transport(state)
+
+  defp connect_transport(state) do
     opts =
       case state.transport_kind do
         :usb -> %{port: state.port}
