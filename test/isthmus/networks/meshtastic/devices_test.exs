@@ -95,7 +95,7 @@ defmodule Isthmus.Networks.Meshtastic.DevicesTest do
     assert device.usb_role == nil
   end
 
-  test "inventory skips a UART already claimed as MeshCore companion" do
+  test "inventory lists a MeshCore companion so it can be selected as Meshtastic" do
     ports = [
       %{
         name: "ttyUSB0",
@@ -119,7 +119,11 @@ defmodule Isthmus.Networks.Meshtastic.DevicesTest do
         healths: []
       )
 
-    assert devices == []
+    assert [device] = devices
+    assert device.path == "/dev/ttyUSB0"
+    assert device.kind == :unknown
+    assert device.usb_role == :companion
+    refute device.active?
   end
 
   test "inventory includes Bluetooth companions from health" do

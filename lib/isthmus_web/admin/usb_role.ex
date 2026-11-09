@@ -44,41 +44,48 @@ defmodule IsthmusWeb.Admin.UsbRole do
       |> assign(:current_value, current_value(assigns.current))
 
     ~H"""
-    <%= cond do %>
-      <% @source == :env -> %>
-        <p class="text-xs opacity-70" id={"#{@id}-env"}>
-          Pinned by environment variable — USB role is not stored.
-        </p>
-      <% true -> %>
-        <form
-          id={@id}
-          phx-submit="assign_usb_firmware"
-          class="flex flex-nowrap items-center gap-2 [&_.fieldset]:contents [&_label]:contents"
-        >
-          <input type="hidden" name="device_id" value={@device_id} />
-          <span class="label w-24 shrink-0 px-0">Use as</span>
-          <.input
-            id={"#{@id}-kind"}
-            name="kind"
-            type="select"
-            prompt="This radio is…"
-            options={@firmware_options}
-            value={@current_value}
-            class="select select-sm h-8 min-h-8 w-56"
-          />
-          <button
-            class="btn btn-outline btn-sm h-8 min-h-8 shrink-0"
-            id={"#{@id}-apply"}
-            type="submit"
+    <div
+      id={"#{@id}-network"}
+      class="rounded-lg border border-base-300 bg-base-100 px-3 py-3"
+    >
+      <%= cond do %>
+        <% @source == :env -> %>
+          <p class="text-sm font-medium">This radio runs</p>
+          <p class="mt-1 text-xs opacity-70" id={"#{@id}-env"}>
+            Pinned by an environment variable, so the USB role is not chosen here.
+          </p>
+        <% true -> %>
+          <form
+            id={@id}
+            phx-submit="assign_usb_firmware"
+            class="flex flex-wrap items-center gap-2 [&_.fieldset]:contents [&_label]:contents"
           >
-            Apply
-          </button>
-        </form>
-        <p class="text-xs opacity-70" id={"#{@id}-hint"}>
-          How Isthmus talks to this radio. Keep Meshtastic to operate it as-is.
-          Writing a different image is under Write firmware.
-        </p>
-    <% end %>
+            <input type="hidden" name="device_id" value={@device_id} />
+            <span class="text-sm font-medium shrink-0">This radio runs</span>
+            <.input
+              id={"#{@id}-kind"}
+              name="kind"
+              type="select"
+              prompt="Choose firmware…"
+              options={@firmware_options}
+              value={@current_value}
+              class="select select-sm h-8 min-h-8 w-full sm:w-64"
+            />
+            <button
+              class="btn btn-primary btn-sm h-8 min-h-8 shrink-0"
+              id={"#{@id}-apply"}
+              type="submit"
+            >
+              Apply
+            </button>
+          </form>
+          <p class="mt-2 text-xs opacity-70" id={"#{@id}-hint"}>
+            Choose <span class="font-medium">Meshtastic companion</span>
+            to use this USB radio on the Meshtastic page.
+            This does not write firmware — that is under Write firmware.
+          </p>
+      <% end %>
+    </div>
     """
   end
 

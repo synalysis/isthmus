@@ -178,10 +178,11 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
           <%= if @devices == [] do %>
             <div class="rounded-lg border border-base-300 bg-base-200/50 p-4" id="devices-empty">
               <p class="text-sm opacity-70">
-                No Meshtastic companions found. Plug in a USB radio, choose
+                No USB radios found. Plug one in and choose
                 <strong class="font-medium">Meshtastic companion</strong>
-                on that port, or use <strong class="font-medium">Scan Bluetooth</strong>
-                for a pairing-mode companion.
+                under This radio runs, or use <strong class="font-medium">Scan Bluetooth</strong>
+                for a pairing-mode companion. A radio Isthmus called MeshCore is
+                listed here as well, so you can switch it.
                 Pin <code class="font-mono">ISTHMUS_MESHTASTIC_PORT</code>
                 to skip the USB role picker.
               </p>
@@ -251,6 +252,13 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
                       </p>
                     <% true -> %>
                   <% end %>
+                  <.usb_firmware_picker
+                    :if={not device.ble?}
+                    id={"usb-firmware-#{device_dom_id(device)}"}
+                    device_id={device.id}
+                    current={UsbRole.firmware_kind(device)}
+                    source={device.source}
+                  />
                   <p
                     :if={device.active? and health[:region_label]}
                     class="text-sm opacity-70"
@@ -368,13 +376,6 @@ defmodule IsthmusWeb.Admin.MeshtasticHTML do
               </div>
 
               <div :if={not device.ble?} class="flex flex-col gap-2">
-                <.usb_firmware_picker
-                  id={"usb-firmware-#{device_dom_id(device)}"}
-                  device_id={device.id}
-                  current={UsbRole.firmware_kind(device)}
-                  source={device.source}
-                />
-
                 <.usb_firmware_offer
                   id={"usb-firmware-offer-#{device_dom_id(device)}"}
                   device_id={device.id}

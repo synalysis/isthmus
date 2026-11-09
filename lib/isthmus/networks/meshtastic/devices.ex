@@ -80,15 +80,22 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
       |> Enum.map(& &1.path)
       |> Enum.uniq()
 
+    # A USB radio Isthmus called MeshCore still needs a way to be selected
+    # as Meshtastic. Bridge and RNode ports stay off this page.
+    switchable =
+      roles
+      |> companion_switch_paths()
+      |> Enum.filter(&Map.has_key?(by_path, &1))
+
     usb =
-      (classified ++ unidentified)
+      (classified ++ unidentified ++ switchable)
       |> Enum.uniq()
       |> Enum.map(fn path ->
         meta = by_path[path] || synthetic_port(path, roles)
         health = health_by_port[path] || %{status: :disconnected, port: path}
         classified? = path in classified
         usb_role = usb_role_for(path, classified?, roles, meta)
-        source = port_source(roles, path)
+        source = port_source(roles, path) || companion_source(roles, path)
 
         build_device(
           meta,
@@ -173,6 +180,42 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
 
   defp meshcore_claimed_paths(_), do: MapSet.new()
 
+  defp companion_switch_paths(roles) when is_map(roles) do
+    singles =
+      case roles[:companion] do
+        %{path: path} when is_binary(path) -> [path]
+        _ -> []
+      end
+
+    extras =
+      Enum.flat_map(roles[:companion_ports] || [], fn
+        %{path: path} when is_binary(path) -> [path]
+        path when is_binary(path) -> [path]
+        _ -> []
+      end)
+
+    (singles ++ extras)
+    |> Enum.reject(&String.starts_with?(&1, "ble:"))
+    |> Enum.uniq()
+  end
+
+  defp companion_switch_paths(_), do: []
+
+  defp companion_source(roles, path) when is_map(roles) and is_binary(path) do
+    case roles[:companion] do
+      %{path: ^path, source: source} ->
+        source
+
+      _ ->
+        Enum.find_value(roles[:companion_ports] || [], fn
+          %{path: ^path, source: source} -> source
+          _ -> nil
+        end)
+    end
+  end
+
+  defp companion_source(_, _), do: nil
+
   defp assigned_away?(path, by_path) when is_binary(path) do
     meta = Map.get(by_path, path) || %{path: path}
 
@@ -200,10 +243,16 @@ defmodule Isthmus.Networks.Meshtastic.Devices do
   defp usb_role_detected(_path, true, _roles), do: :meshtastic
 
   defp usb_role_detected(path, false, roles) do
-    Enum.find_value(roles[:ignored_ports] || [], fn
-      %{path: ^path} -> :ignore
-      _ -> nil
-    end)
+    cond do
+      path in companion_switch_paths(roles) ->
+        :companion
+
+      true ->
+        Enum.find_value(roles[:ignored_ports] || [], fn
+          %{path: ^path} -> :ignore
+          _ -> nil
+        end)
+    end
   end
 
   defp port_source(roles, path) when is_map(roles) and is_binary(path) do

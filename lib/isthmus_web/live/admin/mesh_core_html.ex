@@ -442,6 +442,13 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                       </p>
                     <% true -> %>
                   <% end %>
+                  <.usb_firmware_picker
+                    :if={not device.ble?}
+                    id={"usb-firmware-#{device_dom_id(device.id)}"}
+                    device_id={device.id}
+                    current={UsbRole.firmware_kind(device)}
+                    source={List.first(device.ports || [])[:source]}
+                  />
                 </div>
                 <div class="flex flex-wrap items-center gap-2">
                   <button
@@ -502,13 +509,6 @@ defmodule IsthmusWeb.Admin.MeshCoreHTML do
                 </div>
               </div>
 
-              <.usb_firmware_picker
-                :if={not device.ble?}
-                id={"usb-firmware-#{device_dom_id(device.id)}"}
-                device_id={device.id}
-                current={UsbRole.firmware_kind(device)}
-                source={List.first(device.ports || [])[:source]}
-              />
               <.usb_firmware_offer
                 :if={not device.ble?}
                 id={"usb-firmware-offer-#{device_dom_id(device.id)}"}

@@ -70,6 +70,10 @@ defmodule IsthmusWeb.Admin.Copy do
       device[:kind] == :bridge_repeater ->
         {"Island tunnel radio", "Carries MeshCore mesh traffic for tunnels"}
 
+      device[:usb_role] == :companion ->
+        {"MeshCore right now",
+         "Choose Meshtastic companion below to operate this USB radio on the Meshtastic page"}
+
       true ->
         {"USB serial port",
          "Choose the firmware on this radio — Isthmus then classifies the USB ports"}
@@ -135,8 +139,8 @@ defmodule IsthmusWeb.Admin.Copy do
     end
   end
 
-  def role_plain(:companion), do: "Companion port"
-  def role_plain(:meshtastic), do: "Companion port"
+  def role_plain(:companion), do: "MeshCore companion"
+  def role_plain(:meshtastic), do: "Meshtastic"
   def role_plain(:bridge_cli), do: "Config port"
   def role_plain(:bridge_packet), do: "Mesh traffic port"
   def role_plain(:rnode), do: "RNode"

@@ -157,7 +157,12 @@ defmodule IsthmusWeb.Admin.MeshtasticLiveTest do
 
     assert has_element?(view, "#usb-firmware-meshtastic-device-dev-ttyUSB9")
     assert has_element?(view, "#usb-firmware-offer-meshtastic-device-dev-ttyUSB9-write")
-    assert render(view) =~ "Keep Meshtastic to operate it as-is"
+    assert render(view) =~ "This radio runs"
+
+    assert has_element?(
+             view,
+             "#usb-firmware-meshtastic-device-dev-ttyUSB9-kind option[value='meshtastic']"
+           )
 
     html =
       render_change(view, "pick_usb_firmware", %{

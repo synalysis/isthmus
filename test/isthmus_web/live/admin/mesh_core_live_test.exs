@@ -117,6 +117,14 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
 
     refute has_element?(view, "#meshcore-ports-modal")
     refute has_element?(view, "#device-usb-2886-1667-WIO1-ports")
+    assert has_element?(view, "#usb-firmware-device-usb-2886-1667-WIO1-network")
+
+    assert has_element?(
+             view,
+             "#usb-firmware-device-usb-2886-1667-WIO1-kind option[value='meshtastic']"
+           )
+
+    assert render(view) =~ "This radio runs"
     assert has_element?(view, "#open-ports-device-usb-2886-1667-WIO1")
 
     view |> element("#open-ports-device-usb-2886-1667-WIO1") |> render_click()
