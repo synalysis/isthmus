@@ -279,7 +279,9 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
     {:noreply, assign(socket, :ports_modal_id, nil)}
   end
 
-  def handle_event("open_radio_config", %{"device_id" => id}, socket) do
+  def handle_event("open_radio_config", params, socket) do
+    id = params["device_id"] || params["device-id"]
+
     case Enum.find(socket.assigns.devices, &(&1.id == id)) do
       nil ->
         {:noreply, put_flash(socket, :error, "Unknown device — rescan USB and try again.")}

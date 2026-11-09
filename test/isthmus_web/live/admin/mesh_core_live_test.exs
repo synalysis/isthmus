@@ -123,4 +123,21 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
     assert has_element?(view, "#device-usb-2886-1667-WIO1-ports")
     assert has_element?(view, "#channels-device-usb-2886-1667-WIO1")
   end
+
+  test "radio configuration opens from the device button", %{conn: conn} do
+    {previous, _detail} = FirmwareCatalogFixtures.seed_meshcore_wio(firmware_version: "1.16.0")
+
+    on_exit(fn -> FirmwareCatalogFixtures.cleanup_meshcore_wio(previous) end)
+
+    {:ok, view, _html} = live(conn, ~p"/admin/meshcore")
+
+    assert has_element?(view, "#open-radio-device-usb-2886-1667-WIO1")
+    refute has_element?(view, "#meshcore-radio-modal")
+
+    view |> element("#open-radio-device-usb-2886-1667-WIO1") |> render_click()
+
+    assert has_element?(view, "#meshcore-radio-modal")
+    assert has_element?(view, "#meshcore-radio-form")
+    assert has_element?(view, "#save-companion-radio-btn")
+  end
 end
