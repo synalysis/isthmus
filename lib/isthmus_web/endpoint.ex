@@ -46,7 +46,7 @@ defmodule IsthmusWeb.Endpoint do
     cookie_key: "request_logger"
 
   plug Plug.RequestId
-  plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint]
+  plug Plug.Telemetry, event_prefix: [:phoenix, :endpoint], log: {__MODULE__, :log_level, []}
 
   plug Plug.Parsers,
     parsers: [:urlencoded, :multipart, :json],
@@ -58,4 +58,8 @@ defmodule IsthmusWeb.Endpoint do
   plug Plug.Head
   plug Plug.Session, @session_options
   plug IsthmusWeb.Router
+
+  # Probes hit this constantly. Returning false skips the request log.
+  def log_level(%{path_info: ["healthz"]}), do: false
+  def log_level(_conn), do: :info
 end

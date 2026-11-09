@@ -33,7 +33,7 @@ defmodule IsthmusWeb.Router do
     pipe_through :health
 
     get "/health", HealthController, :liveness
-    get "/healthz", HealthController, :liveness
+    get "/healthz", HealthController, :liveness, log: false
     get "/readyz", HealthController, :readiness
   end
 

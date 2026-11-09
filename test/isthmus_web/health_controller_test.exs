@@ -6,6 +6,14 @@ defmodule IsthmusWeb.HealthControllerTest do
     assert json_response(conn, 200)["status"] == "ok"
   end
 
+  test "healthz is not request-logged" do
+    assert IsthmusWeb.Endpoint.log_level(%{path_info: ["healthz"]}) == false
+    assert IsthmusWeb.Endpoint.log_level(%{path_info: ["readyz"]}) == :info
+
+    assert Phoenix.Router.route_info(IsthmusWeb.Router, "GET", "/healthz", "localhost").log ==
+             false
+  end
+
   test "readiness", %{conn: conn} do
     conn = get(conn, ~p"/readyz")
     assert json_response(conn, 200)["status"] == "ready"
