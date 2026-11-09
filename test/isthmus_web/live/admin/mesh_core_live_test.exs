@@ -5,6 +5,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
 
   alias Isthmus.Accounts
   alias Isthmus.FirmwareCatalogFixtures
+  alias Isthmus.Networks.MeshCore.Companion.Status, as: MeshStatus
   alias Isthmus.Nostr.Bech32
 
   setup %{conn: conn} do
@@ -139,5 +140,32 @@ defmodule IsthmusWeb.Admin.MeshCoreLiveTest do
     assert has_element?(view, "#meshcore-radio-modal")
     assert has_element?(view, "#meshcore-radio-form")
     assert has_element?(view, "#save-companion-radio-btn")
+  end
+
+  test "radio configuration shows the companion preset", %{conn: conn} do
+    {previous, detail} = FirmwareCatalogFixtures.seed_meshcore_wio(firmware_version: "1.16.0")
+
+    on_exit(fn -> FirmwareCatalogFixtures.cleanup_meshcore_wio(previous) end)
+
+    :ets.insert(
+      MeshStatus.status_table(),
+      {{:health, detail.path},
+       %{
+         status: :online,
+         port: detail.path,
+         freq_mhz: 910.525,
+         bw_khz: 62.5,
+         sf: 7,
+         cr: 5,
+         tx_power: 10,
+         primary?: true
+       }}
+    )
+
+    {:ok, view, _html} = live(conn, ~p"/admin/meshcore")
+
+    view |> element("#open-radio-device-usb-2886-1667-WIO1") |> render_click()
+
+    assert has_element?(view, "#meshcore-radio-preset option[value='usa_canada'][selected]")
   end
 end

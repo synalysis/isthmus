@@ -353,6 +353,28 @@ defmodule Isthmus.Networks.MeshCore.RadioParams do
 
   def cli_tx_command(%{tx_power: tx}), do: "set tx #{tx}"
 
+  def preset_title(radio) when is_map(radio) do
+    case match_preset_slug(radio) do
+      nil -> "Custom"
+      slug -> get_preset(slug).title
+    end
+  end
+
+  def describe(%{freq_mhz: freq, bw_khz: bw, sf: sf, cr: cr} = radio) do
+    "#{preset_title(radio)} — #{trim_float(freq)} MHz, #{trim_float(bw)} kHz, SF#{sf}, CR#{cr}"
+  end
+
+  def same_radio?(health, %{freq_mhz: freq, bw_khz: bw, sf: sf, cr: cr})
+      when is_map(health) and is_number(freq) and is_number(bw) do
+    have_freq = health[:freq_mhz]
+    have_bw = health[:bw_khz]
+
+    is_number(have_freq) and is_number(have_bw) and close?(have_freq, freq, 0.02) and
+      close?(have_bw, bw, 0.5) and health[:sf] == sf and health[:cr] == cr
+  end
+
+  def same_radio?(_, _), do: false
+
   def match_preset_slug(radio) when is_map(radio) do
     with {:ok, freq} <- parse_float(radio, ["freq_mhz", :freq_mhz, "freq", :freq]),
          {:ok, bw} <- parse_float(radio, ["bw_khz", :bw_khz, "bw", :bw]),

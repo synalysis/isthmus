@@ -292,10 +292,7 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
             {:noreply, put_flash(socket, :error, "This radio has no settings to edit.")}
 
           kind ->
-            health =
-              if kind == :companion,
-                do: device.companion_health,
-                else: device.bridge_cli_health
+            health = radio_health(device, kind)
 
             {:noreply,
              socket
@@ -321,18 +318,20 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
 
   def handle_event("save_companion_radio", %{"radio" => params} = payload, socket) do
     device_id = payload["device_id"]
+    port = companion_port_for(socket, device_id)
 
-    with :ok <- ensure_device_role(socket, device_id, :companion),
-         :ok <- Companion.set_radio_params(params, companion_port_for(socket, device_id)),
-         :ok <-
-           Companion.set_tx_power(
-             params["tx_power"] || params[:tx_power],
-             companion_port_for(socket, device_id)
-           ) do
+    with {:ok, radio} <- RadioParams.cast(params),
+         :ok <- ensure_device_role(socket, device_id, :companion),
+         :ok <- Companion.set_radio_params(radio, port),
+         :ok <- Companion.set_tx_power(radio.tx_power, port),
+         :ok <- confirm_companion_radio(port, radio) do
       {:noreply,
        socket
        |> assign(:radio_modal, nil)
-       |> put_flash(:info, "Companion radio updated on #{device_label(socket, device_id)}.")
+       |> put_flash(
+         :info,
+         "Set #{RadioParams.preset_title(radio)} on #{device_label(socket, device_id)}."
+       )
        |> refresh()}
     else
       {:error, :unknown_device} ->
@@ -522,6 +521,41 @@ defmodule IsthmusWeb.Admin.MeshCoreLive do
       end
     end)
   end
+
+  defp radio_health(device, :companion) do
+    port = companion_port(device)
+    _ = Companion.refresh_self(port)
+
+    case Companion.health(port) do
+      %{freq_mhz: freq} = health when is_number(freq) -> health
+      _ -> device.companion_health || %{}
+    end
+  end
+
+  defp radio_health(device, _kind), do: device.bridge_cli_health
+
+  defp confirm_companion_radio(port, radio) do
+    case Companion.refresh_self(port) do
+      {:ok, health} ->
+        cond do
+          RadioParams.same_radio?(health, radio) ->
+            :ok
+
+          not is_number(health[:freq_mhz]) ->
+            :ok
+
+          true ->
+            {:error,
+             "radio is still #{RadioParams.preset_title(health)} (#{format_mhz(health[:freq_mhz])} MHz)"}
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp format_mhz(n) when is_number(n), do: to_string(n)
+  defp format_mhz(_), do: "unknown"
 
   defp radio_form_from_health(health) when is_map(health) do
     if health[:freq_mhz] do

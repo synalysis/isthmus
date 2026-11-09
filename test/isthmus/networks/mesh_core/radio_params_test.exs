@@ -3,6 +3,13 @@ defmodule Isthmus.Networks.MeshCore.RadioParamsTest do
 
   alias Isthmus.Networks.MeshCore.RadioParams
 
+  test "preset title matches community settings" do
+    assert RadioParams.preset_title(%{freq_mhz: 910.525, bw_khz: 62.5, sf: 7, cr: 5}) ==
+             "USA/Canada (Recommended)"
+
+    assert RadioParams.preset_title(%{freq_mhz: 910.0, bw_khz: 62.5, sf: 7, cr: 5}) == "Custom"
+  end
+
   test "cast accepts string form params" do
     assert {:ok, params} =
              RadioParams.cast(%{

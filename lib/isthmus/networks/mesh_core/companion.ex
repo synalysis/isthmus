@@ -185,6 +185,11 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     end
   end
 
+  @doc "Read SELF_INFO so cached frequency, bandwidth, SF, and CR match the radio."
+  def refresh_self(port \\ nil) do
+    safe_call(:refresh_self, {:error, :timeout}, 4_000, port)
+  end
+
   @doc "Apply TX power (dBm) on the companion."
   def set_tx_power(tx, port \\ nil)
 
@@ -200,6 +205,9 @@ defmodule Isthmus.Networks.MeshCore.Companion do
       :error -> {:error, "invalid tx power"}
     end
   end
+
+  def set_tx_power(nil, _port), do: {:error, "missing tx power"}
+  def set_tx_power(tx, _port), do: {:error, "invalid tx power: #{inspect(tx)}"}
 
   @doc "Re-resolve the serial port (after Discover.refresh) and reconnect."
   def reconnect(port \\ nil), do: GenServer.cast(target(port), :reconnect)
@@ -271,6 +279,10 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         true -> :usb
       end
 
+    transport_mod =
+      Keyword.get(opts, :transport_mod) ||
+        if(transport_kind == :ble, do: BLETransport, else: USBTransport)
+
     ble_address =
       Keyword.get(opts, :ble_address) ||
         if(transport_kind == :ble and is_binary(opt_port), do: ble_address(opt_port)) ||
@@ -297,7 +309,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
 
     state = %{
       transport_kind: transport_kind,
-      transport_mod: if(transport_kind == :ble, do: BLETransport, else: USBTransport),
+      transport_mod: transport_mod,
       transport: nil,
       port: port,
       fixed_port: fixed_port?,
@@ -440,17 +452,39 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         params.cr
       )
 
-    case write_frame(state, frame) do
-      :ok ->
-        _ = write_frame(state, Protocol.app_start_frame())
+    # The companion handles one command at a time. Wait for OK/ERR before
+    # another write, or the radio drops this frame and keeps the old preset.
+    case transact(state, frame, :ack, 3_000) do
+      {:ok, state} ->
+        state =
+          remember_radio(state, Map.take(params, [:freq_mhz, :bw_khz, :sf, :cr]))
+
+        Logger.info("MeshCore radio on #{state.port}: #{RadioParams.describe(params)}")
         {:reply, :ok, state}
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
+      {:error, reason, state} ->
+        Logger.warning("MeshCore radio set failed on #{state.port}: #{fmt_reason(reason)}")
+        {:reply, {:error, reason}, %{state | last_error: fmt_reason(reason)}}
     end
   end
 
   def handle_call({:set_radio_params, _}, _from, state) do
+    {:reply, {:error, :not_connected}, state}
+  end
+
+  def handle_call(:refresh_self, _from, %{status: :online, transport: t} = state)
+      when not is_nil(t) do
+    case transact(state, Protocol.app_start_frame(), :self, 3_000) do
+      {:ok, state} ->
+        {:reply, {:ok, Status.health_map(state)}, state}
+
+      {:error, reason, state} ->
+        Logger.warning("MeshCore radio read failed on #{state.port}: #{fmt_reason(reason)}")
+        {:reply, {:error, reason}, state}
+    end
+  end
+
+  def handle_call(:refresh_self, _from, state) do
     {:reply, {:error, :not_connected}, state}
   end
 
@@ -460,15 +494,15 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         %{status: :online, transport: t} = state
       )
       when not is_nil(t) do
-    frame = Protocol.set_tx_power_frame(tx)
-
-    case write_frame(state, frame) do
-      :ok ->
-        _ = write_frame(state, Protocol.app_start_frame())
+    case transact(state, Protocol.set_tx_power_frame(tx), :ack, 3_000) do
+      {:ok, state} ->
+        state = remember_radio(state, %{tx_power: tx})
+        Logger.info("MeshCore TX power on #{state.port}: #{tx} dBm")
         {:reply, :ok, state}
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
+      {:error, reason, state} ->
+        Logger.warning("MeshCore TX power failed on #{state.port}: #{fmt_reason(reason)}")
+        {:reply, {:error, reason}, %{state | last_error: fmt_reason(reason)}}
     end
   end
 
@@ -708,6 +742,19 @@ defmodule Isthmus.Networks.MeshCore.Companion do
     {:noreply, Channels.clear(state)}
   end
 
+  def handle_info(:ensure_handshake, %{status: :online, transport: t} = state)
+      when not is_nil(t) do
+    if radio_unknown?(state) do
+      Logger.info("MeshCore companion on #{state.port}: reading radio settings")
+      _ = write_frame(state, Protocol.device_query_frame())
+      _ = write_frame(state, Protocol.app_start_frame())
+    end
+
+    {:noreply, state}
+  end
+
+  def handle_info(:ensure_handshake, state), do: {:noreply, state}
+
   def handle_info(_msg, state), do: {:noreply, state}
 
   @impl true
@@ -759,6 +806,109 @@ defmodule Isthmus.Networks.MeshCore.Companion do
   end
 
   defp write_frame(_, _), do: {:error, :not_connected}
+
+  # Write one companion command and wait until its reply is in the UART/BLE
+  # mailbox. Other frames that arrive meanwhile are applied normally.
+  defp transact(state, frame, kind, timeout) do
+    case write_frame(state, frame) do
+      :ok ->
+        deadline = System.monotonic_time(:millisecond) + timeout
+        await_reply(state, kind, deadline)
+
+      {:error, reason} ->
+        {:error, reason, state}
+    end
+  end
+
+  defp await_reply(state, kind, deadline) do
+    {frames, rest} =
+      if state.transport_kind == :ble do
+        {[], state.buffer}
+      else
+        Protocol.decode_usb_stream(state.buffer)
+      end
+
+    take_reply(%{state | buffer: rest}, frames, kind, deadline)
+  end
+
+  defp take_reply(state, [frame | rest], kind, deadline) do
+    case {kind, Protocol.parse_frame(frame)} do
+      {:ack, {:ok, :ok}} ->
+        {:ok, apply_frames(state, rest)}
+
+      {:ack, {:error, :remote}} ->
+        {:error, nack_message(frame), apply_frames(state, rest)}
+
+      {:self, {:self_info, %{public_key: key}}} when is_binary(key) ->
+        previous = state.self_info || %{}
+        state = Frames.apply(frame, state)
+        info = restore_radio(previous, state.self_info || %{})
+        {:ok, apply_frames(Status.publish(%{state | self_info: info}), rest)}
+
+      _ ->
+        take_reply(Frames.apply(frame, state), rest, kind, deadline)
+    end
+  end
+
+  defp take_reply(state, [], kind, deadline) do
+    wait = deadline - System.monotonic_time(:millisecond)
+
+    if wait <= 0 do
+      {:error, "radio did not respond", state}
+    else
+      receive do
+        {:circuits_uart, _port, data} when is_binary(data) ->
+          {frames, rest} = Protocol.decode_usb_stream(state.buffer <> data)
+          take_reply(%{state | buffer: rest}, frames, kind, deadline)
+
+        {:ble_frame, frame} when is_binary(frame) ->
+          take_reply(state, [frame], kind, deadline)
+
+        {:circuits_uart, _port, {:error, reason}} ->
+          {:error, reason, state}
+      after
+        wait ->
+          {:error, "radio did not respond", state}
+      end
+    end
+  end
+
+  defp apply_frames(state, frames), do: Enum.reduce(frames, state, &Frames.apply/2)
+
+  defp remember_radio(state, attrs) when is_map(attrs) do
+    info = Map.merge(state.self_info || %{}, attrs)
+    Status.publish(%{state | self_info: info})
+  end
+
+  defp restore_radio(previous, info) do
+    Enum.reduce([:freq_mhz, :bw_khz, :sf, :cr, :tx_power], info, fn key, acc ->
+      case acc[key] do
+        nil -> if(is_nil(previous[key]), do: acc, else: Map.put(acc, key, previous[key]))
+        _ -> acc
+      end
+    end)
+  end
+
+  defp radio_unknown?(state) do
+    info = state.self_info || %{}
+    is_nil(info[:public_key]) or is_nil(info[:freq_mhz])
+  end
+
+  defp nack_message(<<1, code, _::binary>>),
+    do: "radio rejected the settings (#{radio_error(code)})"
+
+  defp nack_message(_), do: "radio rejected the settings"
+
+  defp radio_error(1), do: "unsupported command"
+  defp radio_error(2), do: "not found"
+  defp radio_error(3), do: "busy"
+  defp radio_error(4), do: "bad state"
+  defp radio_error(5), do: "storage error"
+  defp radio_error(6), do: "illegal argument"
+  defp radio_error(code), do: "code #{code}"
+
+  defp fmt_reason(reason) when is_binary(reason), do: reason
+  defp fmt_reason(reason), do: inspect(reason)
 
   @doc false
   def stay_connected?(state) when is_map(state) do
@@ -880,6 +1030,7 @@ defmodule Isthmus.Networks.MeshCore.Companion do
         end
 
         Process.send_after(self(), :sync_contacts_boot, 1_000)
+        Process.send_after(self(), :ensure_handshake, 1_500)
 
         Status.publish(%{
           state

@@ -106,6 +106,44 @@ defmodule Isthmus.Networks.MeshCore.CompanionTest do
            end)
   end
 
+  test "set_radio_params waits for OK and remembers the preset" do
+    port = "/dev/ttyFAKE0"
+    restore_fake_reply()
+    Application.put_env(:isthmus, :fake_companion_reply, <<0>>)
+    start_fake_companion(port)
+
+    assert :ok =
+             Companion.set_radio_params(
+               %{"preset" => "usa_canada", "tx_power" => "14"},
+               port
+             )
+
+    health = Companion.health(port)
+    assert_in_delta health.freq_mhz, 910.525, 0.001
+    assert_in_delta health.bw_khz, 62.5, 0.001
+    assert health.sf == 7
+    assert health.cr == 5
+
+    assert :ok = Companion.set_tx_power(14, port)
+    assert Companion.health(port).tx_power == 14
+  end
+
+  test "set_radio_params reports a radio rejection and keeps the old preset" do
+    port = "/dev/ttyFAKE1"
+    restore_fake_reply()
+    Application.put_env(:isthmus, :fake_companion_reply, <<1, 6>>)
+    start_fake_companion(port)
+
+    assert {:error, message} =
+             Companion.set_radio_params(
+               %{"preset" => "usa_canada", "tx_power" => "10"},
+               port
+             )
+
+    assert message =~ "illegal argument"
+    assert Companion.health(port).freq_mhz == nil
+  end
+
   test "ble_frame notify is applied like a USB companion frame" do
     Phoenix.PubSub.subscribe(Isthmus.PubSub, "announce:sightings")
 
@@ -126,5 +164,33 @@ defmodule Isthmus.Networks.MeshCore.CompanionTest do
 
     assert %{hops: 2, meta: %{"name" => "RidgeBLE", "source" => "contact"}} =
              Sightings.best_for("meshcore", hex)
+  end
+
+  defp start_fake_companion(port) do
+    start_supervised!(%{
+      id: {:fake_companion, port},
+      start:
+        {Companion, :start_link,
+         [
+           [
+             name: Companion.via(port),
+             port: port,
+             fixed_port: true,
+             transport_mod: Isthmus.Networks.MeshCore.FakeCompanionTransport
+           ]
+         ]}
+    })
+  end
+
+  defp restore_fake_reply do
+    previous = Application.get_env(:isthmus, :fake_companion_reply)
+
+    on_exit(fn ->
+      if previous do
+        Application.put_env(:isthmus, :fake_companion_reply, previous)
+      else
+        Application.delete_env(:isthmus, :fake_companion_reply)
+      end
+    end)
   end
 end
