@@ -87,11 +87,12 @@ defmodule Isthmus.Networks.Meshtastic.CompanionTest do
     assert {:error, :not_connected} = Companion.clear_channel(2)
   end
 
-  test "uart_hold_open? keeps CP2102 open on reset glitches" do
+  test "uart_hold_open? reconnects after the driver closes the fd" do
     online = %{status: :online, uart: self(), transport_kind: :usb}
 
-    assert Companion.uart_hold_open?(online, :eio)
+    # :eagain leaves the fd open. :eio and :ebadf mean circuits_uart already closed it.
     assert Companion.uart_hold_open?(online, :eagain)
+    refute Companion.uart_hold_open?(online, :eio)
     refute Companion.uart_hold_open?(online, :enxio)
     refute Companion.uart_hold_open?(online, :ebadf)
     refute Companion.uart_hold_open?(%{online | uart: nil}, :eio)

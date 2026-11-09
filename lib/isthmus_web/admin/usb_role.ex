@@ -52,7 +52,9 @@ defmodule IsthmusWeb.Admin.UsbRole do
         <% @source == :env -> %>
           <p class="text-sm font-medium">This radio runs</p>
           <p class="mt-1 text-xs opacity-70" id={"#{@id}-env"}>
-            Pinned by an environment variable, so the USB role is not chosen here.
+            Pinned by <code class="font-mono">{env_pin_name(@current)}</code>
+            on the Isthmus process. Remove that variable and restart Isthmus.
+            This list appears after the restart.
           </p>
         <% true -> %>
           <form
@@ -108,7 +110,8 @@ defmodule IsthmusWeb.Admin.UsbRole do
     <%= cond do %>
       <% @source == :env -> %>
         <p class="text-xs opacity-70" id={"#{@id}-env"}>
-          Pinned by environment variable — USB role is not stored.
+          Pinned by <code class="font-mono">{env_pin_name(@current)}</code>.
+          Remove that variable from the Isthmus process and restart.
         </p>
       <% true -> %>
         <form
@@ -407,6 +410,16 @@ defmodule IsthmusWeb.Admin.UsbRole do
   end
 
   defp role_options(_current), do: @role_options ++ [{"Clear role", "clear"}]
+
+  @doc false
+  def env_pin_name(:meshtastic), do: "ISTHMUS_MESHTASTIC_PORT"
+  def env_pin_name(:companion), do: "ISTHMUS_MESHCORE_PORT"
+
+  def env_pin_name(role) when role in [:island, :bridge_cli],
+    do: "ISTHMUS_MESHCORE_BRIDGE_CLI_PORT"
+
+  def env_pin_name(:bridge_packet), do: "ISTHMUS_MESHCORE_BRIDGE_PORT"
+  def env_pin_name(_), do: "ISTHMUS_MESHCORE_PORT"
 
   defp firmware_options(current) when current in [nil, :unassigned] do
     @firmware_options

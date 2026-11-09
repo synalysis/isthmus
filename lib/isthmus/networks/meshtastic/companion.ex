@@ -547,7 +547,8 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
                  }}
 
               {:error, reason} ->
-                {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
+                {:reply, {:error, reason},
+                 recover_closed_link(%{state | last_error: inspect(reason)}, reason)}
             end
 
           {_, {:error, reason}} ->
@@ -634,9 +635,10 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   def handle_info({:circuits_uart, _port, {:error, reason}}, state) do
     Logger.warning("Meshtastic companion serial error: #{inspect(reason)}")
 
+    # circuits_uart closes the fd on EIO/EBADF and then answers later writes
+    # with :ebadf. Holding that pid leaves the radio looking online while
+    # channel creates fail. Reopen instead. :eagain still has an open fd.
     if uart_hold_open?(state, reason) do
-      # ESP32 reset glitches CP210x as :eio. Closing the port pulses DTR and
-      # starts the reboot loop again.
       {:noreply, %{state | last_error: inspect(reason)}}
     else
       {:noreply, schedule_reconnect(%{state | last_error: inspect(reason)})}
@@ -686,11 +688,21 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
           {:noreply, %{state | heartbeat_nonce: nonce}}
 
         {:error, reason} ->
-          if ble_link_lost?(reason) do
-            {:noreply, schedule_reconnect(%{state | last_error: inspect(reason)}, 1_000)}
-          else
-            Process.send_after(self(), :heartbeat, @heartbeat_ms)
-            {:noreply, %{state | heartbeat_nonce: nonce, last_error: inspect(reason)}}
+          state = %{state | heartbeat_nonce: nonce, last_error: inspect(reason)}
+
+          cond do
+            ble_link_lost?(reason) ->
+              {:noreply, schedule_reconnect(state, 1_000)}
+
+            true ->
+              state = recover_closed_link(state, reason)
+
+              if state.status == :error do
+                {:noreply, state}
+              else
+                Process.send_after(self(), :heartbeat, @heartbeat_ms)
+                {:noreply, state}
+              end
           end
       end
     else
@@ -923,8 +935,24 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
   def uart_hold_open?(_, _), do: false
 
   defp port_gone_error?(reason) do
-    reason in [:enxio, :ebadf, :enodev, :enoent]
+    # :eio is included: circuits_uart closes the fd before it reports the error.
+    reason in [:eio, :enxio, :ebadf, :enodev, :enoent]
   end
+
+  @doc false
+  def recover_closed_link(state, reason) when is_map(state) do
+    if state[:transport_kind] != :ble and port_gone_error?(reason) and state.status != :error do
+      Logger.warning(
+        "Meshtastic companion on #{state[:port]}: serial closed (#{inspect(reason)}), reconnecting"
+      )
+
+      schedule_reconnect(%{state | last_error: inspect(reason)})
+    else
+      state
+    end
+  end
+
+  def recover_closed_link(state, _reason), do: state
 
   # Opening CP210x/CH340 pulses DTR and reboots ESP32 Meshtastic firmware.
   # Rescan only needs a new UART when this companion is down or the port moved.
@@ -1108,11 +1136,13 @@ defmodule Isthmus.Networks.Meshtastic.Companion do
         {:reply, :ok, %{state | sent: state.sent + 1}}
 
       {:error, reason} ->
+        state = %{state | last_error: inspect(reason)}
+
         state =
           if ble_link_lost?(reason) do
-            schedule_reconnect(%{state | last_error: inspect(reason)}, 1_000)
+            schedule_reconnect(state, 1_000)
           else
-            %{state | last_error: inspect(reason)}
+            recover_closed_link(state, reason)
           end
 
         {:reply, {:error, reason}, state}

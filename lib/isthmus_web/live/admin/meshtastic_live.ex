@@ -43,6 +43,7 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
      |> assign(:settings_modal_port, nil)
      |> assign(:channels_modal_id, nil)
      |> assign(:channel_invite, nil)
+     |> assign(:pending_channel_provision, nil)
      |> assign(:send_channel, nil)
      |> assign(:send_form, to_form(%{"body" => ""}))
      |> assign(:settings_form, to_form(Settings.to_form_params(Settings.empty()), as: :settings))
@@ -518,6 +519,47 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
   @impl true
   def handle_info(:refresh, socket), do: {:noreply, refresh(socket)}
 
+  def handle_info(:retry_channel_provision, socket) do
+    case socket.assigns[:pending_channel_provision] do
+      %{group_id: id, opts: opts, attempts: attempts} ->
+        port = Keyword.get(opts, :port)
+        health = Companion.health(port)
+        node_id = health[:node_id]
+        ready? = health[:status] == :online and is_binary(node_id) and node_id != ""
+
+        cond do
+          ready? ->
+            provision_channel(
+              assign(socket, :pending_channel_provision, nil),
+              Registrations.get_group!(id),
+              Keyword.put(opts, :retry, true)
+            )
+
+          attempts < 3 ->
+            Process.send_after(self(), :retry_channel_provision, 8_000)
+
+            {:noreply,
+             assign(socket, :pending_channel_provision, %{
+               group_id: id,
+               opts: opts,
+               attempts: attempts + 1
+             })}
+
+          true ->
+            {:noreply,
+             socket
+             |> assign(:pending_channel_provision, nil)
+             |> put_flash(
+               :error,
+               "USB serial port stayed closed. Select the group again once the radio shows Connected."
+             )}
+        end
+
+      _ ->
+        {:noreply, socket}
+    end
+  end
+
   def handle_info({:firmware_flash, job}, socket) do
     {:noreply, FirmwareOffer.handle_flash_progress(socket, job)}
   end
@@ -742,6 +784,9 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
       {:error, :timeout} ->
         recover_provision_timeout(socket, group, opts)
 
+      {:error, reason} when reason in [:ebadf, :eio, :enxio, :enodev, :enoent] ->
+        retry_closed_port(socket, group, opts)
+
       {:error, reason} ->
         {:noreply, put_flash(socket, :error, "Could not create channel: #{inspect(reason)}")}
     end
@@ -771,6 +816,29 @@ defmodule IsthmusWeb.Admin.MeshtasticLive do
       {:error, reason} ->
         {:noreply,
          put_flash(socket, :error, "Could not clear radio slot #{idx}: #{format_err(reason)}")}
+    end
+  end
+
+  defp retry_closed_port(socket, group, opts) do
+    idx = Keyword.get(opts, :idx)
+
+    if Keyword.get(opts, :retry) do
+      {:noreply,
+       put_flash(
+         socket,
+         :error,
+         "USB serial port closed again before slot #{idx} could be written. Select the group once the radio shows Connected."
+       )}
+    else
+      Process.send_after(self(), :retry_channel_provision, 15_000)
+
+      {:noreply,
+       socket
+       |> assign(:pending_channel_provision, %{group_id: group.id, opts: opts, attempts: 1})
+       |> put_flash(
+         :info,
+         "USB serial port was closed. Reconnecting, then creating the channel on slot #{idx}."
+       )}
     end
   end
 

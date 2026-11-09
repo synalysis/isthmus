@@ -1,6 +1,7 @@
 defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
   @moduledoc false
 
+  alias Isthmus.Networks.Meshtastic.Companion
   alias Isthmus.Networks.Meshtastic.Companion.Link
   alias Isthmus.Networks.Meshtastic.Companion.Status
   alias Isthmus.Networks.Meshtastic.DeviceConfig
@@ -68,7 +69,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
 
           {:error, reason} ->
             GenServer.reply(admin.from, {:error, reason})
-            %{state | admin: nil, last_error: inspect(reason)}
+            fail_write(state, reason)
         end
 
       _ ->
@@ -93,7 +94,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
 
           {:error, reason} ->
             GenServer.reply(admin.from, {:error, reason})
-            %{state | admin: nil, last_error: inspect(reason)}
+            fail_write(state, reason)
         end
 
       _ ->
@@ -151,7 +152,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
 
           {:error, reason} ->
             if admin[:from], do: GenServer.reply(admin.from, {:error, reason})
-            %{state | admin: nil, last_error: inspect(reason)}
+            fail_write(state, reason)
         end
 
       _ ->
@@ -236,7 +237,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
 
       {:error, reason} ->
         GenServer.reply(admin.from, {:error, reason})
-        %{state | admin: nil, last_error: inspect(reason)}
+        fail_write(state, reason)
     end
   end
 
@@ -253,7 +254,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
 
       {:error, reason} ->
         GenServer.reply(admin.from, {:error, reason})
-        %{state | admin: nil, last_error: inspect(reason)}
+        fail_write(state, reason)
     end
   end
 
@@ -264,9 +265,9 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
       {:ok, state} ->
         state
 
-      {:error, reason} ->
+      {:error, reason, state} ->
         GenServer.reply(admin.from, {:error, reason})
-        %{state | admin: nil, last_error: inspect(reason)}
+        fail_write(state, reason)
     end
   end
 
@@ -317,7 +318,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
 
     case write_and_arm_admin(state, frame, %{kind: :read_lora, from: nil, node_num: num}) do
       {:ok, state} -> state
-      {:error, _reason} -> state
+      {:error, reason, state} -> fail_write(state, reason)
     end
   end
 
@@ -326,9 +327,13 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
       {:ok, state} ->
         {:noreply, state}
 
-      {:error, reason} ->
-        {:reply, {:error, reason}, %{state | last_error: inspect(reason)}}
+      {:error, reason, state} ->
+        {:reply, {:error, reason}, fail_write(state, reason)}
     end
+  end
+
+  defp fail_write(state, reason) do
+    Companion.recover_closed_link(%{state | admin: nil, last_error: inspect(reason)}, reason)
   end
 
   # Arm the wait-for-response timer only after the GATT/UART write returns.
@@ -340,7 +345,7 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
         {:ok, %{state | admin: Map.put(admin, :timer, timer)}}
 
       {:error, reason} ->
-        {:error, reason}
+        {:error, reason, %{state | last_error: inspect(reason)}}
     end
   end
 
@@ -428,7 +433,11 @@ defmodule Isthmus.Networks.Meshtastic.Companion.Admin do
 
         {:error, reason} ->
           Process.cancel_timer(timer)
-          %{state | last_error: inspect(reason), config_timer: nil}
+
+          Companion.recover_closed_link(
+            %{state | last_error: inspect(reason), config_timer: nil},
+            reason
+          )
       end
     else
       state

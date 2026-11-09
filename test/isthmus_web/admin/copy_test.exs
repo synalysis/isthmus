@@ -2,6 +2,7 @@ defmodule IsthmusWeb.Admin.CopyTest do
   use ExUnit.Case, async: true
 
   alias IsthmusWeb.Admin.Copy
+  alias IsthmusWeb.Admin.UsbRole
 
   test "status_plain never exposes disabled" do
     assert Copy.status_plain(:disabled) == "Offline"
@@ -66,6 +67,13 @@ defmodule IsthmusWeb.Admin.CopyTest do
 
   test "group_kind_label maps bridge to group" do
     assert Copy.group_kind_label("bridge") == "group"
+  end
+
+  test "env pin names the variable that locks the USB role" do
+    assert UsbRole.env_pin_name(:companion) == "ISTHMUS_MESHCORE_PORT"
+    assert UsbRole.env_pin_name(:meshtastic) == "ISTHMUS_MESHTASTIC_PORT"
+    assert UsbRole.env_pin_name(:bridge_cli) == "ISTHMUS_MESHCORE_BRIDGE_CLI_PORT"
+    assert UsbRole.env_pin_name(:bridge_packet) == "ISTHMUS_MESHCORE_BRIDGE_PORT"
   end
 
   test "usb_device_name is the tty basename" do
